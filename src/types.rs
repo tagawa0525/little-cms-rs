@@ -1009,6 +1009,55 @@ pub struct IccHeader {
 const _: () = assert!(size_of::<IccHeader>() == 128);
 
 // ============================================================================
+// ICC tag data structures
+// ============================================================================
+
+/// ICC measurement conditions.
+/// C版: `cmsICCMeasurementConditions`
+#[derive(Debug, Clone, Default)]
+pub struct IccMeasurementConditions {
+    pub observer: u32,
+    pub backing: CieXyz,
+    pub geometry: u32,
+    pub flare: f64,
+    pub illuminant_type: u32,
+}
+
+/// ICC viewing conditions.
+/// C版: `cmsICCViewingConditions`
+#[derive(Debug, Clone, Default)]
+pub struct IccViewingConditions {
+    pub illuminant: CieXyz,
+    pub surround: CieXyz,
+    pub illuminant_type: u32,
+}
+
+/// ICC data (binary or ASCII blob).
+/// C版: `cmsICCData`
+#[derive(Debug, Clone)]
+pub struct IccData {
+    pub flags: u32,
+    pub data: Vec<u8>,
+}
+
+/// Screening channel definition.
+/// C版: `cmsScreeningChannel`
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ScreeningChannel {
+    pub frequency: f64,
+    pub screen_angle: f64,
+    pub spot_shape: u32,
+}
+
+/// Screening information.
+/// C版: `cmsScreening`
+#[derive(Debug, Clone)]
+pub struct Screening {
+    pub flags: u32,
+    pub channels: Vec<ScreeningChannel>,
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -1268,5 +1317,63 @@ mod tests {
             TagSignature::GreenMatrixColumn
         );
         assert_eq!(TagSignature::RED_COLORANT, TagSignature::RedMatrixColumn);
+    }
+
+    // --- ICC tag data structure tests ---
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn measurement_conditions_default() {
+        let m = IccMeasurementConditions::default();
+        assert_eq!(m.observer, 0);
+        assert_eq!(m.geometry, 0);
+        assert_eq!(m.flare, 0.0);
+        assert_eq!(m.illuminant_type, 0);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn viewing_conditions_default() {
+        let v = IccViewingConditions::default();
+        assert_eq!(v.illuminant_type, 0);
+        assert_eq!(v.illuminant.x, 0.0);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn icc_data_clone() {
+        let d = IccData {
+            flags: 1,
+            data: vec![0xCA, 0xFE],
+        };
+        let d2 = d.clone();
+        assert_eq!(d2.flags, 1);
+        assert_eq!(d2.data, vec![0xCA, 0xFE]);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn screening_channel_default() {
+        let c = ScreeningChannel::default();
+        assert_eq!(c.frequency, 0.0);
+        assert_eq!(c.screen_angle, 0.0);
+        assert_eq!(c.spot_shape, 0);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn screening_clone() {
+        let s = Screening {
+            flags: 0x01,
+            channels: vec![ScreeningChannel {
+                frequency: 133.0,
+                screen_angle: 45.0,
+                spot_shape: 1,
+            }],
+        };
+        let s2 = s.clone();
+        assert_eq!(s2.flags, 0x01);
+        assert_eq!(s2.channels.len(), 1);
+        assert_eq!(s2.channels[0].frequency, 133.0);
     }
 }
