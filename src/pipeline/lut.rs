@@ -559,6 +559,98 @@ impl Stage {
 }
 
 // ============================================================================
+// Pipeline
+// ============================================================================
+
+/// Insertion location for pipeline stages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StageLoc {
+    AtBegin,
+    AtEnd,
+}
+
+/// A chain of processing stages that transforms color data.
+///
+/// C版: `cmsPipeline`
+#[derive(Clone)]
+#[allow(dead_code)]
+pub struct Pipeline {
+    stages: Vec<Stage>,
+    input_channels: u32,
+    output_channels: u32,
+    save_as_8bits: bool,
+}
+
+#[allow(dead_code)]
+impl Pipeline {
+    pub fn new(_input_channels: u32, _output_channels: u32) -> Option<Self> {
+        todo!()
+    }
+
+    pub fn input_channels(&self) -> u32 {
+        self.input_channels
+    }
+
+    pub fn output_channels(&self) -> u32 {
+        self.output_channels
+    }
+
+    pub fn stage_count(&self) -> usize {
+        self.stages.len()
+    }
+
+    pub fn first_stage(&self) -> Option<&Stage> {
+        self.stages.first()
+    }
+
+    pub fn last_stage(&self) -> Option<&Stage> {
+        self.stages.last()
+    }
+
+    pub fn stages(&self) -> &[Stage] {
+        &self.stages
+    }
+
+    pub fn stages_mut(&mut self) -> &mut [Stage] {
+        &mut self.stages
+    }
+
+    pub fn insert_stage(&mut self, _loc: StageLoc, _stage: Stage) -> bool {
+        todo!()
+    }
+
+    pub fn remove_stage(&mut self, _loc: StageLoc) -> Option<Stage> {
+        todo!()
+    }
+
+    pub fn cat(&mut self, _other: &Pipeline) -> bool {
+        todo!()
+    }
+
+    pub fn eval_float(&self, _input: &[f32], _output: &mut [f32]) {
+        todo!()
+    }
+
+    pub fn eval_16(&self, _input: &[u16], _output: &mut [u16]) {
+        todo!()
+    }
+
+    pub fn set_save_as_8bits(&mut self, on: bool) -> bool {
+        let prev = self.save_as_8bits;
+        self.save_as_8bits = on;
+        prev
+    }
+
+    pub fn save_as_8bits(&self) -> bool {
+        self.save_as_8bits
+    }
+
+    pub fn check_and_retrieve_stages(&self, _types: &[StageSignature]) -> Option<Vec<usize>> {
+        todo!()
+    }
+}
+
+// ============================================================================
 // CLUT Sampling
 // ============================================================================
 
@@ -1039,5 +1131,243 @@ mod tests {
         assert_eq!(out1, out2);
         assert_eq!(cloned.stage_type(), stage.stage_type());
         assert_eq!(cloned.input_channels(), stage.input_channels());
+    }
+
+    // ========================================================================
+    // Pipeline
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn pipeline_empty() {
+        let p = Pipeline::new(3, 3).unwrap();
+        assert_eq!(p.input_channels(), 3);
+        assert_eq!(p.output_channels(), 3);
+        assert_eq!(p.stage_count(), 0);
+        assert!(p.first_stage().is_none());
+        assert!(p.last_stage().is_none());
+
+        // Empty pipeline: eval should copy input to output
+        let input = [0.2f32, 0.4, 0.6];
+        let mut output = [0.0f32; 3];
+        p.eval_float(&input, &mut output);
+        for i in 0..3 {
+            assert!(
+                (output[i] - input[i]).abs() < 1e-6,
+                "ch {i}: got {}, expected {}",
+                output[i],
+                input[i]
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn pipeline_insert_at_end() {
+        let mut p = Pipeline::new(3, 3).unwrap();
+        let s1 = Stage::new_identity(3).unwrap();
+        let s2 = Stage::new_tone_curves(None, 3).unwrap();
+        assert!(p.insert_stage(StageLoc::AtEnd, s1));
+        assert!(p.insert_stage(StageLoc::AtEnd, s2));
+        assert_eq!(p.stage_count(), 2);
+        assert_eq!(
+            p.first_stage().unwrap().stage_type(),
+            StageSignature::IdentityElem
+        );
+        assert_eq!(
+            p.last_stage().unwrap().stage_type(),
+            StageSignature::CurveSetElem
+        );
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn pipeline_insert_at_begin() {
+        let mut p = Pipeline::new(3, 3).unwrap();
+        let s1 = Stage::new_identity(3).unwrap();
+        let s2 = Stage::new_tone_curves(None, 3).unwrap();
+        assert!(p.insert_stage(StageLoc::AtEnd, s1));
+        assert!(p.insert_stage(StageLoc::AtBegin, s2));
+        assert_eq!(p.stage_count(), 2);
+        assert_eq!(
+            p.first_stage().unwrap().stage_type(),
+            StageSignature::CurveSetElem
+        );
+        assert_eq!(
+            p.last_stage().unwrap().stage_type(),
+            StageSignature::IdentityElem
+        );
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn pipeline_remove() {
+        let mut p = Pipeline::new(3, 3).unwrap();
+        let s1 = Stage::new_identity(3).unwrap();
+        let s2 = Stage::new_tone_curves(None, 3).unwrap();
+        let matrix = [2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0];
+        let s3 = Stage::new_matrix(3, 3, &matrix, None).unwrap();
+        p.insert_stage(StageLoc::AtEnd, s1);
+        p.insert_stage(StageLoc::AtEnd, s2);
+        p.insert_stage(StageLoc::AtEnd, s3);
+        assert_eq!(p.stage_count(), 3);
+
+        // Remove first
+        let removed = p.remove_stage(StageLoc::AtBegin);
+        assert_eq!(removed.unwrap().stage_type(), StageSignature::IdentityElem);
+        assert_eq!(p.stage_count(), 2);
+
+        // Remove last
+        let removed = p.remove_stage(StageLoc::AtEnd);
+        assert_eq!(removed.unwrap().stage_type(), StageSignature::MatrixElem);
+        assert_eq!(p.stage_count(), 1);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn pipeline_eval_float_single_stage() {
+        let mut p = Pipeline::new(3, 3).unwrap();
+        let matrix = [2.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 4.0];
+        let stage = Stage::new_matrix(3, 3, &matrix, None).unwrap();
+        p.insert_stage(StageLoc::AtEnd, stage);
+
+        let input = [0.1f32, 0.2, 0.25];
+        let mut output = [0.0f32; 3];
+        p.eval_float(&input, &mut output);
+
+        assert!((output[0] - 0.2).abs() < 1e-5);
+        assert!((output[1] - 0.6).abs() < 1e-5);
+        assert!((output[2] - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn pipeline_eval_float_chain() {
+        // curves(gamma 2.0) → matrix(scale 2x) → curves(gamma 0.5 = sqrt)
+        let mut p = Pipeline::new(3, 3).unwrap();
+
+        let curve_sq = ToneCurve::build_gamma(2.0).unwrap();
+        let s1 = Stage::new_tone_curves(Some(&[curve_sq.clone(), curve_sq.clone(), curve_sq]), 3)
+            .unwrap();
+
+        let matrix = [2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0];
+        let s2 = Stage::new_matrix(3, 3, &matrix, None).unwrap();
+
+        let curve_sqrt = ToneCurve::build_gamma(0.5).unwrap();
+        let s3 = Stage::new_tone_curves(
+            Some(&[curve_sqrt.clone(), curve_sqrt.clone(), curve_sqrt]),
+            3,
+        )
+        .unwrap();
+
+        p.insert_stage(StageLoc::AtEnd, s1);
+        p.insert_stage(StageLoc::AtEnd, s2);
+        p.insert_stage(StageLoc::AtEnd, s3);
+
+        // input 0.5 → sq(0.5)=0.25 → *2=0.5 → sqrt(0.5)≈0.707
+        let input = [0.5f32, 0.5, 0.5];
+        let mut output = [0.0f32; 3];
+        p.eval_float(&input, &mut output);
+
+        let expected = (0.5f64.powi(2) * 2.0).sqrt() as f32;
+        for &v in &output {
+            assert!((v - expected).abs() < 0.02, "got {v}, expected {expected}");
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn pipeline_eval_16() {
+        let mut p = Pipeline::new(3, 3).unwrap();
+        let s = Stage::new_identity(3).unwrap();
+        p.insert_stage(StageLoc::AtEnd, s);
+
+        let input: [u16; 3] = [0, 32768, 65535];
+        let mut output = [0u16; 3];
+        p.eval_16(&input, &mut output);
+
+        // Identity should preserve values (within rounding)
+        assert!((output[0] as i32).abs() <= 1);
+        assert!((output[1] as i32 - 32768).abs() <= 1);
+        assert!((output[2] as i32 - 65535).abs() <= 1);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn pipeline_cat() {
+        let mut p1 = Pipeline::new(3, 3).unwrap();
+        let matrix1 = [2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0];
+        p1.insert_stage(
+            StageLoc::AtEnd,
+            Stage::new_matrix(3, 3, &matrix1, None).unwrap(),
+        );
+
+        let mut p2 = Pipeline::new(3, 3).unwrap();
+        let matrix2 = [3.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 3.0];
+        p2.insert_stage(
+            StageLoc::AtEnd,
+            Stage::new_matrix(3, 3, &matrix2, None).unwrap(),
+        );
+
+        assert!(p1.cat(&p2));
+        assert_eq!(p1.stage_count(), 2);
+
+        let input = [0.1f32, 0.1, 0.1];
+        let mut output = [0.0f32; 3];
+        p1.eval_float(&input, &mut output);
+
+        // 0.1 * 2.0 * 3.0 = 0.6
+        for &v in &output {
+            assert!((v - 0.6).abs() < 1e-5, "got {v}, expected 0.6");
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn pipeline_clone() {
+        let mut p = Pipeline::new(3, 3).unwrap();
+        let curve = ToneCurve::build_gamma(2.2).unwrap();
+        p.insert_stage(
+            StageLoc::AtEnd,
+            Stage::new_tone_curves(Some(&[curve.clone(), curve.clone(), curve]), 3).unwrap(),
+        );
+
+        let p2 = p.clone();
+        assert_eq!(p2.stage_count(), 1);
+
+        let input = [0.5f32, 0.5, 0.5];
+        let mut out1 = [0.0f32; 3];
+        let mut out2 = [0.0f32; 3];
+        p.eval_float(&input, &mut out1);
+        p2.eval_float(&input, &mut out2);
+        assert_eq!(out1, out2);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn pipeline_check_and_retrieve_stages() {
+        let mut p = Pipeline::new(3, 3).unwrap();
+        p.insert_stage(StageLoc::AtEnd, Stage::new_tone_curves(None, 3).unwrap());
+        let matrix = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        p.insert_stage(
+            StageLoc::AtEnd,
+            Stage::new_matrix(3, 3, &matrix, None).unwrap(),
+        );
+
+        // Matching pattern
+        let result = p
+            .check_and_retrieve_stages(&[StageSignature::CurveSetElem, StageSignature::MatrixElem]);
+        assert!(result.is_some());
+        let indices = result.unwrap();
+        assert_eq!(indices, vec![0, 1]);
+
+        // Non-matching pattern
+        let result = p
+            .check_and_retrieve_stages(&[StageSignature::MatrixElem, StageSignature::CurveSetElem]);
+        assert!(result.is_none());
+
+        // Wrong count
+        let result = p.check_and_retrieve_stages(&[StageSignature::CurveSetElem]);
+        assert!(result.is_none());
     }
 }
