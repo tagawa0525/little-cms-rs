@@ -109,7 +109,10 @@ impl Mlu {
         };
         let encoded = utf8_to_utf16be(text);
 
-        // Overwrite existing entry for same language/country
+        // Update existing entry or append new one.
+        // Pool is append-only: old bytes become dead space on overwrite.
+        // This matches C版 cmsMLU behavior. Acceptable because MLU entries
+        // are rarely updated after initial creation.
         if let Some(entry) = self
             .entries
             .iter_mut()
