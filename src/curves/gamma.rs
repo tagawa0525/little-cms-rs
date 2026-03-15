@@ -262,6 +262,10 @@ impl ToneCurve {
     /// C版: `cmsReverseToneCurveEx`
     #[allow(dead_code)]
     pub fn reverse_with_samples(&self, n_result_samples: u32) -> ToneCurve {
+        assert!(
+            n_result_samples >= 2,
+            "reverse_with_samples: n_result_samples must be >= 2, got {n_result_samples}"
+        );
         // Analytical path: single parametric segment with known inverse
         if self.segments.len() == 1 && self.segments[0].curve_type > 0 {
             let seg = &self.segments[0];
@@ -298,6 +302,10 @@ impl ToneCurve {
     /// C版: `cmsJoinToneCurve`
     #[allow(dead_code)]
     pub fn join(x: &ToneCurve, y: &ToneCurve, n_result_points: u32) -> ToneCurve {
+        assert!(
+            n_result_points >= 2,
+            "join: n_result_points must be >= 2, got {n_result_points}"
+        );
         let y_rev = y.reverse_with_samples(n_result_points);
         let n = n_result_points as usize;
         let mut values = vec![0.0f32; n];
