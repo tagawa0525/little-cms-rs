@@ -37,55 +37,214 @@ impl InterpParams {
     ///
     /// C版: `_cmsComputeInterpParams`
     pub fn compute_uniform(
-        _n_samples: u32,
-        _n_inputs: u32,
-        _n_outputs: u32,
-        _flags: u32,
+        n_samples: u32,
+        n_inputs: u32,
+        n_outputs: u32,
+        flags: u32,
     ) -> Option<Self> {
-        todo!()
+        let samples = [n_samples; MAX_INPUT_DIMENSIONS];
+        Self::compute(&samples, n_inputs, n_outputs, flags)
     }
 
     /// Create interpolation parameters with per-dimension grid sizes.
     ///
     /// C版: `_cmsComputeInterpParamsEx`
-    pub fn compute(
-        _n_samples: &[u32],
-        _n_inputs: u32,
-        _n_outputs: u32,
-        _flags: u32,
-    ) -> Option<Self> {
-        todo!()
+    pub fn compute(n_samples: &[u32], n_inputs: u32, n_outputs: u32, flags: u32) -> Option<Self> {
+        if n_inputs == 0 || n_inputs as usize > MAX_INPUT_DIMENSIONS {
+            return None;
+        }
+
+        let mut params = InterpParams {
+            n_inputs,
+            n_outputs,
+            n_samples: [0; MAX_INPUT_DIMENSIONS],
+            domain: [0; MAX_INPUT_DIMENSIONS],
+            opta: [0; MAX_INPUT_DIMENSIONS],
+            flags,
+        };
+
+        for (i, &s) in n_samples.iter().enumerate().take(n_inputs as usize) {
+            params.n_samples[i] = s;
+            params.domain[i] = s - 1;
+        }
+
+        // Compute strides (opta):
+        // opta[0] = n_outputs (innermost stride)
+        // opta[i] = opta[i-1] * n_samples[n_inputs - i] for i=1..n_inputs-1
+        params.opta[0] = n_outputs;
+        for i in 1..n_inputs as usize {
+            params.opta[i] = params.opta[i - 1] * n_samples[n_inputs as usize - i];
+        }
+
+        Some(params)
     }
 
     /// Evaluate the LUT using 16-bit integer I/O.
     ///
     /// C版: `Interpolation.Lerp16`
-    pub fn eval_16(&self, _input: &[u16], _output: &mut [u16], _table: &[u16]) {
-        todo!()
+    pub fn eval_16(&self, input: &[u16], output: &mut [u16], table: &[u16]) {
+        match self.n_inputs {
+            1 => {
+                if self.n_outputs == 1 {
+                    lin_lerp_1d(input, output, self, table);
+                } else {
+                    eval_1_input(input, output, self, table);
+                }
+            }
+            _ => unimplemented!("dimensions > 1 not yet implemented"),
+        }
     }
 
     /// Evaluate the LUT using f32 floating-point I/O.
     ///
     /// C版: `Interpolation.LerpFloat`
-    pub fn eval_float(&self, _input: &[f32], _output: &mut [f32], _table: &[f32]) {
-        todo!()
+    pub fn eval_float(&self, input: &[f32], output: &mut [f32], table: &[f32]) {
+        match self.n_inputs {
+            1 => {
+                if self.n_outputs == 1 {
+                    lin_lerp_1d_float(input, output, self, table);
+                } else {
+                    eval_1_input_float(input, output, self, table);
+                }
+            }
+            _ => unimplemented!("dimensions > 1 not yet implemented"),
+        }
     }
 }
+
+// ============================================================================
+// Helper functions
+// ============================================================================
 
 /// Convert a value in `0..0xFFFF*domain` range to S15.16 fixed-point.
 ///
 /// C版: `_cmsToFixedDomain`
-#[allow(dead_code)]
-pub(crate) fn to_fixed_domain(_a: i32) -> i32 {
-    todo!()
+pub(crate) fn to_fixed_domain(a: i32) -> i32 {
+    a + ((a + 0x7fff) / 0xffff)
 }
 
 /// Saturate a f64 to u16 range with rounding.
 ///
 /// C版: `_cmsQuickSaturateWord`
 #[allow(dead_code)]
-pub(crate) fn quick_saturate_word(_d: f64) -> u16 {
-    todo!()
+pub(crate) fn quick_saturate_word(d: f64) -> u16 {
+    let d = d + 0.5;
+    if d <= 0.0 {
+        return 0;
+    }
+    if d >= 65535.0 {
+        return 0xffff;
+    }
+    d.floor() as u16
+}
+
+/// Fixed-point linear interpolation.
+/// `a` is fractional weight (0..0xFFFF), `l` and `h` are the low and high values.
+#[inline]
+fn linear_interp(a: i32, l: i32, h: i32) -> u16 {
+    let dif = (h - l) * a + 0x8000;
+    let res = (dif >> 16) + l;
+    res as u16
+}
+
+/// Clamp f32 to [0.0, 1.0], treating NaN and near-zero as 0.0.
+#[inline]
+fn fclamp(v: f32) -> f32 {
+    if v < 1.0e-9 || v.is_nan() {
+        0.0
+    } else if v > 1.0 {
+        1.0
+    } else {
+        v
+    }
+}
+
+// ============================================================================
+// 1D interpolation
+// ============================================================================
+
+/// 1D linear interpolation, single input → single output (u16).
+///
+/// C版: `LinLerp1D`
+fn lin_lerp_1d(input: &[u16], output: &mut [u16], p: &InterpParams, table: &[u16]) {
+    let value = input[0];
+
+    if value == 0xffff || p.domain[0] == 0 {
+        output[0] = table[p.domain[0] as usize];
+        return;
+    }
+
+    let val3 = p.domain[0] as i32 * value as i32;
+    let val3 = to_fixed_domain(val3);
+    let cell0 = (val3 >> 16) as usize;
+    let rest = val3 & 0xffff;
+
+    let y0 = table[cell0] as i32;
+    let y1 = table[cell0 + 1] as i32;
+    output[0] = linear_interp(rest, y0, y1);
+}
+
+/// 1D linear interpolation, single input → single output (f32).
+///
+/// C版: `LinLerp1Dfloat`
+fn lin_lerp_1d_float(input: &[f32], output: &mut [f32], p: &InterpParams, table: &[f32]) {
+    let val2 = fclamp(input[0]);
+
+    if val2 == 1.0 || p.domain[0] == 0 {
+        output[0] = table[p.domain[0] as usize];
+        return;
+    }
+
+    let val2 = val2 * p.domain[0] as f32;
+    let cell0 = val2.floor() as usize;
+    let cell1 = cell0 + 1; // safe because val2 < domain (we handled 1.0 above)
+    let rest = val2 - cell0 as f32;
+
+    let y0 = table[cell0];
+    let y1 = table[cell1];
+    output[0] = y0 + (y1 - y0) * rest;
+}
+
+/// 1D interpolation, single input → N outputs (u16).
+///
+/// C版: `Eval1Input`
+fn eval_1_input(input: &[u16], output: &mut [u16], p: &InterpParams, table: &[u16]) {
+    let value = input[0];
+
+    let val3 = p.domain[0] as i32 * value as i32;
+    let val3 = to_fixed_domain(val3);
+    let cell0 = (val3 >> 16) as usize;
+    let rest = val3 & 0xffff;
+
+    let cell1 = if value == 0xffff { cell0 } else { cell0 + 1 };
+
+    let stride = p.opta[0] as usize;
+    let k0 = stride * cell0;
+    let k1 = stride * cell1;
+
+    for i in 0..p.n_outputs as usize {
+        output[i] = linear_interp(rest, table[k0 + i] as i32, table[k1 + i] as i32);
+    }
+}
+
+/// 1D interpolation, single input → N outputs (f32).
+///
+/// C版: `Eval1InputFloat`
+fn eval_1_input_float(input: &[f32], output: &mut [f32], p: &InterpParams, table: &[f32]) {
+    let val2 = fclamp(input[0]);
+
+    let val2f = val2 * p.domain[0] as f32;
+    let cell0 = val2f.floor() as usize;
+    let cell1 = if val2 >= 1.0 { cell0 } else { cell0 + 1 };
+    let rest = val2f - cell0 as f32;
+
+    let stride = p.opta[0] as usize;
+    let k0 = stride * cell0;
+    let k1 = stride * cell1;
+
+    for i in 0..p.n_outputs as usize {
+        output[i] = table[k0 + i] + (table[k1 + i] - table[k0 + i]) * rest;
+    }
 }
 
 #[cfg(test)]
@@ -97,7 +256,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn identity_1d_16bit() {
         // Identity LUT: output == input for all values
         let n = 256u32;
@@ -118,7 +276,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn identity_1d_float() {
         // Identity LUT: output == input
         let n = 256u32;
@@ -137,7 +294,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn gamma_3_0_1d_16bit() {
         // Gamma 3.0 curve: y = x^3
         let n = 4096u32;
@@ -172,7 +328,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn gamma_3_0_1d_float() {
         // Gamma 3.0 curve: y = x^3
         let n = 4096u32;
@@ -201,7 +356,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn multi_output_1d_16bit() {
         // 1 input, 3 outputs — identity-like mapping
         let n = 256u32;
@@ -227,7 +381,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn multi_output_1d_float() {
         // 1 input, 3 outputs
         let n = 256u32;
@@ -252,7 +405,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn boundary_1d_16bit_zero_and_max() {
         let n = 17u32;
         let table: Vec<u16> = (0..n).map(|i| (i * 0xFFFF / (n - 1)) as u16).collect();
@@ -267,7 +419,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn boundary_1d_float_clamp() {
         let n = 17u32;
         let table: Vec<f32> = (0..n).map(|i| i as f32 / (n - 1) as f32).collect();
@@ -283,7 +434,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn invalid_dimensions_returns_none() {
         // 0 inputs should fail
         assert!(InterpParams::compute_uniform(17, 0, 1, LERP_FLAGS_16BITS).is_none());
@@ -296,7 +446,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn to_fixed_domain_known_values() {
         // 0 maps to 0
         assert_eq!(to_fixed_domain(0), 0);
@@ -307,7 +456,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn quick_saturate_word_known_values() {
         assert_eq!(quick_saturate_word(0.0), 0);
         assert_eq!(quick_saturate_word(65535.0), 0xFFFF);
@@ -321,7 +469,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn consistency_1d_16bit_vs_float() {
         let n = 256u32;
         let table_16: Vec<u16> = (0..n)
