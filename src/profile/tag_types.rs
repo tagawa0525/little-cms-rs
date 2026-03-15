@@ -688,6 +688,175 @@ pub fn write_screening_type(io: &mut IoHandler, s: &Screening) -> Result<(), Cms
     Ok(())
 }
 
+// --- ColorantOrder type ---
+// C版: Type_ColorantOrderType_Read / Type_ColorantOrderType_Write
+
+pub fn read_colorant_order_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    let count = io.read_u32()?.min(MAX_CHANNELS as u32) as usize;
+    let mut order = vec![0u8; count];
+    if count > 0 && !io.read(&mut order) {
+        return Err(IoHandler::read_err());
+    }
+    Ok(TagData::ColorantOrder(order))
+}
+
+pub fn write_colorant_order_type(io: &mut IoHandler, order: &[u8]) -> Result<(), CmsError> {
+    io.write_u32(order.len() as u32)?;
+    if !order.is_empty() && !io.write(order) {
+        return Err(IoHandler::write_err());
+    }
+    Ok(())
+}
+
+// --- ColorantTable type ---
+// C版: Type_ColorantTable_Read / Type_ColorantTable_Write
+// Uses NamedColorList: each entry has a 32-byte name + PCS[3]
+
+pub fn read_colorant_table_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    let count = io.read_u32()? as usize;
+    if count > MAX_CHANNELS {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: format!("Too many colorants: {}", count),
+        });
+    }
+    let mut list = NamedColorList::new(0, "", "").ok_or_else(|| CmsError {
+        code: ErrorCode::Internal,
+        message: "Failed to create NamedColorList".to_string(),
+    })?;
+
+    for _ in 0..count {
+        let mut name_buf = [0u8; 32];
+        if !io.read(&mut name_buf) {
+            return Err(IoHandler::read_err());
+        }
+        let name_end = name_buf.iter().position(|&b| b == 0).unwrap_or(32);
+        let name = String::from_utf8_lossy(&name_buf[..name_end]);
+
+        let pcs = [io.read_u16()?, io.read_u16()?, io.read_u16()?];
+        list.append(&name, &pcs, None);
+    }
+    Ok(TagData::NamedColor(list))
+}
+
+pub fn write_colorant_table_type(
+    io: &mut IoHandler,
+    list: &NamedColorList,
+) -> Result<(), CmsError> {
+    let n = list.count();
+    io.write_u32(n as u32)?;
+    for i in 0..n {
+        if let Some(color) = list.info(i) {
+            let mut name_buf = [0u8; 32];
+            let name_bytes = color.name.as_bytes();
+            let copy_len = name_bytes.len().min(31);
+            name_buf[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
+            if !io.write(&name_buf) {
+                return Err(IoHandler::write_err());
+            }
+            io.write_u16(color.pcs[0])?;
+            io.write_u16(color.pcs[1])?;
+            io.write_u16(color.pcs[2])?;
+        }
+    }
+    Ok(())
+}
+
+// --- NamedColor2 type ---
+// C版: Type_NamedColor_Read / Type_NamedColor_Write
+
+pub fn read_named_color_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    let _vendor_flag = io.read_u32()?;
+    let count = io.read_u32()? as usize;
+    let n_device_coords = io.read_u32()? as usize;
+
+    if n_device_coords > MAX_CHANNELS {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: format!("Too many device coordinates: {}", n_device_coords),
+        });
+    }
+
+    let mut prefix_buf = [0u8; 32];
+    let mut suffix_buf = [0u8; 32];
+    if !io.read(&mut prefix_buf) || !io.read(&mut suffix_buf) {
+        return Err(IoHandler::read_err());
+    }
+    let prefix_end = prefix_buf.iter().position(|&b| b == 0).unwrap_or(31);
+    let suffix_end = suffix_buf.iter().position(|&b| b == 0).unwrap_or(31);
+    let prefix = String::from_utf8_lossy(&prefix_buf[..prefix_end]);
+    let suffix = String::from_utf8_lossy(&suffix_buf[..suffix_end]);
+
+    let mut list =
+        NamedColorList::new(n_device_coords as u32, &prefix, &suffix).ok_or_else(|| CmsError {
+            code: ErrorCode::Internal,
+            message: "Failed to create NamedColorList".to_string(),
+        })?;
+
+    for _ in 0..count {
+        let mut name_buf = [0u8; 32];
+        if !io.read(&mut name_buf) {
+            return Err(IoHandler::read_err());
+        }
+        let name_end = name_buf.iter().position(|&b| b == 0).unwrap_or(32);
+        let name = String::from_utf8_lossy(&name_buf[..name_end]);
+
+        let pcs = [io.read_u16()?, io.read_u16()?, io.read_u16()?];
+
+        let colorant: Vec<u16> = (0..n_device_coords)
+            .map(|_| io.read_u16())
+            .collect::<Result<_, _>>()?;
+
+        list.append(&name, &pcs, Some(&colorant));
+    }
+
+    Ok(TagData::NamedColor(list))
+}
+
+pub fn write_named_color_type(io: &mut IoHandler, list: &NamedColorList) -> Result<(), CmsError> {
+    io.write_u32(0)?; // vendor flag
+    io.write_u32(list.count() as u32)?;
+    io.write_u32(list.colorant_count())?;
+
+    let mut prefix_buf = [0u8; 32];
+    let prefix_bytes = list.prefix().as_bytes();
+    let copy_len = prefix_bytes.len().min(31);
+    prefix_buf[..copy_len].copy_from_slice(&prefix_bytes[..copy_len]);
+    if !io.write(&prefix_buf) {
+        return Err(IoHandler::write_err());
+    }
+
+    let mut suffix_buf = [0u8; 32];
+    let suffix_bytes = list.suffix().as_bytes();
+    let copy_len = suffix_bytes.len().min(31);
+    suffix_buf[..copy_len].copy_from_slice(&suffix_bytes[..copy_len]);
+    if !io.write(&suffix_buf) {
+        return Err(IoHandler::write_err());
+    }
+
+    let n_device = list.colorant_count() as usize;
+    for i in 0..list.count() {
+        if let Some(color) = list.info(i) {
+            let mut name_buf = [0u8; 32];
+            let name_bytes = color.name.as_bytes();
+            let copy_len = name_bytes.len().min(31);
+            name_buf[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
+            if !io.write(&name_buf) {
+                return Err(IoHandler::write_err());
+            }
+
+            io.write_u16(color.pcs[0])?;
+            io.write_u16(color.pcs[1])?;
+            io.write_u16(color.pcs[2])?;
+
+            for j in 0..n_device {
+                io.write_u16(color.colorant[j])?;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1184,6 +1353,80 @@ mod tests {
                 assert_eq!(read_s.channels[1].spot_shape, 2);
             }
             _ => panic!("Expected TagData::Screening"),
+        }
+    }
+
+    // ========================================================================
+    // ColorantOrder type round-trip
+    // ========================================================================
+
+    #[test]
+    fn colorant_order_type_roundtrip() {
+        let order = vec![2, 0, 1, 3];
+        let mut io = IoHandler::from_memory_write(256);
+        write_colorant_order_type(&mut io, &order).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_colorant_order_type(&mut io, size).unwrap();
+        match result {
+            TagData::ColorantOrder(read_order) => assert_eq!(read_order, order),
+            _ => panic!("Expected TagData::ColorantOrder"),
+        }
+    }
+
+    // ========================================================================
+    // ColorantTable type round-trip
+    // ========================================================================
+
+    #[test]
+    fn colorant_table_type_roundtrip() {
+        let mut list = NamedColorList::new(0, "", "").unwrap();
+        list.append("Red", &[100, 200, 300], None);
+        list.append("Green", &[400, 500, 600], None);
+
+        let mut io = IoHandler::from_memory_write(512);
+        write_colorant_table_type(&mut io, &list).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_colorant_table_type(&mut io, size).unwrap();
+        match result {
+            TagData::NamedColor(read_list) => {
+                assert_eq!(read_list.count(), 2);
+                assert_eq!(read_list.info(0).unwrap().name, "Red");
+                assert_eq!(read_list.info(0).unwrap().pcs, [100, 200, 300]);
+                assert_eq!(read_list.info(1).unwrap().name, "Green");
+            }
+            _ => panic!("Expected TagData::NamedColor"),
+        }
+    }
+
+    // ========================================================================
+    // NamedColor2 type round-trip
+    // ========================================================================
+
+    #[test]
+    fn named_color2_type_roundtrip() {
+        let mut list = NamedColorList::new(3, "pre_", "_suf").unwrap();
+        list.append("Crimson", &[1000, 2000, 3000], Some(&[4000, 5000, 6000]));
+
+        let mut io = IoHandler::from_memory_write(512);
+        write_named_color_type(&mut io, &list).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_named_color_type(&mut io, size).unwrap();
+        match result {
+            TagData::NamedColor(read_list) => {
+                assert_eq!(read_list.count(), 1);
+                assert_eq!(read_list.prefix(), "pre_");
+                assert_eq!(read_list.suffix(), "_suf");
+                let color = read_list.info(0).unwrap();
+                assert_eq!(color.name, "Crimson");
+                assert_eq!(color.pcs, [1000, 2000, 3000]);
+                assert_eq!(color.colorant[0], 4000);
+                assert_eq!(color.colorant[1], 5000);
+                assert_eq!(color.colorant[2], 6000);
+            }
+            _ => panic!("Expected TagData::NamedColor"),
         }
     }
 }
