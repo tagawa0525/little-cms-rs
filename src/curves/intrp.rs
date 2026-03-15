@@ -54,6 +54,9 @@ impl InterpParams {
         if n_inputs == 0 || n_inputs as usize > MAX_INPUT_DIMENSIONS {
             return None;
         }
+        if n_samples.len() < n_inputs as usize {
+            return None;
+        }
 
         let mut params = InterpParams {
             n_inputs,
@@ -66,7 +69,7 @@ impl InterpParams {
 
         for (i, &s) in n_samples.iter().enumerate().take(n_inputs as usize) {
             params.n_samples[i] = s;
-            params.domain[i] = s - 1;
+            params.domain[i] = s.checked_sub(1)?;
         }
 
         // Compute strides (opta):
@@ -101,6 +104,12 @@ impl InterpParams {
                 }
             }
             4..=MAX_INPUT_DIMENSIONS_U32 => {
+                debug_assert!(
+                    (self.n_outputs as usize) < MAX_STAGE_CHANNELS,
+                    "n_outputs ({}) must be less than MAX_STAGE_CHANNELS ({})",
+                    self.n_outputs,
+                    MAX_STAGE_CHANNELS
+                );
                 if self.n_outputs as usize >= MAX_STAGE_CHANNELS {
                     return;
                 }
@@ -131,6 +140,12 @@ impl InterpParams {
                 }
             }
             4..=MAX_INPUT_DIMENSIONS_U32 => {
+                debug_assert!(
+                    (self.n_outputs as usize) < MAX_STAGE_CHANNELS,
+                    "n_outputs ({}) must be less than MAX_STAGE_CHANNELS ({})",
+                    self.n_outputs,
+                    MAX_STAGE_CHANNELS
+                );
                 if self.n_outputs as usize >= MAX_STAGE_CHANNELS {
                     return;
                 }
