@@ -270,6 +270,117 @@ impl NamedColorList {
     }
 }
 
+// ============================================================================
+// Profile Sequence Description
+// ============================================================================
+
+use crate::types::TechnologySignature;
+
+/// A single entry in a profile sequence description.
+///
+/// C版: `cmsPSEQDESC`
+#[derive(Debug, Clone)]
+pub struct ProfileSequenceDescEntry {
+    pub device_mfg: u32,
+    pub device_model: u32,
+    pub attributes: u64,
+    pub technology: Option<TechnologySignature>,
+    pub manufacturer: Mlu,
+    pub model: Mlu,
+}
+
+/// Profile sequence description — ordered list of profiles used in a transform.
+///
+/// C版: `cmsSEQ`
+#[derive(Debug, Clone)]
+pub struct ProfileSequenceDesc {
+    #[allow(dead_code)]
+    entries: Vec<ProfileSequenceDescEntry>,
+}
+
+impl ProfileSequenceDesc {
+    /// Create a new profile sequence description with `n` empty entries.
+    pub fn new(_n: usize) -> Self {
+        todo!()
+    }
+
+    pub fn len(&self) -> usize {
+        todo!()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        todo!()
+    }
+
+    pub fn get(&self, _index: usize) -> Option<&ProfileSequenceDescEntry> {
+        todo!()
+    }
+
+    pub fn get_mut(&mut self, _index: usize) -> Option<&mut ProfileSequenceDescEntry> {
+        todo!()
+    }
+}
+
+// ============================================================================
+// Dictionary
+// ============================================================================
+
+/// A single dictionary entry.
+///
+/// C版: `cmsDICTentry`
+#[derive(Debug, Clone)]
+pub struct DictEntry {
+    pub name: String,
+    pub value: Option<String>,
+    pub display_name: Option<Mlu>,
+    pub display_value: Option<Mlu>,
+}
+
+/// Metadata dictionary — key/value pairs with optional MLU display strings.
+///
+/// C版: `cmsDICT`
+#[derive(Debug, Clone)]
+pub struct Dict {
+    #[allow(dead_code)]
+    entries: Vec<DictEntry>,
+}
+
+impl Default for Dict {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Dict {
+    pub fn new() -> Self {
+        todo!()
+    }
+
+    pub fn add(
+        &mut self,
+        _name: &str,
+        _value: Option<&str>,
+        _display_name: Option<&Mlu>,
+        _display_value: Option<&Mlu>,
+    ) -> bool {
+        todo!()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &DictEntry> {
+        todo!();
+        #[allow(unreachable_code)]
+        std::iter::empty()
+    }
+
+    pub fn len(&self) -> usize {
+        todo!()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        todo!()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,5 +580,109 @@ mod tests {
         assert_eq!(list2.count(), 1);
         assert_eq!(list2.prefix(), "pfx");
         assert_eq!(list2.info(0).unwrap().name, "Color1");
+    }
+
+    // --- ProfileSequenceDesc tests ---
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn profile_sequence_desc_new() {
+        let seq = ProfileSequenceDesc::new(3);
+        assert_eq!(seq.len(), 3);
+        assert!(!seq.is_empty());
+
+        let empty = ProfileSequenceDesc::new(0);
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn profile_sequence_desc_get_and_mutate() {
+        let mut seq = ProfileSequenceDesc::new(2);
+
+        let entry = seq.get_mut(0).unwrap();
+        entry.device_mfg = 0x4150504C; // 'APPL'
+        entry.manufacturer.set_ascii("en", "US", "Apple");
+
+        let entry = seq.get(0).unwrap();
+        assert_eq!(entry.device_mfg, 0x4150504C);
+        assert_eq!(
+            entry.manufacturer.get_ascii("en", "US"),
+            Some("Apple".to_string())
+        );
+
+        assert!(seq.get(2).is_none());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn profile_sequence_desc_clone() {
+        let mut seq = ProfileSequenceDesc::new(1);
+        seq.get_mut(0).unwrap().device_model = 42;
+
+        let seq2 = seq.clone();
+        assert_eq!(seq2.get(0).unwrap().device_model, 42);
+    }
+
+    // --- Dict tests ---
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn dict_new_is_empty() {
+        let dict = Dict::new();
+        assert_eq!(dict.len(), 0);
+        assert!(dict.is_empty());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn dict_add_and_iterate() {
+        let mut dict = Dict::new();
+        assert!(dict.add("key1", Some("value1"), None, None));
+        assert!(dict.add("key2", Some("value2"), None, None));
+        assert_eq!(dict.len(), 2);
+
+        let entries: Vec<&DictEntry> = dict.iter().collect();
+        assert_eq!(entries[0].name, "key1");
+        assert_eq!(entries[0].value.as_deref(), Some("value1"));
+        assert_eq!(entries[1].name, "key2");
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn dict_add_with_display_names() {
+        let mut dict = Dict::new();
+        let mut display_name = Mlu::new();
+        display_name.set_utf8("en", "US", "Display Key");
+
+        assert!(dict.add("key", Some("val"), Some(&display_name), None));
+
+        let entry = dict.iter().next().unwrap();
+        assert_eq!(
+            entry.display_name.as_ref().unwrap().get_utf8("en", "US"),
+            Some("Display Key".to_string())
+        );
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn dict_add_none_value() {
+        let mut dict = Dict::new();
+        assert!(dict.add("key_only", None, None, None));
+
+        let entry = dict.iter().next().unwrap();
+        assert_eq!(entry.name, "key_only");
+        assert!(entry.value.is_none());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn dict_clone() {
+        let mut dict = Dict::new();
+        dict.add("k", Some("v"), None, None);
+
+        let dict2 = dict.clone();
+        assert_eq!(dict2.len(), 1);
+        assert_eq!(dict2.iter().next().unwrap().name, "k");
     }
 }
