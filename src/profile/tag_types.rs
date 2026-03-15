@@ -222,6 +222,65 @@ pub fn write_uint64_type(io: &mut IoHandler, arr: &[u64]) -> Result<(), CmsError
     Ok(())
 }
 
+// --- Text type ---
+// C版: Type_Text_Read / Type_Text_Write
+// Reads ASCII text and stores as Mlu.
+
+pub fn read_text_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    todo!()
+}
+
+pub fn write_text_type(_io: &mut IoHandler, _mlu: &Mlu) -> Result<(), CmsError> {
+    todo!()
+}
+
+// --- TextDescription type (v2) ---
+// C版: Type_Text_Description_Read / Type_Text_Description_Write
+
+pub fn read_text_description_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    todo!()
+}
+
+pub fn write_text_description_type(_io: &mut IoHandler, _mlu: &Mlu) -> Result<(), CmsError> {
+    todo!()
+}
+
+// --- MLU type (v4) ---
+// C版: Type_MLU_Read / Type_MLU_Write
+
+pub fn read_mlu_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    todo!()
+}
+
+pub fn write_mlu_type(_io: &mut IoHandler, _mlu: &Mlu) -> Result<(), CmsError> {
+    todo!()
+}
+
+// --- Curve type ---
+// C版: Type_Curve_Read / Type_Curve_Write
+
+pub fn read_curve_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    todo!()
+}
+
+pub fn write_curve_type(_io: &mut IoHandler, _curve: &ToneCurve) -> Result<(), CmsError> {
+    todo!()
+}
+
+// --- ParametricCurve type ---
+// C版: Type_ParametricCurve_Read / Type_ParametricCurve_Write
+
+pub fn read_parametric_curve_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    todo!()
+}
+
+pub fn write_parametric_curve_type(
+    _io: &mut IoHandler,
+    _curve: &ToneCurve,
+) -> Result<(), CmsError> {
+    todo!()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,6 +473,161 @@ mod tests {
         match result {
             TagData::UInt64Array(read_arr) => assert_eq!(read_arr, arr),
             _ => panic!("Expected TagData::UInt64Array"),
+        }
+    }
+
+    // ========================================================================
+    // Text type round-trip
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn text_type_roundtrip() {
+        let mut mlu = Mlu::new();
+        mlu.set_ascii("en", "US", "Hello World");
+        let mut io = IoHandler::from_memory_write(256);
+        write_text_type(&mut io, &mlu).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_text_type(&mut io, size).unwrap();
+        match result {
+            TagData::Mlu(read_mlu) => {
+                assert_eq!(
+                    read_mlu.get_ascii("en", "US"),
+                    Some("Hello World".to_string())
+                );
+            }
+            _ => panic!("Expected TagData::Mlu"),
+        }
+    }
+
+    // ========================================================================
+    // TextDescription type round-trip (v2)
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn text_description_type_roundtrip() {
+        let mut mlu = Mlu::new();
+        mlu.set_ascii("en", "US", "Test Description");
+        let mut io = IoHandler::from_memory_write(512);
+        write_text_description_type(&mut io, &mlu).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_text_description_type(&mut io, size).unwrap();
+        match result {
+            TagData::Mlu(read_mlu) => {
+                assert_eq!(
+                    read_mlu.get_ascii("en", "US"),
+                    Some("Test Description".to_string())
+                );
+            }
+            _ => panic!("Expected TagData::Mlu"),
+        }
+    }
+
+    // ========================================================================
+    // MLU type round-trip (v4)
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn mlu_type_roundtrip() {
+        let mut mlu = Mlu::new();
+        mlu.set_ascii("en", "US", "English");
+        mlu.set_ascii("ja", "JP", "Japanese");
+        let mut io = IoHandler::from_memory_write(1024);
+        write_mlu_type(&mut io, &mlu).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_mlu_type(&mut io, size).unwrap();
+        match result {
+            TagData::Mlu(read_mlu) => {
+                assert_eq!(read_mlu.get_ascii("en", "US"), Some("English".to_string()));
+                assert!(read_mlu.translations_count() >= 2);
+            }
+            _ => panic!("Expected TagData::Mlu"),
+        }
+    }
+
+    // ========================================================================
+    // Curve type round-trips
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn curve_type_linear() {
+        // count=0 → linear curve
+        let mut io = IoHandler::from_memory_write(256);
+        io.write_u32(0).unwrap(); // count = 0
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_curve_type(&mut io, size).unwrap();
+        match result {
+            TagData::Curve(curve) => {
+                // Linear: f(0.5) ≈ 0.5
+                let v = curve.eval_f32(0.5);
+                assert!((v - 0.5).abs() < 0.01);
+            }
+            _ => panic!("Expected TagData::Curve"),
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn curve_type_gamma() {
+        // count=1 → single gamma (8.8 fixed point)
+        let gamma = 2.2;
+        let gamma_fixed = ((gamma * 256.0) + 0.5) as u16;
+        let mut io = IoHandler::from_memory_write(256);
+        io.write_u32(1).unwrap();
+        io.write_u16(gamma_fixed).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_curve_type(&mut io, size).unwrap();
+        match result {
+            TagData::Curve(curve) => {
+                let est = curve.estimate_gamma(0.01);
+                assert!((est - gamma).abs() < 0.1);
+            }
+            _ => panic!("Expected TagData::Curve"),
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn curve_type_tabulated_roundtrip() {
+        let table: Vec<u16> = (0..256).map(|i| (i * 257) as u16).collect();
+        let curve = ToneCurve::build_tabulated_16(&table).unwrap();
+        let mut io = IoHandler::from_memory_write(1024);
+        write_curve_type(&mut io, &curve).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_curve_type(&mut io, size).unwrap();
+        match result {
+            TagData::Curve(read_curve) => {
+                assert_eq!(read_curve.table16_len(), 256);
+            }
+            _ => panic!("Expected TagData::Curve"),
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn parametric_curve_type_roundtrip() {
+        // Type 1: gamma only (Y = X^gamma)
+        let curve = ToneCurve::build_parametric(1, &[2.2]).unwrap();
+        let mut io = IoHandler::from_memory_write(256);
+        write_parametric_curve_type(&mut io, &curve).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_parametric_curve_type(&mut io, size).unwrap();
+        match result {
+            TagData::Curve(read_curve) => {
+                let est = read_curve.estimate_gamma(0.01);
+                assert!((est - 2.2).abs() < 0.1);
+            }
+            _ => panic!("Expected TagData::Curve"),
         }
     }
 }
