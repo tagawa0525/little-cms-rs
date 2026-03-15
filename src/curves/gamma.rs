@@ -242,6 +242,79 @@ impl ToneCurve {
     pub fn segment(&self, n: usize) -> Option<&CurveSegment> {
         self.segments.get(n)
     }
+
+    /// Reverse the tone curve (default 4096 samples).
+    ///
+    /// C版: `cmsReverseToneCurve`
+    #[allow(dead_code)]
+    pub fn reverse(&self) -> ToneCurve {
+        self.reverse_with_samples(4096)
+    }
+
+    /// Reverse the tone curve with a specified number of samples.
+    ///
+    /// C版: `cmsReverseToneCurveEx`
+    #[allow(dead_code)]
+    pub fn reverse_with_samples(&self, _n_result_samples: u32) -> ToneCurve {
+        todo!()
+    }
+
+    /// Join two tone curves: Y⁻¹(X(t)).
+    ///
+    /// C版: `cmsJoinToneCurve`
+    #[allow(dead_code)]
+    pub fn join(_x: &ToneCurve, _y: &ToneCurve, _n_result_points: u32) -> ToneCurve {
+        todo!()
+    }
+
+    /// Smooth the tone curve using Whittaker smoothing.
+    ///
+    /// C版: `cmsSmoothToneCurve`
+    #[allow(dead_code)]
+    pub fn smooth(&mut self, _lambda: f64) -> bool {
+        todo!()
+    }
+
+    /// Check if the curve is linear (identity) within 12-bit precision.
+    ///
+    /// C版: `cmsIsToneCurveLinear`
+    #[allow(dead_code)]
+    pub fn is_linear(&self) -> bool {
+        todo!()
+    }
+
+    /// Check if the curve is monotonic (within 2-unit tolerance).
+    ///
+    /// C版: `cmsIsToneCurveMonotonic`
+    #[allow(dead_code)]
+    pub fn is_monotonic(&self) -> bool {
+        todo!()
+    }
+
+    /// Check if the curve is descending (first entry > last entry).
+    ///
+    /// C版: `cmsIsToneCurveDescending`
+    #[allow(dead_code)]
+    pub fn is_descending(&self) -> bool {
+        todo!()
+    }
+
+    /// Check if the curve has multiple segments.
+    ///
+    /// C版: `cmsIsToneCurveMultisegment`
+    #[allow(dead_code)]
+    pub fn is_multisegment(&self) -> bool {
+        todo!()
+    }
+
+    /// Estimate the gamma exponent via least-squares fitting.
+    /// Returns -1.0 on failure.
+    ///
+    /// C版: `cmsEstimateGamma`
+    #[allow(dead_code)]
+    pub fn estimate_gamma(&self, _precision: f64) -> f64 {
+        todo!()
+    }
 }
 
 /// Determine Table16 size based on gamma value.
@@ -851,5 +924,139 @@ mod tests {
         // MAX_TABLE_ENTRIES = 65530
         let values = vec![0u16; 65531];
         assert!(ToneCurve::build_tabulated_16(&values).is_none());
+    }
+
+    // ========================================================================
+    // Tone curve utilities
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn reverse_gamma_2_2() {
+        let curve = ToneCurve::build_gamma(2.2).unwrap();
+        let rev = curve.reverse();
+        // reversed(gamma(x)) ≈ x
+        for &x in &[0.1f32, 0.25, 0.5, 0.75, 0.9] {
+            let y = curve.eval_f32(x);
+            let x_back = rev.eval_f32(y);
+            assert!(
+                (x_back - x).abs() < 5e-3,
+                "reverse: x={x}, y={y}, x_back={x_back}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn reverse_with_samples() {
+        let curve = ToneCurve::build_gamma(2.2).unwrap();
+        let rev = curve.reverse_with_samples(8192);
+        for &x in &[0.1f32, 0.25, 0.5, 0.75, 0.9] {
+            let y = curve.eval_f32(x);
+            let x_back = rev.eval_f32(y);
+            assert!(
+                (x_back - x).abs() < 2e-3,
+                "reverse_ex: x={x}, y={y}, x_back={x_back}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn join_gamma_and_inverse_is_linear() {
+        let fwd = ToneCurve::build_gamma(2.2).unwrap();
+        let inv = ToneCurve::build_parametric(-1, &[2.2]).unwrap();
+        let joined = ToneCurve::join(&fwd, &inv, 4096);
+        // Composition of gamma and its inverse should be ~identity
+        assert!(joined.is_linear());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn is_linear_identity() {
+        let curve = ToneCurve::build_gamma(1.0).unwrap();
+        assert!(curve.is_linear());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn is_linear_gamma_2_2_is_false() {
+        let curve = ToneCurve::build_gamma(2.2).unwrap();
+        assert!(!curve.is_linear());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn is_monotonic_gamma() {
+        let curve = ToneCurve::build_gamma(2.2).unwrap();
+        assert!(curve.is_monotonic());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn is_descending_gamma_is_false() {
+        let curve = ToneCurve::build_gamma(2.2).unwrap();
+        assert!(!curve.is_descending());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn is_multisegment_parametric_is_false() {
+        let curve = ToneCurve::build_parametric(1, &[2.2]).unwrap();
+        assert!(!curve.is_multisegment());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn is_multisegment_srgb_float_is_true() {
+        let n = 256;
+        let values: Vec<f32> = (0..n).map(|i| i as f32 / (n - 1) as f32).collect();
+        let curve = ToneCurve::build_tabulated_float(&values).unwrap();
+        // build_tabulated_float wraps into 3 segments
+        assert!(curve.is_multisegment());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn estimate_gamma_2_2() {
+        let curve = ToneCurve::build_gamma(2.2).unwrap();
+        let estimated = curve.estimate_gamma(0.1);
+        assert!(
+            (estimated - 2.2).abs() < 0.01,
+            "estimated={estimated}, expected≈2.2"
+        );
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn estimate_gamma_identity() {
+        let curve = ToneCurve::build_gamma(1.0).unwrap();
+        let estimated = curve.estimate_gamma(0.1);
+        assert!(
+            (estimated - 1.0).abs() < 0.01,
+            "estimated={estimated}, expected≈1.0"
+        );
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn smooth_noisy_table() {
+        // Build a gamma 2.2 table with some noise
+        let n = 256;
+        let mut values: Vec<u16> = (0..n)
+            .map(|i| {
+                let x = i as f64 / (n - 1) as f64;
+                (x.powf(2.2) * 65535.0 + 0.5) as u16
+            })
+            .collect();
+        // Add small noise
+        for (i, v) in values.iter_mut().enumerate() {
+            if i % 3 == 0 && i > 0 && i < n - 1 {
+                *v = v.saturating_add(5);
+            }
+        }
+        let mut curve = ToneCurve::build_tabulated_16(&values).unwrap();
+        assert!(curve.smooth(1.0));
+        assert!(curve.is_monotonic());
     }
 }
