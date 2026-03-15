@@ -262,6 +262,66 @@ impl Stage {
         })
     }
 
+    /// Create a 16-bit CLUT stage with per-dimension grid sizes.
+    ///
+    /// C版: `cmsStageAllocCLut16bitGranular`
+    #[allow(dead_code)]
+    pub fn new_clut_16bit(
+        _grid_points: &[u32],
+        _input_channels: u32,
+        _output_channels: u32,
+        _table: Option<&[u16]>,
+    ) -> Option<Self> {
+        todo!()
+    }
+
+    /// Create a 16-bit CLUT stage with uniform grid.
+    ///
+    /// C版: `cmsStageAllocCLut16bit`
+    #[allow(dead_code)]
+    pub fn new_clut_16bit_uniform(
+        _grid_points: u32,
+        _input_channels: u32,
+        _output_channels: u32,
+        _table: Option<&[u16]>,
+    ) -> Option<Self> {
+        todo!()
+    }
+
+    /// Create a float CLUT stage with per-dimension grid sizes.
+    ///
+    /// C版: `cmsStageAllocCLutFloatGranular`
+    #[allow(dead_code)]
+    pub fn new_clut_float(
+        _grid_points: &[u32],
+        _input_channels: u32,
+        _output_channels: u32,
+        _table: Option<&[f32]>,
+    ) -> Option<Self> {
+        todo!()
+    }
+
+    /// Create a float CLUT stage with uniform grid.
+    ///
+    /// C版: `cmsStageAllocCLutFloat`
+    #[allow(dead_code)]
+    pub fn new_clut_float_uniform(
+        _grid_points: u32,
+        _input_channels: u32,
+        _output_channels: u32,
+        _table: Option<&[f32]>,
+    ) -> Option<Self> {
+        todo!()
+    }
+
+    /// Create an identity CLUT (2-point grid, input = output).
+    ///
+    /// C版: `_cmsStageAllocIdentityCLut`
+    #[allow(dead_code)]
+    pub fn new_identity_clut(_n: u32) -> Option<Self> {
+        todo!()
+    }
+
     // --- Evaluation ---
 
     /// Evaluate this stage: transform input[] → output[].
@@ -537,6 +597,143 @@ mod tests {
     fn stage_matrix_invalid_dims() {
         assert!(Stage::new_matrix(0, 3, &[], None).is_none());
         assert!(Stage::new_matrix(3, 0, &[], None).is_none());
+    }
+
+    // ========================================================================
+    // Stage: Clone
+    // ========================================================================
+
+    // ========================================================================
+    // Stage: CLUT
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn clut_16bit_identity() {
+        // 2-point uniform grid, 3in→3out identity table
+        // Grid points: [0, 65535] per dimension
+        // Table: for a 2^3 = 8 node table with 3 outputs = 24 entries
+        // Each node maps its quantized input to the same output
+        let mut table = vec![0u16; 8 * 3];
+        for r in 0..2u16 {
+            for g in 0..2u16 {
+                for b in 0..2u16 {
+                    let idx = (r * 4 + g * 2 + b) as usize * 3;
+                    table[idx] = r * 65535;
+                    table[idx + 1] = g * 65535;
+                    table[idx + 2] = b * 65535;
+                }
+            }
+        }
+        let stage = Stage::new_clut_16bit_uniform(2, 3, 3, Some(&table)).unwrap();
+        assert_eq!(stage.stage_type(), StageSignature::CLutElem);
+        assert_eq!(stage.input_channels(), 3);
+        assert_eq!(stage.output_channels(), 3);
+
+        // Test corners
+        let mut output = [0.0f32; 3];
+        stage.eval(&[0.0, 0.0, 0.0], &mut output);
+        assert!(output[0].abs() < 0.01);
+        assert!(output[1].abs() < 0.01);
+        assert!(output[2].abs() < 0.01);
+
+        stage.eval(&[1.0, 1.0, 1.0], &mut output);
+        assert!((output[0] - 1.0).abs() < 0.01);
+        assert!((output[1] - 1.0).abs() < 0.01);
+        assert!((output[2] - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn clut_float_identity() {
+        let mut table = vec![0.0f32; 8 * 3];
+        for r in 0..2u32 {
+            for g in 0..2u32 {
+                for b in 0..2u32 {
+                    let idx = (r * 4 + g * 2 + b) as usize * 3;
+                    table[idx] = r as f32;
+                    table[idx + 1] = g as f32;
+                    table[idx + 2] = b as f32;
+                }
+            }
+        }
+        let stage = Stage::new_clut_float_uniform(2, 3, 3, Some(&table)).unwrap();
+
+        let mut output = [0.0f32; 3];
+        stage.eval(&[0.5, 0.5, 0.5], &mut output);
+        for &v in &output {
+            assert!((v - 0.5).abs() < 0.01, "got {v}, expected 0.5");
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn clut_granular_grid() {
+        // Non-uniform grid: 3 points on dim 0, 2 on dim 1
+        let grid = [3u32, 2];
+        // 3 * 2 = 6 nodes, 1 output each = 6 entries
+        let table: Vec<f32> = (0..6).map(|i| i as f32 / 5.0).collect();
+        let stage = Stage::new_clut_float(&grid, 2, 1, Some(&table)).unwrap();
+        assert_eq!(stage.input_channels(), 2);
+        assert_eq!(stage.output_channels(), 1);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn clut_table_none_zeros() {
+        // None table should zero-initialize
+        let stage = Stage::new_clut_16bit_uniform(2, 3, 3, None).unwrap();
+        let mut output = [1.0f32; 3];
+        stage.eval(&[0.5, 0.5, 0.5], &mut output);
+        // All zeros in table → output should be ~0
+        for &v in &output {
+            assert!(v.abs() < 0.01, "expected ~0, got {v}");
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn clut_identity_clut() {
+        let stage = Stage::new_identity_clut(3).unwrap();
+        assert_eq!(stage.stage_type(), StageSignature::CLutElem);
+        assert_eq!(stage.implements(), StageSignature::IdentityElem);
+
+        let mut output = [0.0f32; 3];
+        stage.eval(&[0.3, 0.6, 0.9], &mut output);
+        assert!((output[0] - 0.3).abs() < 0.02);
+        assert!((output[1] - 0.6).abs() < 0.02);
+        assert!((output[2] - 0.9).abs() < 0.02);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn clut_too_many_inputs() {
+        assert!(Stage::new_clut_16bit_uniform(2, 16, 3, None).is_none());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn clut_clone() {
+        let mut table = vec![0.0f32; 8 * 3];
+        for r in 0..2u32 {
+            for g in 0..2u32 {
+                for b in 0..2u32 {
+                    let idx = (r * 4 + g * 2 + b) as usize * 3;
+                    table[idx] = r as f32;
+                    table[idx + 1] = g as f32;
+                    table[idx + 2] = b as f32;
+                }
+            }
+        }
+        let stage = Stage::new_clut_float_uniform(2, 3, 3, Some(&table)).unwrap();
+        let cloned = stage.clone();
+
+        let input = [0.5f32, 0.5, 0.5];
+        let mut out1 = [0.0f32; 3];
+        let mut out2 = [0.0f32; 3];
+        stage.eval(&input, &mut out1);
+        cloned.eval(&input, &mut out2);
+        assert_eq!(out1, out2);
     }
 
     // ========================================================================
