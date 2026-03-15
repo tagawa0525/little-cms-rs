@@ -383,7 +383,7 @@ impl IoHandler {
     }
 
     pub fn write_s15fixed16(&mut self, v: f64) -> Result<(), CmsError> {
-        let fixed = (v * 65536.0 + 0.5).floor() as i32;
+        let fixed = (v * 65536.0).round() as i32;
         self.write_u32(fixed as u32)
     }
 
