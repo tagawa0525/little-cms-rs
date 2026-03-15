@@ -952,7 +952,11 @@ impl Pipeline {
     /// Evaluate the pipeline in reverse using Newton's method.
     ///
     /// Only works for 3→3 or 4→3 pipelines.
-    /// Returns `true` if convergence was achieved.
+    /// Returns `true` and stores the best approximation in `result`.
+    /// Returns `false` only if the pipeline dimensions are wrong or
+    /// the Jacobian is singular. Matching C behavior, `true` is returned
+    /// even when the iteration doesn't fully converge — `result` will
+    /// contain the best approximation found.
     ///
     /// C版: `cmsPipelineEvalReverseFloat`
     pub fn eval_reverse_float(
