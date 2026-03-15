@@ -596,13 +596,14 @@ impl Profile {
 
     fn search_tag_follow_links(&self, sig: TagSignature) -> Option<usize> {
         let mut current_sig = sig;
-        loop {
+        for _ in 0..MAX_TABLE_TAG {
             let idx = self.search_tag(current_sig)?;
             match self.tags[idx].linked {
                 Some(linked_sig) => current_sig = linked_sig,
                 None => return Some(idx),
             }
         }
+        None // Cycle detected
     }
 
     /// Read raw tag bytes from the profile.
