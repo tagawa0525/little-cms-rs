@@ -423,6 +423,74 @@ impl Stage {
         Some(stage)
     }
 
+    // --- Special stage constructors ---
+
+    /// C版: `_cmsStageAllocLab2XYZ`
+    #[allow(dead_code)]
+    pub fn new_lab_to_xyz() -> Option<Self> {
+        todo!()
+    }
+
+    /// C版: `_cmsStageAllocXYZ2Lab`
+    #[allow(dead_code)]
+    pub fn new_xyz_to_lab() -> Option<Self> {
+        todo!()
+    }
+
+    /// C版: `_cmsStageClipNegatives`
+    #[allow(dead_code)]
+    pub fn new_clip_negatives(_n: u32) -> Option<Self> {
+        todo!()
+    }
+
+    /// C版: `_cmsStageAllocLabV2ToV4`
+    #[allow(dead_code)]
+    pub fn new_lab_v2_to_v4() -> Option<Self> {
+        todo!()
+    }
+
+    /// C版: `_cmsStageAllocLabV4ToV2`
+    #[allow(dead_code)]
+    pub fn new_lab_v4_to_v2() -> Option<Self> {
+        todo!()
+    }
+
+    /// C版: `_cmsStageAllocLabV2ToV4curves`
+    #[allow(dead_code)]
+    pub fn new_lab_v2_to_v4_curves() -> Option<Self> {
+        todo!()
+    }
+
+    /// C版: `_cmsStageNormalizeFromLabFloat`
+    #[allow(dead_code)]
+    pub fn new_normalize_from_lab_float() -> Option<Self> {
+        todo!()
+    }
+
+    /// C版: `_cmsStageNormalizeToLabFloat`
+    #[allow(dead_code)]
+    pub fn new_normalize_to_lab_float() -> Option<Self> {
+        todo!()
+    }
+
+    /// C版: `_cmsStageNormalizeFromXyzFloat`
+    #[allow(dead_code)]
+    pub fn new_normalize_from_xyz_float() -> Option<Self> {
+        todo!()
+    }
+
+    /// C版: `_cmsStageNormalizeToXyzFloat`
+    #[allow(dead_code)]
+    pub fn new_normalize_to_xyz_float() -> Option<Self> {
+        todo!()
+    }
+
+    /// C版: `_cmsStageAllocLabPrelin`
+    #[allow(dead_code)]
+    pub fn new_lab_prelin() -> Option<Self> {
+        todo!()
+    }
+
     // --- Evaluation ---
 
     /// Evaluate this stage: transform input[] → output[].
@@ -743,6 +811,21 @@ impl Pipeline {
             }
         }
         Some((0..types.len()).collect())
+    }
+
+    /// Evaluate the pipeline in reverse using Newton's method.
+    ///
+    /// Only works for 3→3 or 4→3 pipelines.
+    ///
+    /// C版: `cmsPipelineEvalReverseFloat`
+    #[allow(dead_code)]
+    pub fn eval_reverse_float(
+        &self,
+        _target: &[f32],
+        _result: &mut [f32],
+        _hint: Option<&[f32]>,
+    ) -> bool {
+        todo!()
     }
 
     /// Update pipeline input/output channels from first/last stage.
@@ -1484,5 +1567,234 @@ mod tests {
         // Wrong count
         let result = p.check_and_retrieve_stages(&[StageSignature::CurveSetElem]);
         assert!(result.is_none());
+    }
+
+    // ========================================================================
+    // Special stages
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn stage_lab_to_xyz_roundtrip() {
+        let lab2xyz = Stage::new_lab_to_xyz().unwrap();
+        let xyz2lab = Stage::new_xyz_to_lab().unwrap();
+
+        // D50 white: Lab (100, 0, 0) → normalized (1.0, 0.502, 0.502)
+        let lab_norm = [1.0f32, 128.0 / 255.0, 128.0 / 255.0];
+        let mut xyz_out = [0.0f32; 3];
+        let mut lab_back = [0.0f32; 3];
+        lab2xyz.eval(&lab_norm, &mut xyz_out);
+        xyz2lab.eval(&xyz_out, &mut lab_back);
+
+        for i in 0..3 {
+            assert!(
+                (lab_back[i] - lab_norm[i]).abs() < 0.001,
+                "ch {i}: got {}, expected {}",
+                lab_back[i],
+                lab_norm[i]
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn stage_clip_negatives() {
+        let stage = Stage::new_clip_negatives(3).unwrap();
+        let input = [-0.5f32, 0.0, 0.5];
+        let mut output = [0.0f32; 3];
+        stage.eval(&input, &mut output);
+        assert_eq!(output[0], 0.0);
+        assert_eq!(output[1], 0.0);
+        assert_eq!(output[2], 0.5);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn stage_lab_v2_v4_roundtrip() {
+        let v2_to_v4 = Stage::new_lab_v2_to_v4().unwrap();
+        let v4_to_v2 = Stage::new_lab_v4_to_v2().unwrap();
+
+        let input = [0.5f32, 0.5, 0.5];
+        let mut mid = [0.0f32; 3];
+        let mut output = [0.0f32; 3];
+        v2_to_v4.eval(&input, &mut mid);
+        v4_to_v2.eval(&mid, &mut output);
+
+        for i in 0..3 {
+            assert!(
+                (output[i] - input[i]).abs() < 0.001,
+                "ch {i}: got {}, expected {}",
+                output[i],
+                input[i]
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn stage_normalize_lab_float_roundtrip() {
+        let norm_from = Stage::new_normalize_from_lab_float().unwrap();
+        let norm_to = Stage::new_normalize_to_lab_float().unwrap();
+
+        // Lab (50, 0, 0) → normalized → Lab back
+        let lab_input = [50.0f32, 0.0, 0.0];
+        let mut norm = [0.0f32; 3];
+        let mut lab_back = [0.0f32; 3];
+        norm_from.eval(&lab_input, &mut norm);
+        norm_to.eval(&norm, &mut lab_back);
+
+        for i in 0..3 {
+            assert!(
+                (lab_back[i] - lab_input[i]).abs() < 0.01,
+                "ch {i}: got {}, expected {}",
+                lab_back[i],
+                lab_input[i]
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn stage_normalize_xyz_float_roundtrip() {
+        let norm_from = Stage::new_normalize_from_xyz_float().unwrap();
+        let norm_to = Stage::new_normalize_to_xyz_float().unwrap();
+
+        let xyz_input = [0.5f32, 0.5, 0.5];
+        let mut norm = [0.0f32; 3];
+        let mut xyz_back = [0.0f32; 3];
+        norm_from.eval(&xyz_input, &mut norm);
+        norm_to.eval(&norm, &mut xyz_back);
+
+        for i in 0..3 {
+            assert!(
+                (xyz_back[i] - xyz_input[i]).abs() < 0.001,
+                "ch {i}: got {}, expected {}",
+                xyz_back[i],
+                xyz_input[i]
+            );
+        }
+    }
+
+    // ========================================================================
+    // Sampling
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn sample_clut_16bit_identity() {
+        let mut stage = Stage::new_clut_16bit_uniform(2, 3, 3, None).unwrap();
+        // Fill with identity
+        let result = sample_clut_16bit(
+            &mut stage,
+            |input, output, _| {
+                output[..3].copy_from_slice(&input[..3]);
+                true
+            },
+            SAMPLER_WRITE,
+        );
+        assert!(result);
+
+        // Evaluate: should be near-identity
+        let mut output = [0.0f32; 3];
+        stage.eval(&[0.0, 0.0, 0.0], &mut output);
+        assert!(output[0].abs() < 0.01);
+        stage.eval(&[1.0, 1.0, 1.0], &mut output);
+        assert!((output[0] - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn sample_clut_16bit_inspect() {
+        let mut stage = Stage::new_clut_16bit_uniform(2, 3, 3, None).unwrap();
+        // Fill first
+        sample_clut_16bit(
+            &mut stage,
+            |input, output, _| {
+                output[..3].copy_from_slice(&input[..3]);
+                true
+            },
+            SAMPLER_WRITE,
+        );
+
+        // Inspect mode: count nodes without modifying
+        let mut count = 0u32;
+        sample_clut_16bit(
+            &mut stage,
+            |_, _, _| {
+                count += 1;
+                true
+            },
+            SAMPLER_INSPECT,
+        );
+        assert_eq!(count, 8); // 2^3
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn slice_space_16_all_nodes() {
+        let points = [3u32, 2];
+        let mut count = 0u32;
+        let result = slice_space_16(2, &points, |_, _| {
+            count += 1;
+            true
+        });
+        assert!(result);
+        assert_eq!(count, 6); // 3 * 2
+    }
+
+    // ========================================================================
+    // Reverse evaluation
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn pipeline_eval_reverse_float_identity() {
+        let mut p = Pipeline::new(3, 3).unwrap();
+        p.insert_stage(StageLoc::AtEnd, Stage::new_identity(3).unwrap());
+
+        let target = [0.3f32, 0.5, 0.7];
+        let mut result = [0.0f32; 3];
+        assert!(p.eval_reverse_float(&target, &mut result, None));
+
+        for i in 0..3 {
+            assert!(
+                (result[i] - target[i]).abs() < 0.01,
+                "ch {i}: got {}, expected {}",
+                result[i],
+                target[i]
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn pipeline_eval_reverse_3to3() {
+        // Scale by 2 pipeline, reverse should give half
+        let mut p = Pipeline::new(3, 3).unwrap();
+        let matrix = [2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0];
+        p.insert_stage(
+            StageLoc::AtEnd,
+            Stage::new_matrix(3, 3, &matrix, None).unwrap(),
+        );
+
+        let target = [0.6f32, 0.8, 1.0];
+        let mut result = [0.0f32; 3];
+        assert!(p.eval_reverse_float(&target, &mut result, None));
+
+        assert!((result[0] - 0.3).abs() < 0.01);
+        assert!((result[1] - 0.4).abs() < 0.01);
+        assert!((result[2] - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn pipeline_eval_reverse_wrong_dims() {
+        // 2→2 pipeline — reverse should fail
+        let mut p = Pipeline::new(2, 2).unwrap();
+        p.insert_stage(StageLoc::AtEnd, Stage::new_identity(2).unwrap());
+
+        let target = [0.5f32, 0.5];
+        let mut result = [0.0f32; 2];
+        assert!(!p.eval_reverse_float(&target, &mut result, None));
     }
 }
