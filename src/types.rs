@@ -5,19 +5,19 @@
 /// 15.16 signed fixed-point number (15 integer bits + 16 fractional bits).
 ///
 /// C版: `cmsS15Fixed16Number` (i32)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct S15Fixed16(pub i32);
 
 /// 16.16 unsigned fixed-point number (16 integer bits + 16 fractional bits).
 ///
 /// C版: `cmsU16Fixed16Number` (u32)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct U16Fixed16(pub u32);
 
 /// 8.8 unsigned fixed-point number (8 integer bits + 8 fractional bits).
 ///
 /// C版: `cmsU8Fixed8Number` (u16)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct U8Fixed8(pub u16);
 
 // C版: _cmsDoubleTo15Fixed16(v) = floor(v * 65536.0 + 0.5) as i32
@@ -557,8 +557,11 @@ macro_rules! icc_enum {
 
         impl TryFrom<u32> for $name {
             type Error = u32;
-            fn try_from(_value: u32) -> Result<Self, Self::Error> {
-                todo!()
+            fn try_from(value: u32) -> Result<Self, Self::Error> {
+                match value {
+                    $($value => Ok(Self::$variant),)*
+                    _ => Err(value),
+                }
             }
         }
     };
@@ -833,6 +836,169 @@ icc_enum! {
 }
 
 // ============================================================================
+// Color space structures
+// ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct CieXyz {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct CieXyY {
+    pub x: f64,
+    pub y: f64,
+    pub big_y: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct CieLab {
+    pub l: f64,
+    pub a: f64,
+    pub b: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct CieLCh {
+    pub l: f64,
+    pub c: f64,
+    pub h: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct JCh {
+    pub j: f64,
+    pub c: f64,
+    pub h: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct CieXyzTriple {
+    pub red: CieXyz,
+    pub green: CieXyz,
+    pub blue: CieXyz,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct CieXyYTriple {
+    pub red: CieXyY,
+    pub green: CieXyY,
+    pub blue: CieXyY,
+}
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+pub const D50_X: f64 = 0.9642;
+pub const D50_Y: f64 = 1.0;
+pub const D50_Z: f64 = 0.8249;
+
+pub const PERCEPTUAL_BLACK_X: f64 = 0.00336;
+pub const PERCEPTUAL_BLACK_Y: f64 = 0.0034731;
+pub const PERCEPTUAL_BLACK_Z: f64 = 0.00287;
+
+pub const MAX_CHANNELS: usize = 16;
+pub const VERSION: u32 = 2190;
+pub const ICC_MAGIC_NUMBER: u32 = 0x61637370; // 'acsp'
+pub const LCMS_SIGNATURE: u32 = 0x6C636D73; // 'lcms'
+
+// ============================================================================
+// Rendering intent
+// ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u32)]
+pub enum Intent {
+    Perceptual = 0,
+    RelativeColorimetric = 1,
+    Saturation = 2,
+    AbsoluteColorimetric = 3,
+    PreserveKOnlyPerceptual = 10,
+    PreserveKOnlyRelativeColorimetric = 11,
+    PreserveKOnlySaturation = 12,
+    PreserveKPlanePerceptual = 13,
+    PreserveKPlaneRelativeColorimetric = 14,
+    PreserveKPlaneSaturation = 15,
+}
+
+impl TryFrom<u32> for Intent {
+    type Error = u32;
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Perceptual),
+            1 => Ok(Self::RelativeColorimetric),
+            2 => Ok(Self::Saturation),
+            3 => Ok(Self::AbsoluteColorimetric),
+            10 => Ok(Self::PreserveKOnlyPerceptual),
+            11 => Ok(Self::PreserveKOnlyRelativeColorimetric),
+            12 => Ok(Self::PreserveKOnlySaturation),
+            13 => Ok(Self::PreserveKPlanePerceptual),
+            14 => Ok(Self::PreserveKPlaneRelativeColorimetric),
+            15 => Ok(Self::PreserveKPlaneSaturation),
+            _ => Err(value),
+        }
+    }
+}
+
+/// Used direction constants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum UsedDirection {
+    AsInput = 0,
+    AsOutput = 1,
+    AsProof = 2,
+}
+
+// ============================================================================
+// ICC structures
+// ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DateTimeNumber {
+    pub year: u16,
+    pub month: u16,
+    pub day: u16,
+    pub hours: u16,
+    pub minutes: u16,
+    pub seconds: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EncodedXyzNumber {
+    pub x: S15Fixed16,
+    pub y: S15Fixed16,
+    pub z: S15Fixed16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ProfileId(pub [u8; 16]);
+
+#[derive(Debug, Clone, Copy)]
+pub struct IccHeader {
+    pub size: u32,
+    pub cmm_id: u32,
+    pub version: u32,
+    pub device_class: ProfileClassSignature,
+    pub color_space: ColorSpaceSignature,
+    pub pcs: ColorSpaceSignature,
+    pub date: DateTimeNumber,
+    pub magic: u32,
+    pub platform: PlatformSignature,
+    pub flags: u32,
+    pub manufacturer: u32,
+    pub model: u32,
+    pub attributes: u64,
+    pub rendering_intent: u32,
+    pub illuminant: EncodedXyzNumber,
+    pub creator: u32,
+    pub profile_id: ProfileId,
+    pub reserved: [u8; 28],
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -969,7 +1135,6 @@ mod tests {
     // --- PixelFormat field extraction tests ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn pixel_format_field_extraction() {
         // TYPE_RGB_8
         assert_eq!(TYPE_RGB_8.colorspace(), PT_RGB);
@@ -1019,7 +1184,6 @@ mod tests {
     // --- ICC signature TryFrom<u32> round-trip tests ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn color_space_signature_round_trip() {
         let variants = [
             ColorSpaceSignature::XyzData,
@@ -1046,13 +1210,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn color_space_signature_invalid() {
         assert!(ColorSpaceSignature::try_from(0xDEADBEEF).is_err());
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn profile_class_signature_round_trip() {
         let variants = [
             ProfileClassSignature::Input,
@@ -1071,7 +1233,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tag_type_signature_round_trip() {
         let variants = [
             TagTypeSignature::Curve,
@@ -1090,7 +1251,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tag_signature_aliases() {
         assert_eq!(TagSignature::BLUE_COLORANT, TagSignature::BlueMatrixColumn);
         assert_eq!(
