@@ -1167,4 +1167,152 @@ mod tests {
             }
         }
     }
+
+    // ========================================================================
+    // 4D+ interpolation (recursive dimensional reduction)
+    // ========================================================================
+
+    /// Build a 4D identity CLUT: 4 inputs → 4 outputs (e.g. CMYK identity)
+    fn build_4d_identity_clut_16(n: u32) -> Vec<u16> {
+        let n_out = 4u32;
+        let total = n.pow(4) * n_out;
+        let mut table = vec![0u16; total as usize];
+        for i0 in 0..n {
+            for i1 in 0..n {
+                for i2 in 0..n {
+                    for i3 in 0..n {
+                        let idx = ((((i0 * n + i1) * n + i2) * n + i3) * n_out) as usize;
+                        table[idx] = (i0 * 0xFFFF / (n - 1)) as u16;
+                        table[idx + 1] = (i1 * 0xFFFF / (n - 1)) as u16;
+                        table[idx + 2] = (i2 * 0xFFFF / (n - 1)) as u16;
+                        table[idx + 3] = (i3 * 0xFFFF / (n - 1)) as u16;
+                    }
+                }
+            }
+        }
+        table
+    }
+
+    fn build_4d_identity_clut_float(n: u32) -> Vec<f32> {
+        let n_out = 4u32;
+        let total = n.pow(4) * n_out;
+        let mut table = vec![0.0f32; total as usize];
+        for i0 in 0..n {
+            for i1 in 0..n {
+                for i2 in 0..n {
+                    for i3 in 0..n {
+                        let idx = ((((i0 * n + i1) * n + i2) * n + i3) * n_out) as usize;
+                        let d = (n - 1) as f32;
+                        table[idx] = i0 as f32 / d;
+                        table[idx + 1] = i1 as f32 / d;
+                        table[idx + 2] = i2 as f32 / d;
+                        table[idx + 3] = i3 as f32 / d;
+                    }
+                }
+            }
+        }
+        table
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn identity_4d_16bit() {
+        let n = 9u32;
+        let table = build_4d_identity_clut_16(n);
+        let params = InterpParams::compute_uniform(n, 4, 4, LERP_FLAGS_16BITS).unwrap();
+
+        let test_values: Vec<[u16; 4]> = vec![
+            [0, 0, 0, 0],
+            [0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF],
+            [0x8000, 0x8000, 0x8000, 0x8000],
+            [0x4000, 0x8000, 0xC000, 0x2000],
+        ];
+
+        for input in &test_values {
+            let mut output = [0u16; 4];
+            params.eval_16(input, &mut output, &table);
+            for ch in 0..4 {
+                let diff = (output[ch] as i32 - input[ch] as i32).unsigned_abs();
+                assert!(
+                    diff <= 2,
+                    "input={input:?}: ch{ch} output={}, expected={}",
+                    output[ch],
+                    input[ch]
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn identity_4d_float() {
+        let n = 9u32;
+        let table = build_4d_identity_clut_float(n);
+        let params = InterpParams::compute_uniform(n, 4, 4, LERP_FLAGS_FLOAT).unwrap();
+
+        let test_values: Vec<[f32; 4]> = vec![
+            [0.0, 0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [0.5, 0.5, 0.5, 0.5],
+            [0.25, 0.5, 0.75, 0.125],
+        ];
+
+        for input in &test_values {
+            let mut output = [0.0f32; 4];
+            params.eval_float(input, &mut output, &table);
+            for ch in 0..4 {
+                assert!(
+                    (output[ch] - input[ch]).abs() < 1e-2,
+                    "input={input:?}: ch{ch} output={}, expected={}",
+                    output[ch],
+                    input[ch]
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn identity_5d_16bit() {
+        // 5D with small grid to keep memory manageable
+        let n = 5u32;
+        let n_out = 3u32;
+        let total = n.pow(5) * n_out;
+        let mut table = vec![0u16; total as usize];
+        for i0 in 0..n {
+            for i1 in 0..n {
+                for i2 in 0..n {
+                    for i3 in 0..n {
+                        for i4 in 0..n {
+                            let idx =
+                                (((((i0 * n + i1) * n + i2) * n + i3) * n + i4) * n_out) as usize;
+                            table[idx] = (i0 * 0xFFFF / (n - 1)) as u16;
+                            table[idx + 1] = (i2 * 0xFFFF / (n - 1)) as u16;
+                            table[idx + 2] = (i4 * 0xFFFF / (n - 1)) as u16;
+                        }
+                    }
+                }
+            }
+        }
+
+        let params = InterpParams::compute_uniform(n, 5, n_out, LERP_FLAGS_16BITS).unwrap();
+        let mut output = [0u16; 3];
+        // All zeros
+        params.eval_16(&[0, 0, 0, 0, 0], &mut output, &table);
+        assert_eq!(output[0], 0);
+        // All max
+        params.eval_16(
+            &[0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF],
+            &mut output,
+            &table,
+        );
+        assert_eq!(output[0], 0xFFFF);
+        // Mid
+        params.eval_16(
+            &[0x8000, 0x8000, 0x8000, 0x8000, 0x8000],
+            &mut output,
+            &table,
+        );
+        assert!((output[0] as i32 - 0x8000).unsigned_abs() <= 4);
+    }
 }
