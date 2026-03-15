@@ -42,21 +42,144 @@ pub enum TagData {
 // ============================================================================
 
 /// Read a tag's data given its type signature and payload size.
+/// Dispatches to the appropriate type-specific handler.
 pub fn read_tag_type(
-    _io: &mut IoHandler,
-    _sig: TagTypeSignature,
-    _size: u32,
+    io: &mut IoHandler,
+    sig: TagTypeSignature,
+    size: u32,
 ) -> Result<TagData, CmsError> {
-    todo!()
+    match sig {
+        TagTypeSignature::Xyz => read_xyz_type(io, size),
+        TagTypeSignature::Signature => read_signature_type(io, size),
+        TagTypeSignature::DateTime => read_datetime_type(io, size),
+        TagTypeSignature::S15Fixed16Array => read_s15fixed16_type(io, size),
+        TagTypeSignature::U16Fixed16Array => read_u16fixed16_type(io, size),
+        TagTypeSignature::UInt8Array => read_uint8_type(io, size),
+        TagTypeSignature::UInt16Array => read_uint16_type(io, size),
+        TagTypeSignature::UInt32Array => read_uint32_type(io, size),
+        TagTypeSignature::UInt64Array => read_uint64_type(io, size),
+        TagTypeSignature::Text => read_text_type(io, size),
+        TagTypeSignature::TextDescription => read_text_description_type(io, size),
+        TagTypeSignature::MultiLocalizedUnicode => read_mlu_type(io, size),
+        TagTypeSignature::Curve => read_curve_type(io, size),
+        TagTypeSignature::ParametricCurve => read_parametric_curve_type(io, size),
+        TagTypeSignature::Measurement => read_measurement_type(io, size),
+        TagTypeSignature::ViewingConditions => read_viewing_conditions_type(io, size),
+        TagTypeSignature::Chromaticity => read_chromaticity_type(io, size),
+        TagTypeSignature::ColorantOrder => read_colorant_order_type(io, size),
+        TagTypeSignature::ColorantTable => read_colorant_table_type(io, size),
+        TagTypeSignature::NamedColor2 => read_named_color_type(io, size),
+        TagTypeSignature::Data => read_data_type(io, size),
+        TagTypeSignature::Screening => read_screening_type(io, size),
+        _ => {
+            // Unknown type: read as raw bytes
+            let mut raw = vec![0u8; size as usize];
+            if size > 0 && !io.read(&mut raw) {
+                return Err(IoHandler::read_err());
+            }
+            Ok(TagData::Raw(raw))
+        }
+    }
 }
 
-/// Write a tag's data, returning the type signature used.
+/// Write a tag's data. Returns the TagTypeSignature used.
 pub fn write_tag_type(
-    _io: &mut IoHandler,
-    _data: &TagData,
+    io: &mut IoHandler,
+    data: &TagData,
     _icc_version: u32,
 ) -> Result<TagTypeSignature, CmsError> {
-    todo!()
+    let sig = match data {
+        TagData::Xyz(xyz) => {
+            write_xyz_type(io, xyz)?;
+            TagTypeSignature::Xyz
+        }
+        TagData::Signature(s) => {
+            write_signature_type(io, *s)?;
+            TagTypeSignature::Signature
+        }
+        TagData::DateTime(dt) => {
+            write_datetime_type(io, dt)?;
+            TagTypeSignature::DateTime
+        }
+        TagData::S15Fixed16Array(arr) => {
+            write_s15fixed16_type(io, arr)?;
+            TagTypeSignature::S15Fixed16Array
+        }
+        TagData::U16Fixed16Array(arr) => {
+            write_u16fixed16_type(io, arr)?;
+            TagTypeSignature::U16Fixed16Array
+        }
+        TagData::UInt8Array(arr) => {
+            write_uint8_type(io, arr)?;
+            TagTypeSignature::UInt8Array
+        }
+        TagData::UInt16Array(arr) => {
+            write_uint16_type(io, arr)?;
+            TagTypeSignature::UInt16Array
+        }
+        TagData::UInt32Array(arr) => {
+            write_uint32_type(io, arr)?;
+            TagTypeSignature::UInt32Array
+        }
+        TagData::UInt64Array(arr) => {
+            write_uint64_type(io, arr)?;
+            TagTypeSignature::UInt64Array
+        }
+        TagData::Mlu(mlu) => {
+            // Use MLU type (v4) by default; v2 text description handled elsewhere
+            write_mlu_type(io, mlu)?;
+            TagTypeSignature::MultiLocalizedUnicode
+        }
+        TagData::Curve(curve) => {
+            write_curve_type(io, curve)?;
+            TagTypeSignature::Curve
+        }
+        TagData::Measurement(mc) => {
+            write_measurement_type(io, mc)?;
+            TagTypeSignature::Measurement
+        }
+        TagData::ViewingConditions(vc) => {
+            write_viewing_conditions_type(io, vc)?;
+            TagTypeSignature::ViewingConditions
+        }
+        TagData::Chromaticity(chrm) => {
+            write_chromaticity_type(io, chrm)?;
+            TagTypeSignature::Chromaticity
+        }
+        TagData::ColorantOrder(order) => {
+            write_colorant_order_type(io, order)?;
+            TagTypeSignature::ColorantOrder
+        }
+        TagData::NamedColor(list) => {
+            write_named_color_type(io, list)?;
+            TagTypeSignature::NamedColor2
+        }
+        TagData::Data(d) => {
+            write_data_type(io, d)?;
+            TagTypeSignature::Data
+        }
+        TagData::Screening(s) => {
+            write_screening_type(io, s)?;
+            TagTypeSignature::Screening
+        }
+        TagData::ProfileSequenceDesc(_) => {
+            return Err(CmsError {
+                code: ErrorCode::NotSuitable,
+                message: "ProfileSequenceDesc write not yet implemented".to_string(),
+            });
+        }
+        TagData::Raw(raw) => {
+            if !io.write(raw) {
+                return Err(IoHandler::write_err());
+            }
+            // Raw data doesn't have a type signature; caller must handle
+            return Err(CmsError {
+                code: ErrorCode::NotSuitable,
+                message: "Cannot determine type signature for raw data".to_string(),
+            });
+        }
+    };
+    Ok(sig)
 }
 
 // ============================================================================
