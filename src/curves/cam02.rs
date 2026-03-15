@@ -2,6 +2,8 @@
 //!
 //! C版対応: `cmscam02.c`
 
+use std::sync::OnceLock;
+
 use crate::types::{CieXyz, JCh};
 
 /// Surround condition.
@@ -74,44 +76,48 @@ const CAT02_INV: [[f64; 3]; 3] = [
     [-0.009628, -0.005698, 1.015326],
 ];
 
-// HPE matrix coefficients (computed as M_HPE × M_CAT02_INV)
-fn hpe_matrix() -> [[f64; 3]; 3] {
-    // M_HPE (Hunt-Pointer-Estévez) base matrix
-    let hpe = [
-        [0.38971, 0.68898, -0.07868],
-        [-0.22981, 1.18340, 0.04641],
-        [0.00000, 0.00000, 1.00000],
-    ];
-    // Compute HPE × CAT02_INV
-    let mut result = [[0.0; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            for k in 0..3 {
-                result[i][j] += hpe[i][k] * CAT02_INV[k][j];
+// HPE matrix: M_HPE × M_CAT02_INV, initialized once at first use.
+static HPE_MATRIX: OnceLock<[[f64; 3]; 3]> = OnceLock::new();
+
+fn hpe_matrix() -> &'static [[f64; 3]; 3] {
+    HPE_MATRIX.get_or_init(|| {
+        let hpe = [
+            [0.38971, 0.68898, -0.07868],
+            [-0.22981, 1.18340, 0.04641],
+            [0.00000, 0.00000, 1.00000],
+        ];
+        let mut result = [[0.0f64; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                for k in 0..3 {
+                    result[i][j] += hpe[i][k] * CAT02_INV[k][j];
+                }
             }
         }
-    }
-    result
+        result
+    })
 }
 
-// HPE inverse matrix coefficients (computed as CAT02 × M_HPE_INV)
-fn hpe_inv_matrix() -> [[f64; 3]; 3] {
-    // M_HPE inverse
-    let hpe_inv = [
-        [1.910197, -1.112124, 0.201908],
-        [0.370950, 0.629054, 0.000008],
-        [0.000000, 0.000000, 1.000000],
-    ];
-    // Compute CAT02 × HPE_INV
-    let mut result = [[0.0; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            for k in 0..3 {
-                result[i][j] += CAT02[i][k] * hpe_inv[k][j];
+// HPE inverse matrix: CAT02 × M_HPE_INV, initialized once at first use.
+static HPE_INV_MATRIX: OnceLock<[[f64; 3]; 3]> = OnceLock::new();
+
+fn hpe_inv_matrix() -> &'static [[f64; 3]; 3] {
+    HPE_INV_MATRIX.get_or_init(|| {
+        let hpe_inv = [
+            [1.910197, -1.112124, 0.201908],
+            [0.370950, 0.629054, 0.000008],
+            [0.000000, 0.000000, 1.000000],
+        ];
+        let mut result = [[0.0f64; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                for k in 0..3 {
+                    result[i][j] += CAT02[i][k] * hpe_inv[k][j];
+                }
             }
         }
-    }
-    result
+        result
+    })
 }
 
 fn mat3_eval(m: &[[f64; 3]; 3], v: &[f64; 3]) -> [f64; 3] {
@@ -133,8 +139,7 @@ fn chromatic_adaptation(color: &mut Cam02Color, white: &Cam02Color, d: f64) {
 }
 
 fn cat02_to_hpe(color: &mut Cam02Color) {
-    let m = hpe_matrix();
-    color.rgb_p = mat3_eval(&m, &color.rgb_c);
+    color.rgb_p = mat3_eval(hpe_matrix(), &color.rgb_c);
 }
 
 fn nonlinear_compression(color: &mut Cam02Color, fl: f64, nbb: f64) {
@@ -269,8 +274,7 @@ fn inverse_nonlinearity(color: &mut Cam02Color, fl: f64) {
 }
 
 fn hpe_to_cat02(color: &mut Cam02Color) {
-    let m = hpe_inv_matrix();
-    color.rgb_c = mat3_eval(&m, &color.rgb_p);
+    color.rgb_c = mat3_eval(hpe_inv_matrix(), &color.rgb_p);
 }
 
 fn inverse_chromatic_adaptation(color: &mut Cam02Color, white: &Cam02Color, d: f64) {
