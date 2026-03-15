@@ -828,6 +828,19 @@ impl Pipeline {
     ///
     /// C版: `cmsPipelineEvalFloat`
     pub fn eval_float(&self, input: &[f32], output: &mut [f32]) {
+        debug_assert!(
+            input.len() >= self.input_channels as usize,
+            "eval_float: input too short ({} < {})",
+            input.len(),
+            self.input_channels
+        );
+        debug_assert!(
+            output.len() >= self.output_channels as usize,
+            "eval_float: output too short ({} < {})",
+            output.len(),
+            self.output_channels
+        );
+
         if self.stages.is_empty() {
             let n = self.input_channels.min(self.output_channels) as usize;
             output[..n].copy_from_slice(&input[..n]);
@@ -864,6 +877,19 @@ impl Pipeline {
     ///
     /// C版: `cmsPipelineEval16`
     pub fn eval_16(&self, input: &[u16], output: &mut [u16]) {
+        debug_assert!(
+            input.len() >= self.input_channels as usize,
+            "eval_16: input too short ({} < {})",
+            input.len(),
+            self.input_channels
+        );
+        debug_assert!(
+            output.len() >= self.output_channels as usize,
+            "eval_16: output too short ({} < {})",
+            output.len(),
+            self.output_channels
+        );
+
         let n_in = self.input_channels as usize;
         let n_out = self.output_channels as usize;
 
@@ -922,6 +948,21 @@ impl Pipeline {
         }
         if self.output_channels != 3 {
             return false;
+        }
+
+        debug_assert!(
+            target.len() >= self.output_channels as usize,
+            "eval_reverse_float: target too short"
+        );
+        debug_assert!(
+            result.len() >= self.input_channels as usize,
+            "eval_reverse_float: result too short"
+        );
+        if self.input_channels == 4 {
+            debug_assert!(
+                target.len() >= 4,
+                "eval_reverse_float: target needs 4 elements for 4→3 pipeline"
+            );
         }
 
         let mut x = [0.0f32; 4];
