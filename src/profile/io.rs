@@ -229,16 +229,13 @@ impl IoHandler {
         }
     }
 
-    pub fn tell(&self) -> u32 {
+    pub fn tell(&mut self) -> u32 {
         match self {
             IoHandler::Null { pointer, .. } => *pointer,
             IoHandler::Memory { pointer, .. } => *pointer,
             IoHandler::File { file, .. } => {
                 use std::io::Seek;
-                // We need a mutable reference for seek/stream_position, but tell
-                // is logically non-mutating. Clone the file descriptor to avoid &mut.
-                let mut f = file.try_clone().expect("failed to clone file handle");
-                f.stream_position().unwrap_or(0) as u32
+                file.stream_position().unwrap_or(0) as u32
             }
         }
     }
@@ -976,10 +973,10 @@ impl Profile {
                 }
             }
 
-            if let TagDataState::Raw(data) = &tag.data {
-                if !io.write(data) {
-                    return Err(IoHandler::write_err());
-                }
+            if let TagDataState::Raw(data) = &tag.data
+                && !io.write(data)
+            {
+                return Err(IoHandler::write_err());
             }
         }
 
