@@ -784,13 +784,28 @@ impl Pipeline {
 
     /// Insert a stage at the beginning or end of the pipeline.
     ///
+    /// Rolls back on channel mismatch.
+    ///
     /// C版: `cmsPipelineInsertStage`
     pub fn insert_stage(&mut self, loc: StageLoc, stage: Stage) -> bool {
         match loc {
             StageLoc::AtBegin => self.stages.insert(0, stage),
             StageLoc::AtEnd => self.stages.push(stage),
         }
-        self.bless()
+        if !self.bless() {
+            // Rollback
+            match loc {
+                StageLoc::AtBegin => {
+                    self.stages.remove(0);
+                }
+                StageLoc::AtEnd => {
+                    self.stages.pop();
+                }
+            }
+            self.bless();
+            return false;
+        }
+        true
     }
 
     /// Remove a stage from the beginning or end. Returns the removed stage.
@@ -810,16 +825,24 @@ impl Pipeline {
 
     /// Concatenate another pipeline's stages (cloned) onto this one.
     ///
+    /// Rolls back on channel mismatch.
+    ///
     /// C版: `cmsPipelineCat`
     pub fn cat(&mut self, other: &Pipeline) -> bool {
         if self.stages.is_empty() && other.stages.is_empty() {
             self.input_channels = other.input_channels;
             self.output_channels = other.output_channels;
         }
+        let prev_len = self.stages.len();
         for stage in &other.stages {
             self.stages.push(stage.clone());
         }
-        self.bless()
+        if !self.bless() {
+            self.stages.truncate(prev_len);
+            self.bless();
+            return false;
+        }
+        true
     }
 
     /// Evaluate the pipeline on float data.
@@ -1056,14 +1079,16 @@ impl Pipeline {
         if self.stages.is_empty() {
             return true;
         }
-        self.input_channels = self.stages.first().unwrap().input_channels();
-        self.output_channels = self.stages.last().unwrap().output_channels();
 
+        // Validate adjacency first, before modifying state
         for w in self.stages.windows(2) {
             if w[0].output_channels() != w[1].input_channels() {
                 return false;
             }
         }
+
+        self.input_channels = self.stages.first().unwrap().input_channels();
+        self.output_channels = self.stages.last().unwrap().output_channels();
         true
     }
 }
