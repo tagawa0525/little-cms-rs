@@ -21,12 +21,12 @@ wtpnt（math/pcs, math/mtrxに依存）
 cam02（独立）
 ```
 
-| # | モジュール | C版 | 行数 | 内容 |
-| - | -------------------- | -------------- | ----- | ------------------------------------------ |
-| 1 | `src/curves/intrp.rs` | `cmsintrp.c` | 1,330 | 1D-15D LUT補間（16bit/float双方パス） |
+| # | モジュール            | C版          | 行数  | 内容                                       |
+| - | --------------------- | ------------ | ----- | ------------------------------------------ |
+| 1 | `src/curves/intrp.rs` | `cmsintrp.c` | 1,330 | 1D-15D LUT補間（16bit/float双方パス）      |
 | 2 | `src/curves/gamma.rs` | `cmsgamma.c` | 1,514 | トーンカーブ（パラメトリック・テーブル等） |
-| 3 | `src/curves/wtpnt.rs` | `cmswtpnt.c` | 353 | 白色点・色温度・Bradford色順応 |
-| 4 | `src/curves/cam02.rs` | `cmscam02.c` | 490 | CIECAM02順方向・逆方向変換 |
+| 3 | `src/curves/wtpnt.rs` | `cmswtpnt.c` | 353   | 白色点・色温度・Bradford色順応             |
+| 4 | `src/curves/cam02.rs` | `cmscam02.c` | 490   | CIECAM02順方向・逆方向変換                 |
 
 ---
 
@@ -58,24 +58,24 @@ pub struct InterpParams {
 
 #### 移植対象関数
 
-| C版関数 | Rust版 | 備考 |
-| ----------------------------- | ------------------------------------------------------ | ----------------------- |
-| `_cmsComputeInterpParams` | `InterpParams::compute_uniform(n, n_in, n_out, flags)` | 全次元同一サイズ |
-| `_cmsComputeInterpParamsEx` | `InterpParams::compute(samples, n_in, n_out, flags)` | 次元ごとにサイズ指定 |
-| `_cmsFreeInterpParams` | (Drop) | 自動 |
-| `Interpolation.Lerp16` | `params.eval_16(input, output, table)` | 16bit評価 |
-| `Interpolation.LerpFloat` | `params.eval_float(input, output, table)` | float評価 |
+| C版関数                     | Rust版                                                 | 備考                 |
+| --------------------------- | ------------------------------------------------------ | -------------------- |
+| `_cmsComputeInterpParams`   | `InterpParams::compute_uniform(n, n_in, n_out, flags)` | 全次元同一サイズ     |
+| `_cmsComputeInterpParamsEx` | `InterpParams::compute(samples, n_in, n_out, flags)`   | 次元ごとにサイズ指定 |
+| `_cmsFreeInterpParams`      | (Drop)                                                 | 自動                 |
+| `Interpolation.Lerp16`      | `params.eval_16(input, output, table)`                 | 16bit評価            |
+| `Interpolation.LerpFloat`   | `params.eval_float(input, output, table)`              | float評価            |
 
 #### 補間アルゴリズム（内部関数）
 
-| 次元 | 16bit関数 | float関数 | 備考 |
-| ---- | --------------------- | ------------------------- | -------------------------- |
-| 1D | `lin_lerp_1d` | `lin_lerp_1d_float` | 単入力単出力 |
-| 1D | `eval_1_input` | `eval_1_input_float` | 単入力多出力 |
-| 2D | `bilinear_interp_16` | `bilinear_interp_float` | 双線形補間 |
-| 3D | `trilinear_interp_16` | `trilinear_interp_float` | 三線形補間 |
-| 3D | `tetrahedral_interp_16` | `tetrahedral_interp_float` | 坂本アルゴリズム（6四面体） |
-| 4-15D | `eval_n_inputs_16` | `eval_n_inputs_float` | 再帰的次元分解 |
+| 次元  | 16bit関数               | float関数                  | 備考                        |
+| ----- | ----------------------- | -------------------------- | --------------------------- |
+| 1D    | `lin_lerp_1d`           | `lin_lerp_1d_float`        | 単入力単出力                |
+| 1D    | `eval_1_input`          | `eval_1_input_float`       | 単入力多出力                |
+| 2D    | `bilinear_interp_16`    | `bilinear_interp_float`    | 双線形補間                  |
+| 3D    | `trilinear_interp_16`   | `trilinear_interp_float`   | 三線形補間                  |
+| 3D    | `tetrahedral_interp_16` | `tetrahedral_interp_float` | 坂本アルゴリズム（6四面体） |
+| 4-15D | `eval_n_inputs_16`      | `eval_n_inputs_float`      | 再帰的次元分解              |
 
 #### ヘルパー関数（pub(crate)、gamma.rs等で使用）
 
@@ -154,45 +154,45 @@ fn eval_parametric(curve_type: i32, params: &[f64; 10], r: f64) -> f64 {
 
 **構築**
 
-| C版関数 | Rust版 | 備考 |
-| -------------------------------- | ------------------------------------------------ | ------------------------ |
-| `cmsBuildGamma` | `ToneCurve::build_gamma(gamma)` | 単一ガンマ |
-| `cmsBuildParametricToneCurve` | `ToneCurve::build_parametric(type, params)` | パラメトリック型1-8,108,109 |
-| `cmsBuildTabulatedToneCurve16` | `ToneCurve::build_tabulated_16(values)` | 16bitテーブル |
-| `cmsBuildTabulatedToneCurveFloat` | `ToneCurve::build_tabulated_float(values)` | floatテーブル |
-| `cmsBuildSegmentedToneCurve` | `ToneCurve::build_segmented(segments)` | 複数セグメント |
+| C版関数                           | Rust版                                      | 備考                        |
+| --------------------------------- | ------------------------------------------- | --------------------------- |
+| `cmsBuildGamma`                   | `ToneCurve::build_gamma(gamma)`             | 単一ガンマ                  |
+| `cmsBuildParametricToneCurve`     | `ToneCurve::build_parametric(type, params)` | パラメトリック型1-8,108,109 |
+| `cmsBuildTabulatedToneCurve16`    | `ToneCurve::build_tabulated_16(values)`     | 16bitテーブル               |
+| `cmsBuildTabulatedToneCurveFloat` | `ToneCurve::build_tabulated_float(values)`  | floatテーブル               |
+| `cmsBuildSegmentedToneCurve`      | `ToneCurve::build_segmented(segments)`      | 複数セグメント              |
 
 **評価**
 
-| C版関数 | Rust版 | 備考 |
-| --------------------- | ----------------------- | ------------------------ |
-| `cmsEvalToneCurveFloat` | `curve.eval_f32(v)` | セグメント評価 |
-| `cmsEvalToneCurve16` | `curve.eval_u16(v)` | table16経由の補間 |
+| C版関数                 | Rust版              | 備考              |
+| ----------------------- | ------------------- | ----------------- |
+| `cmsEvalToneCurveFloat` | `curve.eval_f32(v)` | セグメント評価    |
+| `cmsEvalToneCurve16`    | `curve.eval_u16(v)` | table16経由の補間 |
 
 **ユーティリティ**
 
-| C版関数 | Rust版 | 備考 |
-| --------------------------- | --------------------------------- | -------------------------- |
-| `cmsReverseToneCurve` | `curve.reverse()` | 逆カーブ生成 |
-| `cmsReverseToneCurveEx` | `curve.reverse_with_samples(n)` | サンプル数指定 |
-| `cmsJoinToneCurve` | `ToneCurve::join(x, y, n)` | 合成 Y(X(t)) |
-| `cmsSmoothToneCurve` | `curve.smooth(lambda)` | Whittaker平滑化 |
-| `cmsIsToneCurveLinear` | `curve.is_linear()` | |
-| `cmsIsToneCurveMonotonic` | `curve.is_monotonic()` | |
-| `cmsIsToneCurveDescending` | `curve.is_descending()` | |
-| `cmsIsToneCurveMultisegment` | `curve.is_multisegment()` | |
-| `cmsEstimateGamma` | `curve.estimate_gamma(precision)` | -1.0で失敗 |
-| `cmsDupToneCurve` | `curve.clone()` (derive Clone) | 自動 |
-| `cmsFreeToneCurve` | (Drop) | 自動 |
+| C版関数                      | Rust版                            | 備考            |
+| ---------------------------- | --------------------------------- | --------------- |
+| `cmsReverseToneCurve`        | `curve.reverse()`                 | 逆カーブ生成    |
+| `cmsReverseToneCurveEx`      | `curve.reverse_with_samples(n)`   | サンプル数指定  |
+| `cmsJoinToneCurve`           | `ToneCurve::join(x, y, n)`        | 合成 Y(X(t))    |
+| `cmsSmoothToneCurve`         | `curve.smooth(lambda)`            | Whittaker平滑化 |
+| `cmsIsToneCurveLinear`       | `curve.is_linear()`               |                 |
+| `cmsIsToneCurveMonotonic`    | `curve.is_monotonic()`            |                 |
+| `cmsIsToneCurveDescending`   | `curve.is_descending()`           |                 |
+| `cmsIsToneCurveMultisegment` | `curve.is_multisegment()`         |                 |
+| `cmsEstimateGamma`           | `curve.estimate_gamma(precision)` | -1.0で失敗      |
+| `cmsDupToneCurve`            | `curve.clone()` (derive Clone)    | 自動            |
+| `cmsFreeToneCurve`           | (Drop)                            | 自動            |
 
 **アクセサ**
 
-| C版関数 | Rust版 |
-| ------------------------------------ | ---------------------------- |
-| `cmsGetToneCurveParametricType` | `curve.parametric_type()` |
-| `cmsGetToneCurveEstimatedTable` | `curve.table16()` |
-| `cmsGetToneCurveEstimatedTableEntries` | `curve.table16_len()` |
-| `cmsGetToneCurveSegment` | `curve.segment(n)` |
+| C版関数                                | Rust版                    |
+| -------------------------------------- | ------------------------- |
+| `cmsGetToneCurveParametricType`        | `curve.parametric_type()` |
+| `cmsGetToneCurveEstimatedTable`        | `curve.table16()`         |
+| `cmsGetToneCurveEstimatedTableEntries` | `curve.table16_len()`     |
+| `cmsGetToneCurveSegment`               | `curve.segment(n)`        |
 
 #### テスト
 
@@ -234,15 +234,15 @@ Robertson等温度データテーブル（31エントリ、`const`配列）。
 
 #### 移植対象関数
 
-| C版関数 | Rust版 | 備考 |
-| ---------------------------------- | ---------------------------------------------------------------- | ----------------------- |
-| `cmsWhitePointFromTemp` | `white_point_from_temp(temp_k: f64) -> Option<CieXyY>` | 4000-25000K |
-| `cmsTempFromWhitePoint` | `temp_from_white_point(wp: &CieXyY) -> Option<f64>` | Robertson法 |
-| `_cmsAdaptationMatrix` | `adaptation_matrix(cone, from, to) -> Option<Mat3>` | None=Bradford |
-| `_cmsBuildRGB2XYZtransferMatrix` | `build_rgb_to_xyz_matrix(wp, primaries) -> Option<Mat3>` | RGB原色→XYZ行列 |
-| `cmsAdaptToIlluminant` | `adapt_to_illuminant(src_wp, illuminant, value) -> Option<CieXyz>` | |
-| `cmsD50_XYZ` | `d50_xyz() -> CieXyz` | |
-| `cmsD50_xyY` | `d50_xyy() -> CieXyY` | |
+| C版関数                          | Rust版                                                             | 備考            |
+| -------------------------------- | ------------------------------------------------------------------ | --------------- |
+| `cmsWhitePointFromTemp`          | `white_point_from_temp(temp_k: f64) -> Option<CieXyY>`             | 4000-25000K     |
+| `cmsTempFromWhitePoint`          | `temp_from_white_point(wp: &CieXyY) -> Option<f64>`                | Robertson法     |
+| `_cmsAdaptationMatrix`           | `adaptation_matrix(cone, from, to) -> Option<Mat3>`                | None=Bradford   |
+| `_cmsBuildRGB2XYZtransferMatrix` | `build_rgb_to_xyz_matrix(wp, primaries) -> Option<Mat3>`           | RGB原色→XYZ行列 |
+| `cmsAdaptToIlluminant`           | `adapt_to_illuminant(src_wp, illuminant, value) -> Option<CieXyz>` |                 |
+| `cmsD50_XYZ`                     | `d50_xyz() -> CieXyz`                                              |                 |
+| `cmsD50_xyY`                     | `d50_xyy() -> CieXyY`                                              |                 |
 
 #### 内部関数
 
@@ -312,12 +312,12 @@ struct Cam02Color { /* xyz, rgb, rgb_c, rgb_p, rgb_pa, a, b, h, big_a, j, c */ }
 
 #### 移植対象関数
 
-| C版関数 | Rust版 | 備考 |
-| -------------------- | ---------------------------------------- | ------------- |
-| `cmsCIECAM02Init` | `CieCam02::new(vc: &ViewingConditions)` | 割り当て失敗なし |
-| `cmsCIECAM02Done` | (Drop) | 自動 |
-| `cmsCIECAM02Forward` | `model.forward(xyz: &CieXyz) -> JCh` | XYZ→JCh |
-| `cmsCIECAM02Reverse` | `model.reverse(jch: &JCh) -> CieXyz` | JCh→XYZ |
+| C版関数              | Rust版                                  | 備考             |
+| -------------------- | --------------------------------------- | ---------------- |
+| `cmsCIECAM02Init`    | `CieCam02::new(vc: &ViewingConditions)` | 割り当て失敗なし |
+| `cmsCIECAM02Done`    | (Drop)                                  | 自動             |
+| `cmsCIECAM02Forward` | `model.forward(xyz: &CieXyz) -> JCh`    | XYZ→JCh          |
+| `cmsCIECAM02Reverse` | `model.reverse(jch: &JCh) -> CieXyz`    | JCh→XYZ          |
 
 #### 変換パイプライン
 
@@ -355,37 +355,37 @@ pub mod cam02;
 
 ## TDDコミット順序
 
-| # | 種別 | コミットメッセージ | 内容 |
-| -- | -------- | ----------------------------------------------------------- | ------------------------------------------------- |
-| 1 | RED | `test(intrp): add 1D interpolation tests` | 1D 16bit/float テスト（`#[ignore]`） |
-| 2 | GREEN | `feat(intrp): implement InterpParams and 1D interpolation` | InterpParams, 1D補間実装 |
-| 3 | RED | `test(intrp): add 3D interpolation tests` | 2D/3D tetrahedral/trilinear テスト（`#[ignore]`） |
-| 4 | GREEN | `feat(intrp): implement 2D bilinear and 3D interpolation` | 2D/3D補間実装 |
-| 5 | RED | `test(intrp): add multi-dimensional interpolation tests` | 4D+ テスト（`#[ignore]`） |
-| 6 | GREEN | `feat(intrp): implement 4D-15D recursive interpolation` | N次元再帰補間 |
-| 7 | RED | `test(gamma): add parametric tone curve tests` | 組み込み型1-8,108,109 テスト（`#[ignore]`） |
-| 8 | GREEN | `feat(gamma): implement parametric tone curves` | CurveSegment, ToneCurve, eval_parametric |
-| 9 | RED | `test(gamma): add tabulated and segmented tone curve tests` | テーブル/セグメントカーブ テスト（`#[ignore]`） |
-| 10 | GREEN | `feat(gamma): implement tabulated and segmented tone curves` | build_tabulated, build_segmented |
-| 11 | RED | `test(gamma): add tone curve utilities tests` | reverse/join/smooth等 テスト（`#[ignore]`） |
-| 12 | GREEN | `feat(gamma): implement tone curve utilities` | reverse, join, smooth, 検査関数 |
-| 13 | RED | `test(wtpnt): add white point and chromatic adaptation tests` | 色温度/Bradford テスト（`#[ignore]`） |
-| 14 | GREEN | `feat(wtpnt): implement white point and chromatic adaptation` | 全関数実装 |
-| 15 | RED | `test(cam02): add CIECAM02 forward and reverse tests` | forward/reverse round-trip テスト（`#[ignore]`） |
-| 16 | GREEN | `feat(cam02): implement CIECAM02 appearance model` | 全モデル実装 |
-| 17 | docs | `docs(plans): update Phase 2 status to IMPLEMENTED` | ステータス更新 |
+| #  | 種別  | コミットメッセージ                                            | 内容                                              |
+| -- | ----- | ------------------------------------------------------------- | ------------------------------------------------- |
+| 1  | RED   | `test(intrp): add 1D interpolation tests`                     | 1D 16bit/float テスト（`#[ignore]`）              |
+| 2  | GREEN | `feat(intrp): implement InterpParams and 1D interpolation`    | InterpParams, 1D補間実装                          |
+| 3  | RED   | `test(intrp): add 3D interpolation tests`                     | 2D/3D tetrahedral/trilinear テスト（`#[ignore]`） |
+| 4  | GREEN | `feat(intrp): implement 2D bilinear and 3D interpolation`     | 2D/3D補間実装                                     |
+| 5  | RED   | `test(intrp): add multi-dimensional interpolation tests`      | 4D+ テスト（`#[ignore]`）                         |
+| 6  | GREEN | `feat(intrp): implement 4D-15D recursive interpolation`       | N次元再帰補間                                     |
+| 7  | RED   | `test(gamma): add parametric tone curve tests`                | 組み込み型1-8,108,109 テスト（`#[ignore]`）       |
+| 8  | GREEN | `feat(gamma): implement parametric tone curves`               | CurveSegment, ToneCurve, eval_parametric          |
+| 9  | RED   | `test(gamma): add tabulated and segmented tone curve tests`   | テーブル/セグメントカーブ テスト（`#[ignore]`）   |
+| 10 | GREEN | `feat(gamma): implement tabulated and segmented tone curves`  | build_tabulated, build_segmented                  |
+| 11 | RED   | `test(gamma): add tone curve utilities tests`                 | reverse/join/smooth等 テスト（`#[ignore]`）       |
+| 12 | GREEN | `feat(gamma): implement tone curve utilities`                 | reverse, join, smooth, 検査関数                   |
+| 13 | RED   | `test(wtpnt): add white point and chromatic adaptation tests` | 色温度/Bradford テスト（`#[ignore]`）             |
+| 14 | GREEN | `feat(wtpnt): implement white point and chromatic adaptation` | 全関数実装                                        |
+| 15 | RED   | `test(cam02): add CIECAM02 forward and reverse tests`         | forward/reverse round-trip テスト（`#[ignore]`）  |
+| 16 | GREEN | `feat(cam02): implement CIECAM02 appearance model`            | 全モデル実装                                      |
+| 17 | docs  | `docs(plans): update Phase 2 status to IMPLEMENTED`           | ステータス更新                                    |
 
 ---
 
 ## 技術的リスクと対策
 
-| リスク | 対策 |
-| -------------------------------- | ------------------------------------------------------------------- |
+| リスク                           | 対策                                                              |
+| -------------------------------- | ----------------------------------------------------------------- |
 | InterpParams + ToneCurve自己参照 | InterpParamsはテーブル非参照。eval時に`&self.table16`を引数で渡す |
-| 16bit固定小数点のオーバーフロー | C版と同一の`i32`演算+明示的キャスト。C版テスト値で検証 |
-| N次元再帰補間（4D-15D） | 再帰関数で次元を1つずつ剥がし、3Dでtetrahedralをbase case |
-| Whittaker平滑化の1-based配列 | C版に合わせて`n+1`要素確保しindex 0を無視（移植正確性を優先） |
-| 浮動小数点精度のC版との差異 | float操作は相対誤差1e-5、固定小数点は完全一致 |
+| 16bit固定小数点のオーバーフロー  | C版と同一の`i32`演算+明示的キャスト。C版テスト値で検証            |
+| N次元再帰補間（4D-15D）          | 再帰関数で次元を1つずつ剥がし、3Dでtetrahedralをbase case         |
+| Whittaker平滑化の1-based配列     | C版に合わせて`n+1`要素確保しindex 0を無視（移植正確性を優先）     |
+| 浮動小数点精度のC版との差異      | float操作は相対誤差1e-5、固定小数点は完全一致                     |
 
 ## Phase 6へ先送りする機能
 
