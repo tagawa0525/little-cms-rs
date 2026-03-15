@@ -1,6 +1,6 @@
 # Phase 4b: コアタグ型ハンドラ
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmstypes.c`（6,252行）のうち簡易型ハンドラ部分
 **Rust見積**: ~1,600行（impl）+ ~1,100行（tests）
 **ブランチ**: `feat/phase4b-tag-types`
