@@ -65,7 +65,10 @@ impl ToneCurve {
     ///
     /// C版: `cmsBuildParametricToneCurve`
     pub fn build_parametric(curve_type: i32, params: &[f64]) -> Option<Self> {
-        let _count = param_count(curve_type)?;
+        let count = param_count(curve_type)?;
+        if params.len() < count {
+            return None;
+        }
 
         let mut seg = CurveSegment {
             x0: MINUS_INF,
