@@ -544,6 +544,150 @@ pub fn write_parametric_curve_type(io: &mut IoHandler, curve: &ToneCurve) -> Res
     Ok(())
 }
 
+// --- Measurement type ---
+// C版: Type_Measurement_Read / Type_Measurement_Write
+
+pub fn read_measurement_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    let mc = IccMeasurementConditions {
+        observer: io.read_u32()?,
+        backing: io.read_xyz()?,
+        geometry: io.read_u32()?,
+        flare: io.read_s15fixed16()?,
+        illuminant_type: io.read_u32()?,
+    };
+    Ok(TagData::Measurement(mc))
+}
+
+pub fn write_measurement_type(
+    io: &mut IoHandler,
+    mc: &IccMeasurementConditions,
+) -> Result<(), CmsError> {
+    io.write_u32(mc.observer)?;
+    io.write_xyz(&mc.backing)?;
+    io.write_u32(mc.geometry)?;
+    io.write_s15fixed16(mc.flare)?;
+    io.write_u32(mc.illuminant_type)?;
+    Ok(())
+}
+
+// --- ViewingConditions type ---
+// C版: Type_ViewingConditions_Read / Type_ViewingConditions_Write
+
+pub fn read_viewing_conditions_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    let vc = IccViewingConditions {
+        illuminant: io.read_xyz()?,
+        surround: io.read_xyz()?,
+        illuminant_type: io.read_u32()?,
+    };
+    Ok(TagData::ViewingConditions(vc))
+}
+
+pub fn write_viewing_conditions_type(
+    io: &mut IoHandler,
+    vc: &IccViewingConditions,
+) -> Result<(), CmsError> {
+    io.write_xyz(&vc.illuminant)?;
+    io.write_xyz(&vc.surround)?;
+    io.write_u32(vc.illuminant_type)?;
+    Ok(())
+}
+
+// --- Chromaticity type ---
+// C版: Type_Chromaticity_Read / Type_Chromaticity_Write
+
+pub fn read_chromaticity_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    let n_chans = io.read_u16()?;
+    if n_chans != 3 {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: format!("Chromaticity channels must be 3, got {}", n_chans),
+        });
+    }
+    let _table = io.read_u16()?; // phosphor type, ignored
+    let chrm = CieXyYTriple {
+        red: CieXyY {
+            x: io.read_s15fixed16()?,
+            y: io.read_s15fixed16()?,
+            big_y: 1.0,
+        },
+        green: CieXyY {
+            x: io.read_s15fixed16()?,
+            y: io.read_s15fixed16()?,
+            big_y: 1.0,
+        },
+        blue: CieXyY {
+            x: io.read_s15fixed16()?,
+            y: io.read_s15fixed16()?,
+            big_y: 1.0,
+        },
+    };
+    Ok(TagData::Chromaticity(chrm))
+}
+
+pub fn write_chromaticity_type(io: &mut IoHandler, chrm: &CieXyYTriple) -> Result<(), CmsError> {
+    io.write_u16(3)?; // channels
+    io.write_u16(0)?; // phosphor type
+    io.write_s15fixed16(chrm.red.x)?;
+    io.write_s15fixed16(chrm.red.y)?;
+    io.write_s15fixed16(chrm.green.x)?;
+    io.write_s15fixed16(chrm.green.y)?;
+    io.write_s15fixed16(chrm.blue.x)?;
+    io.write_s15fixed16(chrm.blue.y)?;
+    Ok(())
+}
+
+// --- Data type ---
+// C版: Type_Data_Read / Type_Data_Write
+
+pub fn read_data_type(io: &mut IoHandler, size: u32) -> Result<TagData, CmsError> {
+    if size < 4 {
+        return Err(IoHandler::read_err());
+    }
+    let flags = io.read_u32()?;
+    let data_len = (size - 4) as usize;
+    let mut data = vec![0u8; data_len];
+    if data_len > 0 && !io.read(&mut data) {
+        return Err(IoHandler::read_err());
+    }
+    Ok(TagData::Data(IccData { flags, data }))
+}
+
+pub fn write_data_type(io: &mut IoHandler, d: &IccData) -> Result<(), CmsError> {
+    io.write_u32(d.flags)?;
+    if !d.data.is_empty() && !io.write(&d.data) {
+        return Err(IoHandler::write_err());
+    }
+    Ok(())
+}
+
+// --- Screening type ---
+// C版: Type_Screening_Read / Type_Screening_Write
+
+pub fn read_screening_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    let flags = io.read_u32()?;
+    let n_channels = io.read_u32()?.min(MAX_CHANNELS as u32 - 1) as usize;
+    let mut channels = Vec::with_capacity(n_channels);
+    for _ in 0..n_channels {
+        channels.push(ScreeningChannel {
+            frequency: io.read_s15fixed16()?,
+            screen_angle: io.read_s15fixed16()?,
+            spot_shape: io.read_u32()?,
+        });
+    }
+    Ok(TagData::Screening(Screening { flags, channels }))
+}
+
+pub fn write_screening_type(io: &mut IoHandler, s: &Screening) -> Result<(), CmsError> {
+    io.write_u32(s.flags)?;
+    io.write_u32(s.channels.len() as u32)?;
+    for ch in &s.channels {
+        io.write_s15fixed16(ch.frequency)?;
+        io.write_s15fixed16(ch.screen_angle)?;
+        io.write_u32(ch.spot_shape)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -875,6 +1019,171 @@ mod tests {
                 assert!((est - 2.2).abs() < 0.1);
             }
             _ => panic!("Expected TagData::Curve"),
+        }
+    }
+
+    // ========================================================================
+    // Measurement type round-trip
+    // ========================================================================
+
+    #[test]
+    fn measurement_type_roundtrip() {
+        let mc = IccMeasurementConditions {
+            observer: 1,
+            backing: CieXyz {
+                x: 0.5,
+                y: 0.5,
+                z: 0.5,
+            },
+            geometry: 2,
+            flare: 0.1,
+            illuminant_type: 3,
+        };
+        let mut io = IoHandler::from_memory_write(256);
+        write_measurement_type(&mut io, &mc).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_measurement_type(&mut io, size).unwrap();
+        match result {
+            TagData::Measurement(read_mc) => {
+                assert_eq!(read_mc.observer, 1);
+                assert_eq!(read_mc.geometry, 2);
+                assert!((read_mc.flare - 0.1).abs() < 1.0 / 65536.0);
+                assert_eq!(read_mc.illuminant_type, 3);
+            }
+            _ => panic!("Expected TagData::Measurement"),
+        }
+    }
+
+    // ========================================================================
+    // ViewingConditions type round-trip
+    // ========================================================================
+
+    #[test]
+    fn viewing_conditions_type_roundtrip() {
+        let vc = IccViewingConditions {
+            illuminant: CieXyz {
+                x: D50_X,
+                y: D50_Y,
+                z: D50_Z,
+            },
+            surround: CieXyz {
+                x: 0.2,
+                y: 0.2,
+                z: 0.2,
+            },
+            illuminant_type: 1,
+        };
+        let mut io = IoHandler::from_memory_write(256);
+        write_viewing_conditions_type(&mut io, &vc).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_viewing_conditions_type(&mut io, size).unwrap();
+        match result {
+            TagData::ViewingConditions(read_vc) => {
+                assert!((read_vc.illuminant.x - D50_X).abs() < 1.0 / 65536.0);
+                assert_eq!(read_vc.illuminant_type, 1);
+            }
+            _ => panic!("Expected TagData::ViewingConditions"),
+        }
+    }
+
+    // ========================================================================
+    // Chromaticity type round-trip
+    // ========================================================================
+
+    #[test]
+    fn chromaticity_type_roundtrip() {
+        let chrm = CieXyYTriple {
+            red: CieXyY {
+                x: 0.64,
+                y: 0.33,
+                big_y: 1.0,
+            },
+            green: CieXyY {
+                x: 0.30,
+                y: 0.60,
+                big_y: 1.0,
+            },
+            blue: CieXyY {
+                x: 0.15,
+                y: 0.06,
+                big_y: 1.0,
+            },
+        };
+        let mut io = IoHandler::from_memory_write(256);
+        write_chromaticity_type(&mut io, &chrm).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_chromaticity_type(&mut io, size).unwrap();
+        match result {
+            TagData::Chromaticity(read_chrm) => {
+                assert!((read_chrm.red.x - 0.64).abs() < 1.0 / 65536.0);
+                assert!((read_chrm.green.y - 0.60).abs() < 1.0 / 65536.0);
+                assert!((read_chrm.blue.x - 0.15).abs() < 1.0 / 65536.0);
+            }
+            _ => panic!("Expected TagData::Chromaticity"),
+        }
+    }
+
+    // ========================================================================
+    // Data type round-trip
+    // ========================================================================
+
+    #[test]
+    fn data_type_roundtrip() {
+        let d = IccData {
+            flags: 0,
+            data: vec![0xCA, 0xFE, 0xBA, 0xBE],
+        };
+        let mut io = IoHandler::from_memory_write(256);
+        write_data_type(&mut io, &d).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_data_type(&mut io, size).unwrap();
+        match result {
+            TagData::Data(read_d) => {
+                assert_eq!(read_d.flags, 0);
+                assert_eq!(read_d.data, vec![0xCA, 0xFE, 0xBA, 0xBE]);
+            }
+            _ => panic!("Expected TagData::Data"),
+        }
+    }
+
+    // ========================================================================
+    // Screening type round-trip
+    // ========================================================================
+
+    #[test]
+    fn screening_type_roundtrip() {
+        let s = Screening {
+            flags: 1,
+            channels: vec![
+                ScreeningChannel {
+                    frequency: 133.0,
+                    screen_angle: 45.0,
+                    spot_shape: 1,
+                },
+                ScreeningChannel {
+                    frequency: 100.0,
+                    screen_angle: 75.0,
+                    spot_shape: 2,
+                },
+            ],
+        };
+        let mut io = IoHandler::from_memory_write(256);
+        write_screening_type(&mut io, &s).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_screening_type(&mut io, size).unwrap();
+        match result {
+            TagData::Screening(read_s) => {
+                assert_eq!(read_s.flags, 1);
+                assert_eq!(read_s.channels.len(), 2);
+                assert!((read_s.channels[0].frequency - 133.0).abs() < 1.0 / 65536.0);
+                assert_eq!(read_s.channels[1].spot_shape, 2);
+            }
+            _ => panic!("Expected TagData::Screening"),
         }
     }
 }
