@@ -38,20 +38,26 @@ impl Default for Mlu {
 
 // ---- Internal helpers ----
 
-fn parse_language_code(s: &str) -> LanguageCode {
+/// Parse a 2-byte ASCII language code. Empty string maps to [0, 0] ("no language").
+/// Returns `None` if the input is not empty and not exactly 2 ASCII bytes.
+fn parse_language_code(s: &str) -> Option<LanguageCode> {
     let b = s.as_bytes();
-    LanguageCode([
-        b.first().copied().unwrap_or(0),
-        b.get(1).copied().unwrap_or(0),
-    ])
+    match b.len() {
+        0 => Some(LanguageCode([0, 0])),
+        2 if b[0].is_ascii() && b[1].is_ascii() => Some(LanguageCode([b[0], b[1]])),
+        _ => None,
+    }
 }
 
-fn parse_country_code(s: &str) -> CountryCode {
+/// Parse a 2-byte ASCII country code. Empty string maps to [0, 0] ("no country").
+/// Returns `None` if the input is not empty and not exactly 2 ASCII bytes.
+fn parse_country_code(s: &str) -> Option<CountryCode> {
     let b = s.as_bytes();
-    CountryCode([
-        b.first().copied().unwrap_or(0),
-        b.get(1).copied().unwrap_or(0),
-    ])
+    match b.len() {
+        0 => Some(CountryCode([0, 0])),
+        2 if b[0].is_ascii() && b[1].is_ascii() => Some(CountryCode([b[0], b[1]])),
+        _ => None,
+    }
 }
 
 fn utf8_to_utf16be(s: &str) -> Vec<u8> {
@@ -90,9 +96,17 @@ impl Mlu {
     }
 
     /// Set UTF-8 text for a language/country pair.
+    ///
+    /// `lang` must be empty or exactly 2 ASCII bytes (ISO 639-1).
+    /// `country` must be empty or exactly 2 ASCII bytes (ISO 3166-1).
+    /// Returns `false` if the codes are invalid.
     pub fn set_utf8(&mut self, lang: &str, country: &str, text: &str) -> bool {
-        let language = parse_language_code(lang);
-        let ctry = parse_country_code(country);
+        let Some(language) = parse_language_code(lang) else {
+            return false;
+        };
+        let Some(ctry) = parse_country_code(country) else {
+            return false;
+        };
         let encoded = utf8_to_utf16be(text);
 
         // Overwrite existing entry for same language/country
@@ -159,8 +173,8 @@ impl Mlu {
         if self.entries.is_empty() {
             return None;
         }
-        let language = parse_language_code(lang);
-        let ctry = parse_country_code(country);
+        let language = parse_language_code(lang).unwrap_or(LanguageCode([0, 0]));
+        let ctry = parse_country_code(country).unwrap_or(CountryCode([0, 0]));
 
         // 1. Exact match
         if let Some(i) = self
