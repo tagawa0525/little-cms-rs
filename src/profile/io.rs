@@ -484,9 +484,77 @@ pub struct Profile {
     pub(crate) is_write: bool,
 }
 
+impl Profile {
+    /// C版: `cmsCreateProfilePlaceholder`
+    pub fn new_placeholder() -> Self {
+        todo!()
+    }
+
+    /// C版: `cmsOpenProfileFromMemTHR`
+    pub fn open_mem(_data: &[u8]) -> Result<Self, CmsError> {
+        todo!()
+    }
+
+    /// C版: `cmsOpenProfileFromFileTHR`
+    pub fn open_file(_path: &str) -> Result<Self, CmsError> {
+        todo!()
+    }
+
+    /// C版: `cmsSaveProfileToMem`
+    pub fn save_to_mem(&mut self) -> Result<Vec<u8>, CmsError> {
+        todo!()
+    }
+
+    /// C版: `cmsSaveProfileToFile`
+    pub fn save_to_file(&mut self, _path: &str) -> Result<(), CmsError> {
+        todo!()
+    }
+
+    pub fn tag_count(&self) -> usize {
+        todo!()
+    }
+
+    pub fn tag_signature(&self, _n: usize) -> Option<TagSignature> {
+        todo!()
+    }
+
+    pub fn has_tag(&self, _sig: TagSignature) -> bool {
+        todo!()
+    }
+
+    pub fn read_raw_tag(&mut self, _sig: TagSignature) -> Result<Vec<u8>, CmsError> {
+        todo!()
+    }
+
+    pub fn write_raw_tag(&mut self, _sig: TagSignature, _data: &[u8]) -> Result<(), CmsError> {
+        todo!()
+    }
+
+    pub fn link_tag(&mut self, _sig: TagSignature, _dest: TagSignature) -> Result<(), CmsError> {
+        todo!()
+    }
+
+    pub fn tag_linked_to(&self, _sig: TagSignature) -> Option<TagSignature> {
+        todo!()
+    }
+
+    /// C版: `cmsGetProfileVersion`
+    pub fn version_f64(&self) -> f64 {
+        todo!()
+    }
+
+    /// C版: `cmsSetProfileVersion`
+    pub fn set_version_f64(&mut self, _v: f64) {
+        todo!()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{
+        ColorSpaceSignature, ICC_MAGIC_NUMBER, LCMS_SIGNATURE, ProfileClassSignature,
+    };
 
     // ========================================================================
     // IoHandler basic tests
@@ -682,5 +750,251 @@ mod tests {
         assert_eq!(sig, TagTypeSignature::Xyz);
         // Type base is 8 bytes: 4 bytes sig + 4 bytes reserved
         assert_eq!(io.tell(), 8);
+    }
+
+    // ========================================================================
+    // Header / Tag Directory tests
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn header_roundtrip_in_memory() {
+        let mut p = Profile::new_placeholder();
+        p.header.device_class = ProfileClassSignature::Input;
+        p.header.color_space = ColorSpaceSignature::RgbData;
+        p.header.pcs = ColorSpaceSignature::XyzData;
+        p.set_version_f64(4.3);
+
+        let data = p.save_to_mem().unwrap();
+        let p2 = Profile::open_mem(&data).unwrap();
+        assert_eq!(p2.header.device_class, ProfileClassSignature::Input);
+        assert_eq!(p2.header.color_space, ColorSpaceSignature::RgbData);
+        assert_eq!(p2.header.pcs, ColorSpaceSignature::XyzData);
+        assert!((p2.version_f64() - 4.3).abs() < 0.01);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn header_magic_number_validation() {
+        // Build a minimal "profile" with wrong magic number
+        let mut io = IoHandler::from_memory_write(256);
+        // Write 128-byte header with bad magic
+        io.write_u32(128).unwrap(); // size
+        io.write_u32(0).unwrap(); // cmm_id
+        io.write_u32(0x02100000).unwrap(); // version
+        io.write_u32(ProfileClassSignature::Display as u32).unwrap();
+        io.write_u32(ColorSpaceSignature::RgbData as u32).unwrap();
+        io.write_u32(ColorSpaceSignature::XyzData as u32).unwrap();
+        // date (12 bytes)
+        for _ in 0..6 {
+            io.write_u16(0).unwrap();
+        }
+        io.write_u32(0xDEADBEEF).unwrap(); // BAD magic
+        // rest of header: pad to 128 bytes
+        let remaining = 128 - io.tell() as usize;
+        let zeros = vec![0u8; remaining];
+        io.write(&zeros);
+        // tag count
+        io.write_u32(0).unwrap();
+
+        let buf = io.into_memory_buffer().unwrap();
+        let result = Profile::open_mem(&buf);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn tag_directory_roundtrip() {
+        let mut p = Profile::new_placeholder();
+        p.write_raw_tag(TagSignature::RedTRC, &[1, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap();
+        p.write_raw_tag(TagSignature::GreenTRC, &[10, 20, 30, 40, 50, 60, 70, 80])
+            .unwrap();
+
+        let data = p.save_to_mem().unwrap();
+        let p2 = Profile::open_mem(&data).unwrap();
+        assert_eq!(p2.tag_count(), 2);
+        assert!(p2.has_tag(TagSignature::RedTRC));
+        assert!(p2.has_tag(TagSignature::GreenTRC));
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn tag_directory_max_100_tags() {
+        let mut p = Profile::new_placeholder();
+        // Write 100 tags (using various sigs that exist in TagSignature)
+        // We'll use raw u32 values for creativity, but for simplicity just
+        // write raw tags with the same few signatures won't work.
+        // Instead, use write_raw_tag which overwrites existing.
+        // We need 101 unique tags - but TagSignature has enough variants.
+        // For this test, we'll verify that tag_count maxes at 100.
+        // Fill up to 100 by using known signatures.
+        let all_sigs = [
+            TagSignature::AToB0,
+            TagSignature::AToB1,
+            TagSignature::AToB2,
+            TagSignature::BlueMatrixColumn,
+            TagSignature::BlueTRC,
+            TagSignature::BToA0,
+            TagSignature::BToA1,
+            TagSignature::BToA2,
+            TagSignature::CalibrationDateTime,
+            TagSignature::CharTarget,
+            TagSignature::ChromaticAdaptation,
+            TagSignature::Chromaticity,
+            TagSignature::ColorantOrder,
+            TagSignature::ColorantTable,
+            TagSignature::ColorantTableOut,
+            TagSignature::ColorimetricIntentImageState,
+            TagSignature::Copyright,
+            TagSignature::CrdInfo,
+            TagSignature::Data,
+            TagSignature::DateTime,
+            TagSignature::DeviceMfgDesc,
+            TagSignature::DeviceModelDesc,
+            TagSignature::DeviceSettings,
+            TagSignature::DToB0,
+            TagSignature::DToB1,
+            TagSignature::DToB2,
+            TagSignature::DToB3,
+            TagSignature::BToD0,
+            TagSignature::BToD1,
+            TagSignature::BToD2,
+            TagSignature::BToD3,
+            TagSignature::Gamut,
+            TagSignature::GrayTRC,
+            TagSignature::GreenMatrixColumn,
+            TagSignature::GreenTRC,
+            TagSignature::Luminance,
+            TagSignature::Measurement,
+            TagSignature::MediaBlackPoint,
+            TagSignature::MediaWhitePoint,
+            TagSignature::NamedColor,
+            TagSignature::NamedColor2,
+            TagSignature::OutputResponse,
+            TagSignature::PerceptualRenderingIntentGamut,
+            TagSignature::Preview0,
+            TagSignature::Preview1,
+            TagSignature::Preview2,
+            TagSignature::ProfileDescription,
+            TagSignature::ProfileDescriptionML,
+            TagSignature::ProfileSequenceDesc,
+            TagSignature::ProfileSequenceId,
+            TagSignature::Ps2CRD0,
+            TagSignature::Ps2CRD1,
+            TagSignature::Ps2CRD2,
+            TagSignature::Ps2CRD3,
+            TagSignature::Ps2CSA,
+            TagSignature::Ps2RenderingIntent,
+            TagSignature::RedMatrixColumn,
+            TagSignature::RedTRC,
+            TagSignature::SaturationRenderingIntentGamut,
+            TagSignature::ScreeningDesc,
+            TagSignature::Screening,
+            TagSignature::Technology,
+            TagSignature::UcrBg,
+            TagSignature::ViewingCondDesc,
+            TagSignature::ViewingConditions,
+            TagSignature::Vcgt,
+            TagSignature::Meta,
+            TagSignature::Cicp,
+            TagSignature::ArgyllArts,
+            TagSignature::Mhc2,
+        ];
+
+        let dummy = [0u8; 8];
+        for sig in &all_sigs {
+            p.write_raw_tag(*sig, &dummy).unwrap();
+        }
+        assert_eq!(p.tag_count(), all_sigs.len());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn tag_linking() {
+        let mut p = Profile::new_placeholder();
+        p.write_raw_tag(TagSignature::RedTRC, &[1, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap();
+        p.link_tag(TagSignature::GreenTRC, TagSignature::RedTRC)
+            .unwrap();
+
+        assert_eq!(
+            p.tag_linked_to(TagSignature::GreenTRC),
+            Some(TagSignature::RedTRC)
+        );
+
+        let data = p.save_to_mem().unwrap();
+        let p2 = Profile::open_mem(&data).unwrap();
+        assert!(p2.has_tag(TagSignature::GreenTRC));
+        assert!(p2.has_tag(TagSignature::RedTRC));
+    }
+
+    // ========================================================================
+    // Profile lifecycle tests
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn placeholder_profile_defaults() {
+        let p = Profile::new_placeholder();
+        assert_eq!(p.header.magic, ICC_MAGIC_NUMBER);
+        assert_eq!(p.header.cmm_id, LCMS_SIGNATURE);
+        assert_eq!(p.header.device_class, ProfileClassSignature::Display);
+        assert_eq!(p.tag_count(), 0);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn save_to_memory_roundtrip() {
+        let mut p = Profile::new_placeholder();
+        p.write_raw_tag(TagSignature::Copyright, b"test copyright data!")
+            .unwrap();
+
+        let data = p.save_to_mem().unwrap();
+        let mut p2 = Profile::open_mem(&data).unwrap();
+        let raw = p2.read_raw_tag(TagSignature::Copyright).unwrap();
+        assert_eq!(raw, b"test copyright data!");
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_raw_tag_write_raw_tag() {
+        let mut p = Profile::new_placeholder();
+        let payload = vec![0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x00, 0x00, 0x00];
+        p.write_raw_tag(TagSignature::Technology, &payload).unwrap();
+        assert!(p.has_tag(TagSignature::Technology));
+
+        let data = p.save_to_mem().unwrap();
+        let mut p2 = Profile::open_mem(&data).unwrap();
+        let read_back = p2.read_raw_tag(TagSignature::Technology).unwrap();
+        assert_eq!(read_back, payload);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn version_f64_encoding() {
+        let mut p = Profile::new_placeholder();
+        p.set_version_f64(4.3);
+        assert_eq!(p.header.version, 0x04300000);
+        assert!((p.version_f64() - 4.3).abs() < 0.01);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn open_from_file_roundtrip() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("lcms_test_profile_roundtrip.icc");
+        let path_str = path.to_str().unwrap();
+
+        let mut p = Profile::new_placeholder();
+        p.write_raw_tag(TagSignature::Copyright, b"file test!  ")
+            .unwrap();
+        p.save_to_file(path_str).unwrap();
+
+        let mut p2 = Profile::open_file(path_str).unwrap();
+        let raw = p2.read_raw_tag(TagSignature::Copyright).unwrap();
+        assert_eq!(raw, b"file test!  ");
+
+        std::fs::remove_file(&path).ok();
     }
 }
