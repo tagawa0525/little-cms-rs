@@ -426,69 +426,146 @@ impl Stage {
     // --- Special stage constructors ---
 
     /// C版: `_cmsStageAllocLab2XYZ`
-    #[allow(dead_code)]
     pub fn new_lab_to_xyz() -> Option<Self> {
-        todo!()
+        Some(Stage {
+            stage_type: StageSignature::Lab2XyzElem,
+            implements: StageSignature::Lab2XyzElem,
+            input_channels: 3,
+            output_channels: 3,
+            data: StageData::None,
+        })
     }
 
     /// C版: `_cmsStageAllocXYZ2Lab`
-    #[allow(dead_code)]
     pub fn new_xyz_to_lab() -> Option<Self> {
-        todo!()
+        Some(Stage {
+            stage_type: StageSignature::Xyz2LabElem,
+            implements: StageSignature::Xyz2LabElem,
+            input_channels: 3,
+            output_channels: 3,
+            data: StageData::None,
+        })
     }
 
     /// C版: `_cmsStageClipNegatives`
-    #[allow(dead_code)]
-    pub fn new_clip_negatives(_n: u32) -> Option<Self> {
-        todo!()
+    pub fn new_clip_negatives(n: u32) -> Option<Self> {
+        if n == 0 {
+            return None;
+        }
+        Some(Stage {
+            stage_type: StageSignature::ClipNegativesElem,
+            implements: StageSignature::ClipNegativesElem,
+            input_channels: n,
+            output_channels: n,
+            data: StageData::None,
+        })
     }
 
+    /// Matrix-based Lab V2→V4 conversion (65535/65280 scaling).
+    ///
     /// C版: `_cmsStageAllocLabV2ToV4`
-    #[allow(dead_code)]
     pub fn new_lab_v2_to_v4() -> Option<Self> {
-        todo!()
+        let scale = 65535.0 / 65280.0;
+        let matrix = [scale, 0.0, 0.0, 0.0, scale, 0.0, 0.0, 0.0, scale];
+        let mut stage = Self::new_matrix(3, 3, &matrix, None)?;
+        stage.implements = StageSignature::LabV2toV4;
+        Some(stage)
     }
 
+    /// Matrix-based Lab V4→V2 conversion (65280/65535 scaling).
+    ///
     /// C版: `_cmsStageAllocLabV4ToV2`
-    #[allow(dead_code)]
     pub fn new_lab_v4_to_v2() -> Option<Self> {
-        todo!()
+        let scale = 65280.0 / 65535.0;
+        let matrix = [scale, 0.0, 0.0, 0.0, scale, 0.0, 0.0, 0.0, scale];
+        let mut stage = Self::new_matrix(3, 3, &matrix, None)?;
+        stage.implements = StageSignature::LabV4toV2;
+        Some(stage)
     }
 
+    /// Curve-based Lab V2→V4 conversion (258-entry tables).
+    ///
     /// C版: `_cmsStageAllocLabV2ToV4curves`
-    #[allow(dead_code)]
     pub fn new_lab_v2_to_v4_curves() -> Option<Self> {
-        todo!()
+        let mut tables = [[0u16; 258]; 3];
+        for table in &mut tables {
+            for (i, entry) in table[..257].iter_mut().enumerate() {
+                *entry = ((i as u32 * 0xffff + 0x80) >> 8) as u16;
+            }
+            table[257] = 0xffff;
+        }
+        let c0 = ToneCurve::build_tabulated_16(&tables[0])?;
+        let c1 = ToneCurve::build_tabulated_16(&tables[1])?;
+        let c2 = ToneCurve::build_tabulated_16(&tables[2])?;
+        let mut stage = Self::new_tone_curves(Some(&[c0, c1, c2]), 3)?;
+        stage.implements = StageSignature::LabV2toV4;
+        Some(stage)
     }
 
+    /// Normalize Lab float values to [0..1] range.
+    /// L: /100, a,b: (+128)/255
+    ///
     /// C版: `_cmsStageNormalizeFromLabFloat`
-    #[allow(dead_code)]
     pub fn new_normalize_from_lab_float() -> Option<Self> {
-        todo!()
+        let matrix = [
+            1.0 / 100.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0 / 255.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0 / 255.0,
+        ];
+        let offset = [0.0, 128.0 / 255.0, 128.0 / 255.0];
+        let mut stage = Self::new_matrix(3, 3, &matrix, Some(&offset))?;
+        stage.implements = StageSignature::Lab2FloatPCS;
+        Some(stage)
     }
 
+    /// Denormalize [0..1] range back to Lab float values.
+    /// L: *100, a,b: *255 - 128
+    ///
     /// C版: `_cmsStageNormalizeToLabFloat`
-    #[allow(dead_code)]
     pub fn new_normalize_to_lab_float() -> Option<Self> {
-        todo!()
+        let matrix = [100.0, 0.0, 0.0, 0.0, 255.0, 0.0, 0.0, 0.0, 255.0];
+        let offset = [0.0, -128.0, -128.0];
+        let mut stage = Self::new_matrix(3, 3, &matrix, Some(&offset))?;
+        stage.implements = StageSignature::FloatPCS2Lab;
+        Some(stage)
     }
 
+    /// Normalize XYZ to float PCS (multiply by 32768/65535).
+    ///
     /// C版: `_cmsStageNormalizeFromXyzFloat`
-    #[allow(dead_code)]
     pub fn new_normalize_from_xyz_float() -> Option<Self> {
-        todo!()
+        let n = 32768.0 / 65535.0;
+        let matrix = [n, 0.0, 0.0, 0.0, n, 0.0, 0.0, 0.0, n];
+        let mut stage = Self::new_matrix(3, 3, &matrix, None)?;
+        stage.implements = StageSignature::Xyz2FloatPCS;
+        Some(stage)
     }
 
+    /// Denormalize float PCS back to XYZ (multiply by 65535/32768).
+    ///
     /// C版: `_cmsStageNormalizeToXyzFloat`
-    #[allow(dead_code)]
     pub fn new_normalize_to_xyz_float() -> Option<Self> {
-        todo!()
+        let n = 65535.0 / 32768.0;
+        let matrix = [n, 0.0, 0.0, 0.0, n, 0.0, 0.0, 0.0, n];
+        let mut stage = Self::new_matrix(3, 3, &matrix, None)?;
+        stage.implements = StageSignature::FloatPCS2Xyz;
+        Some(stage)
     }
 
+    /// Lab prelinearization curves (identity for L, S-shaped for a/b).
+    ///
     /// C版: `_cmsStageAllocLabPrelin`
-    #[allow(dead_code)]
     pub fn new_lab_prelin() -> Option<Self> {
-        todo!()
+        let c_l = ToneCurve::build_gamma(1.0)?;
+        let c_a = ToneCurve::build_parametric(108, &[2.4])?;
+        let c_b = ToneCurve::build_parametric(108, &[2.4])?;
+        Self::new_tone_curves(Some(&[c_l, c_a, c_b]), 3)
     }
 
     // --- Evaluation ---
@@ -816,16 +893,108 @@ impl Pipeline {
     /// Evaluate the pipeline in reverse using Newton's method.
     ///
     /// Only works for 3→3 or 4→3 pipelines.
+    /// Returns `true` if convergence was achieved.
     ///
     /// C版: `cmsPipelineEvalReverseFloat`
-    #[allow(dead_code)]
     pub fn eval_reverse_float(
         &self,
-        _target: &[f32],
-        _result: &mut [f32],
-        _hint: Option<&[f32]>,
+        target: &[f32],
+        result: &mut [f32],
+        hint: Option<&[f32]>,
     ) -> bool {
-        todo!()
+        use crate::math::mtrx::{Mat3, Vec3};
+
+        const JACOBIAN_EPSILON: f32 = 0.001;
+        const MAX_ITERATIONS: usize = 30;
+
+        if self.input_channels != 3 && self.input_channels != 4 {
+            return false;
+        }
+        if self.output_channels != 3 {
+            return false;
+        }
+
+        let mut x = [0.0f32; 4];
+        match hint {
+            Some(h) => {
+                x[0] = h[0];
+                x[1] = h[1];
+                x[2] = h[2];
+            }
+            None => {
+                x[0] = 0.3;
+                x[1] = 0.3;
+                x[2] = 0.3;
+            }
+        }
+        if self.input_channels == 4 {
+            x[3] = target[3];
+        }
+
+        let mut last_error: f64 = 1e20;
+
+        for _ in 0..MAX_ITERATIONS {
+            let mut fx = [0.0f32; 4];
+            self.eval_float(&x, &mut fx);
+
+            let error = {
+                let mut sum = 0.0f64;
+                for i in 0..3 {
+                    let d = (fx[i] - target[i]) as f64;
+                    sum += d * d;
+                }
+                sum.sqrt()
+            };
+
+            if error >= last_error {
+                break;
+            }
+
+            last_error = error;
+            result[..self.input_channels as usize]
+                .copy_from_slice(&x[..self.input_channels as usize]);
+
+            if error <= 0.0 {
+                break;
+            }
+
+            // Build Jacobian
+            let mut jacobian = Mat3::identity();
+            for j in 0..3 {
+                let mut xd = x;
+                if xd[j] < 1.0 - JACOBIAN_EPSILON {
+                    xd[j] += JACOBIAN_EPSILON;
+                } else {
+                    xd[j] -= JACOBIAN_EPSILON;
+                }
+                let mut fxd = [0.0f32; 4];
+                self.eval_float(&xd, &mut fxd);
+
+                jacobian.0[0].0[j] = ((fxd[0] - fx[0]) / JACOBIAN_EPSILON) as f64;
+                jacobian.0[1].0[j] = ((fxd[1] - fx[1]) / JACOBIAN_EPSILON) as f64;
+                jacobian.0[2].0[j] = ((fxd[2] - fx[2]) / JACOBIAN_EPSILON) as f64;
+            }
+
+            let residual = Vec3::new(
+                (fx[0] - target[0]) as f64,
+                (fx[1] - target[1]) as f64,
+                (fx[2] - target[2]) as f64,
+            );
+
+            let Some(delta) = jacobian.solve(&residual) else {
+                return false;
+            };
+
+            x[0] -= delta.0[0] as f32;
+            x[1] -= delta.0[1] as f32;
+            x[2] -= delta.0[2] as f32;
+
+            for v in &mut x[..3] {
+                *v = v.clamp(0.0, 1.0);
+            }
+        }
+
+        true
     }
 
     /// Update pipeline input/output channels from first/last stage.
@@ -1574,7 +1743,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn stage_lab_to_xyz_roundtrip() {
         let lab2xyz = Stage::new_lab_to_xyz().unwrap();
         let xyz2lab = Stage::new_xyz_to_lab().unwrap();
@@ -1597,7 +1766,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn stage_clip_negatives() {
         let stage = Stage::new_clip_negatives(3).unwrap();
         let input = [-0.5f32, 0.0, 0.5];
@@ -1609,7 +1778,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn stage_lab_v2_v4_roundtrip() {
         let v2_to_v4 = Stage::new_lab_v2_to_v4().unwrap();
         let v4_to_v2 = Stage::new_lab_v4_to_v2().unwrap();
@@ -1631,7 +1800,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn stage_normalize_lab_float_roundtrip() {
         let norm_from = Stage::new_normalize_from_lab_float().unwrap();
         let norm_to = Stage::new_normalize_to_lab_float().unwrap();
@@ -1654,7 +1823,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn stage_normalize_xyz_float_roundtrip() {
         let norm_from = Stage::new_normalize_from_xyz_float().unwrap();
         let norm_to = Stage::new_normalize_to_xyz_float().unwrap();
@@ -1680,7 +1849,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn sample_clut_16bit_identity() {
         let mut stage = Stage::new_clut_16bit_uniform(2, 3, 3, None).unwrap();
         // Fill with identity
@@ -1703,7 +1872,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn sample_clut_16bit_inspect() {
         let mut stage = Stage::new_clut_16bit_uniform(2, 3, 3, None).unwrap();
         // Fill first
@@ -1730,7 +1899,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn slice_space_16_all_nodes() {
         let points = [3u32, 2];
         let mut count = 0u32;
@@ -1747,7 +1916,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn pipeline_eval_reverse_float_identity() {
         let mut p = Pipeline::new(3, 3).unwrap();
         p.insert_stage(StageLoc::AtEnd, Stage::new_identity(3).unwrap());
@@ -1767,7 +1936,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn pipeline_eval_reverse_3to3() {
         // Scale by 2 pipeline, reverse should give half
         let mut p = Pipeline::new(3, 3).unwrap();
@@ -1787,7 +1956,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn pipeline_eval_reverse_wrong_dims() {
         // 2→2 pipeline — reverse should fail
         let mut p = Pipeline::new(2, 2).unwrap();
