@@ -186,8 +186,8 @@ pub(crate) fn quick_saturate_word(d: f64) -> u16 {
 /// `a` is fractional weight (0..0xFFFF), `l` and `h` are the low and high values.
 #[inline]
 fn linear_interp(a: i32, l: i32, h: i32) -> u16 {
-    let dif = (h - l) * a + 0x8000;
-    let res = (dif >> 16) + l;
+    let dif = (h - l) as i64 * a as i64 + 0x8000;
+    let res = (dif >> 16) as i32 + l;
     res as u16
 }
 
@@ -573,8 +573,8 @@ fn tetrahedral_interp_16(input: &[u16], output: &mut [u16], p: &InterpParams, ta
             )
         };
 
-        let rest = c1 * rx + c2 * ry + c3 * rz + 0x8001;
-        output[i] = (c0 + ((rest + (rest >> 16)) >> 16)) as u16;
+        let rest = c1 as i64 * rx as i64 + c2 as i64 * ry as i64 + c3 as i64 * rz as i64 + 0x8001;
+        output[i] = (c0 + ((rest + (rest >> 16)) >> 16) as i32) as u16;
     }
 }
 

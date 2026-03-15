@@ -37,6 +37,11 @@ fn from_16_to_float(input: &[u16], output: &mut [f32]) {
     }
 }
 
+/// Flag for sampling: write results back to CLUT table.
+pub const SAMPLER_WRITE: u32 = 0;
+/// Flag for sampling: inspect only, do not write back.
+pub const SAMPLER_INSPECT: u32 = 1;
+
 // ============================================================================
 // StageData
 // ============================================================================
@@ -265,61 +270,157 @@ impl Stage {
     /// Create a 16-bit CLUT stage with per-dimension grid sizes.
     ///
     /// C版: `cmsStageAllocCLut16bitGranular`
-    #[allow(dead_code)]
     pub fn new_clut_16bit(
-        _grid_points: &[u32],
-        _input_channels: u32,
-        _output_channels: u32,
-        _table: Option<&[u16]>,
+        grid_points: &[u32],
+        input_channels: u32,
+        output_channels: u32,
+        table: Option<&[u16]>,
     ) -> Option<Self> {
-        todo!()
+        use crate::curves::intrp::{LERP_FLAGS_16BITS, MAX_INPUT_DIMENSIONS};
+
+        if input_channels as usize > MAX_INPUT_DIMENSIONS {
+            return None;
+        }
+        if input_channels == 0 || output_channels == 0 {
+            return None;
+        }
+
+        let total_nodes = cube_size(grid_points, input_channels)?;
+        let n_entries = output_channels.checked_mul(total_nodes)?;
+
+        let data = match table {
+            Some(t) => {
+                let mut v = vec![0u16; n_entries as usize];
+                let copy_len = t.len().min(n_entries as usize);
+                v[..copy_len].copy_from_slice(&t[..copy_len]);
+                v
+            }
+            None => vec![0u16; n_entries as usize],
+        };
+
+        let params = InterpParams::compute(
+            grid_points,
+            input_channels,
+            output_channels,
+            LERP_FLAGS_16BITS,
+        )?;
+
+        Some(Stage {
+            stage_type: StageSignature::CLutElem,
+            implements: StageSignature::CLutElem,
+            input_channels,
+            output_channels,
+            data: StageData::CLut(CLutData {
+                params,
+                table: CLutTable::U16(data),
+                n_entries,
+            }),
+        })
     }
 
     /// Create a 16-bit CLUT stage with uniform grid.
     ///
     /// C版: `cmsStageAllocCLut16bit`
-    #[allow(dead_code)]
     pub fn new_clut_16bit_uniform(
-        _grid_points: u32,
-        _input_channels: u32,
-        _output_channels: u32,
-        _table: Option<&[u16]>,
+        grid_points: u32,
+        input_channels: u32,
+        output_channels: u32,
+        table: Option<&[u16]>,
     ) -> Option<Self> {
-        todo!()
+        use crate::curves::intrp::MAX_INPUT_DIMENSIONS;
+
+        let dims = [grid_points; MAX_INPUT_DIMENSIONS];
+        Self::new_clut_16bit(&dims, input_channels, output_channels, table)
     }
 
     /// Create a float CLUT stage with per-dimension grid sizes.
     ///
     /// C版: `cmsStageAllocCLutFloatGranular`
-    #[allow(dead_code)]
     pub fn new_clut_float(
-        _grid_points: &[u32],
-        _input_channels: u32,
-        _output_channels: u32,
-        _table: Option<&[f32]>,
+        grid_points: &[u32],
+        input_channels: u32,
+        output_channels: u32,
+        table: Option<&[f32]>,
     ) -> Option<Self> {
-        todo!()
+        use crate::curves::intrp::{LERP_FLAGS_FLOAT, MAX_INPUT_DIMENSIONS};
+
+        if input_channels as usize > MAX_INPUT_DIMENSIONS {
+            return None;
+        }
+        if input_channels == 0 || output_channels == 0 {
+            return None;
+        }
+
+        let total_nodes = cube_size(grid_points, input_channels)?;
+        let n_entries = output_channels.checked_mul(total_nodes)?;
+
+        let data = match table {
+            Some(t) => {
+                let mut v = vec![0.0f32; n_entries as usize];
+                let copy_len = t.len().min(n_entries as usize);
+                v[..copy_len].copy_from_slice(&t[..copy_len]);
+                v
+            }
+            None => vec![0.0f32; n_entries as usize],
+        };
+
+        let params = InterpParams::compute(
+            grid_points,
+            input_channels,
+            output_channels,
+            LERP_FLAGS_FLOAT,
+        )?;
+
+        Some(Stage {
+            stage_type: StageSignature::CLutElem,
+            implements: StageSignature::CLutElem,
+            input_channels,
+            output_channels,
+            data: StageData::CLut(CLutData {
+                params,
+                table: CLutTable::Float(data),
+                n_entries,
+            }),
+        })
     }
 
     /// Create a float CLUT stage with uniform grid.
     ///
     /// C版: `cmsStageAllocCLutFloat`
-    #[allow(dead_code)]
     pub fn new_clut_float_uniform(
-        _grid_points: u32,
-        _input_channels: u32,
-        _output_channels: u32,
-        _table: Option<&[f32]>,
+        grid_points: u32,
+        input_channels: u32,
+        output_channels: u32,
+        table: Option<&[f32]>,
     ) -> Option<Self> {
-        todo!()
+        use crate::curves::intrp::MAX_INPUT_DIMENSIONS;
+
+        let dims = [grid_points; MAX_INPUT_DIMENSIONS];
+        Self::new_clut_float(&dims, input_channels, output_channels, table)
     }
 
     /// Create an identity CLUT (2-point grid, input = output).
     ///
     /// C版: `_cmsStageAllocIdentityCLut`
-    #[allow(dead_code)]
-    pub fn new_identity_clut(_n: u32) -> Option<Self> {
-        todo!()
+    pub fn new_identity_clut(n: u32) -> Option<Self> {
+        use crate::curves::intrp::MAX_INPUT_DIMENSIONS;
+
+        let dims = [2u32; MAX_INPUT_DIMENSIONS];
+        let mut stage = Self::new_clut_16bit(&dims, n, n, None)?;
+
+        // Fill with identity via sampling
+        let n_chan = n;
+        sample_clut_16bit(
+            &mut stage,
+            |input, output, _| {
+                output[..n_chan as usize].copy_from_slice(&input[..n_chan as usize]);
+                true
+            },
+            SAMPLER_WRITE,
+        );
+
+        stage.implements = StageSignature::IdentityElem;
+        Some(stage)
     }
 
     // --- Evaluation ---
@@ -455,6 +556,188 @@ impl Stage {
         output[1] = ((lab.a + 128.0) / 255.0) as f32;
         output[2] = ((lab.b + 128.0) / 255.0) as f32;
     }
+}
+
+// ============================================================================
+// CLUT Sampling
+// ============================================================================
+
+/// Sample (iterate over) all nodes of a 16-bit CLUT, calling `sampler` for each.
+///
+/// The sampler receives `(input, output, cargo)` where input is the quantized
+/// node position and output is the current table values. If `flags` does not
+/// include `SAMPLER_INSPECT`, the sampler's output is written back to the table.
+///
+/// C版: `cmsStageSampleCLut16bit`
+#[allow(dead_code)]
+pub fn sample_clut_16bit<F>(stage: &mut Stage, mut sampler: F, flags: u32) -> bool
+where
+    F: FnMut(&[u16], &mut [u16], &()) -> bool,
+{
+    let StageData::CLut(clut) = &mut stage.data else {
+        return false;
+    };
+    let CLutTable::U16(table) = &mut clut.table else {
+        return false;
+    };
+
+    let n_inputs = clut.params.n_inputs as usize;
+    let n_outputs = clut.params.n_outputs as usize;
+    let n_samples = &clut.params.n_samples;
+
+    let total_nodes = match cube_size(n_samples, n_inputs as u32) {
+        Some(n) => n as usize,
+        None => return false,
+    };
+
+    let mut input = [0u16; intrp::MAX_INPUT_DIMENSIONS + 1];
+    let mut output = [0u16; intrp::MAX_STAGE_CHANNELS];
+    let mut index = 0;
+
+    for i in 0..total_nodes {
+        let mut rest = i;
+        for t in (0..n_inputs).rev() {
+            let colorant = rest % n_samples[t] as usize;
+            rest /= n_samples[t] as usize;
+            input[t] = quantize_val(colorant as f64, n_samples[t]);
+        }
+
+        output[..n_outputs].copy_from_slice(&table[index..index + n_outputs]);
+
+        if !sampler(&input[..n_inputs], &mut output[..n_outputs], &()) {
+            return false;
+        }
+
+        if flags & SAMPLER_INSPECT == 0 {
+            table[index..index + n_outputs].copy_from_slice(&output[..n_outputs]);
+        }
+
+        index += n_outputs;
+    }
+
+    true
+}
+
+/// Sample (iterate over) all nodes of a float CLUT.
+///
+/// C版: `cmsStageSampleCLutFloat`
+#[allow(dead_code)]
+pub fn sample_clut_float<F>(stage: &mut Stage, mut sampler: F, flags: u32) -> bool
+where
+    F: FnMut(&[f32], &mut [f32], &()) -> bool,
+{
+    let StageData::CLut(clut) = &mut stage.data else {
+        return false;
+    };
+    let CLutTable::Float(table) = &mut clut.table else {
+        return false;
+    };
+
+    let n_inputs = clut.params.n_inputs as usize;
+    let n_outputs = clut.params.n_outputs as usize;
+    let n_samples = &clut.params.n_samples;
+
+    let total_nodes = match cube_size(n_samples, n_inputs as u32) {
+        Some(n) => n as usize,
+        None => return false,
+    };
+
+    let mut input = [0.0f32; intrp::MAX_INPUT_DIMENSIONS + 1];
+    let mut output = [0.0f32; intrp::MAX_STAGE_CHANNELS];
+    let mut index = 0;
+
+    for i in 0..total_nodes {
+        let mut rest = i;
+        for t in (0..n_inputs).rev() {
+            let colorant = rest % n_samples[t] as usize;
+            rest /= n_samples[t] as usize;
+            input[t] = quantize_val(colorant as f64, n_samples[t]) as f32 / 65535.0;
+        }
+
+        output[..n_outputs].copy_from_slice(&table[index..index + n_outputs]);
+
+        if !sampler(&input[..n_inputs], &mut output[..n_outputs], &()) {
+            return false;
+        }
+
+        if flags & SAMPLER_INSPECT == 0 {
+            table[index..index + n_outputs].copy_from_slice(&output[..n_outputs]);
+        }
+
+        index += n_outputs;
+    }
+
+    true
+}
+
+/// Iterate over all nodes of a hypercube (16-bit version).
+///
+/// C版: `cmsSliceSpace16`
+#[allow(dead_code)]
+pub fn slice_space_16<F>(n_inputs: u32, clut_points: &[u32], mut sampler: F) -> bool
+where
+    F: FnMut(&[u16], &()) -> bool,
+{
+    if n_inputs as usize >= crate::types::MAX_CHANNELS {
+        return false;
+    }
+
+    let total_nodes = match cube_size(clut_points, n_inputs) {
+        Some(n) => n as usize,
+        None => return false,
+    };
+
+    let mut input = [0u16; crate::types::MAX_CHANNELS];
+
+    for i in 0..total_nodes {
+        let mut rest = i;
+        for t in (0..n_inputs as usize).rev() {
+            let colorant = rest % clut_points[t] as usize;
+            rest /= clut_points[t] as usize;
+            input[t] = quantize_val(colorant as f64, clut_points[t]);
+        }
+
+        if !sampler(&input[..n_inputs as usize], &()) {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Iterate over all nodes of a hypercube (float version).
+///
+/// C版: `cmsSliceSpaceFloat`
+#[allow(dead_code)]
+pub fn slice_space_float<F>(n_inputs: u32, clut_points: &[u32], mut sampler: F) -> bool
+where
+    F: FnMut(&[f32], &()) -> bool,
+{
+    if n_inputs as usize >= crate::types::MAX_CHANNELS {
+        return false;
+    }
+
+    let total_nodes = match cube_size(clut_points, n_inputs) {
+        Some(n) => n as usize,
+        None => return false,
+    };
+
+    let mut input = [0.0f32; crate::types::MAX_CHANNELS];
+
+    for i in 0..total_nodes {
+        let mut rest = i;
+        for t in (0..n_inputs as usize).rev() {
+            let colorant = rest % clut_points[t] as usize;
+            rest /= clut_points[t] as usize;
+            input[t] = quantize_val(colorant as f64, clut_points[t]) as f32 / 65535.0;
+        }
+
+        if !sampler(&input[..n_inputs as usize], &()) {
+            return false;
+        }
+    }
+
+    true
 }
 
 #[cfg(test)]
@@ -608,7 +891,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn clut_16bit_identity() {
         // 2-point uniform grid, 3in→3out identity table
         // Grid points: [0, 65535] per dimension
@@ -644,7 +927,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn clut_float_identity() {
         let mut table = vec![0.0f32; 8 * 3];
         for r in 0..2u32 {
@@ -667,7 +950,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn clut_granular_grid() {
         // Non-uniform grid: 3 points on dim 0, 2 on dim 1
         let grid = [3u32, 2];
@@ -679,7 +962,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn clut_table_none_zeros() {
         // None table should zero-initialize
         let stage = Stage::new_clut_16bit_uniform(2, 3, 3, None).unwrap();
@@ -692,7 +975,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn clut_identity_clut() {
         let stage = Stage::new_identity_clut(3).unwrap();
         assert_eq!(stage.stage_type(), StageSignature::CLutElem);
@@ -706,13 +989,13 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn clut_too_many_inputs() {
         assert!(Stage::new_clut_16bit_uniform(2, 16, 3, None).is_none());
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn clut_clone() {
         let mut table = vec![0.0f32; 8 * 3];
         for r in 0..2u32 {
