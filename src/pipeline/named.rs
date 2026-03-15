@@ -202,13 +202,9 @@ pub struct NamedColor {
 /// C版: `cmsNAMEDCOLORLIST`
 #[derive(Debug, Clone)]
 pub struct NamedColorList {
-    #[allow(dead_code)]
     colors: Vec<NamedColor>,
-    #[allow(dead_code)]
     colorant_count: u32,
-    #[allow(dead_code)]
     prefix: String,
-    #[allow(dead_code)]
     suffix: String,
 }
 
@@ -217,42 +213,60 @@ impl NamedColorList {
     ///
     /// `colorant_count` is the number of device colorant channels (must be <= MAX_CHANNELS).
     /// Returns `None` if `colorant_count` exceeds `MAX_CHANNELS`.
-    pub fn new(_colorant_count: u32, _prefix: &str, _suffix: &str) -> Option<Self> {
-        todo!()
+    pub fn new(colorant_count: u32, prefix: &str, suffix: &str) -> Option<Self> {
+        if colorant_count as usize > MAX_CHANNELS {
+            return None;
+        }
+        Some(Self {
+            colors: Vec::new(),
+            colorant_count,
+            prefix: prefix.to_string(),
+            suffix: suffix.to_string(),
+        })
     }
 
     /// Append a named color.
     ///
     /// `colorant` slice length must match the list's `colorant_count`.
-    pub fn append(&mut self, _name: &str, _pcs: &[u16; 3], _colorant: Option<&[u16]>) -> bool {
-        todo!()
+    pub fn append(&mut self, name: &str, pcs: &[u16; 3], colorant: Option<&[u16]>) -> bool {
+        let mut device = [0u16; MAX_CHANNELS];
+        if let Some(c) = colorant {
+            let n = c.len().min(self.colorant_count as usize).min(MAX_CHANNELS);
+            device[..n].copy_from_slice(&c[..n]);
+        }
+        self.colors.push(NamedColor {
+            name: name.to_string(),
+            pcs: *pcs,
+            colorant: device,
+        });
+        true
     }
 
     /// Number of colors in the list.
     pub fn count(&self) -> usize {
-        todo!()
+        self.colors.len()
     }
 
     /// Get color info at `index`.
-    pub fn info(&self, _index: usize) -> Option<&NamedColor> {
-        todo!()
+    pub fn info(&self, index: usize) -> Option<&NamedColor> {
+        self.colors.get(index)
     }
 
     /// Find a color by name (case-sensitive). Returns its index.
-    pub fn find(&self, _name: &str) -> Option<usize> {
-        todo!()
+    pub fn find(&self, name: &str) -> Option<usize> {
+        self.colors.iter().position(|c| c.name == name)
     }
 
     pub fn prefix(&self) -> &str {
-        todo!()
+        &self.prefix
     }
 
     pub fn suffix(&self) -> &str {
-        todo!()
+        &self.suffix
     }
 
     pub fn colorant_count(&self) -> u32 {
-        todo!()
+        self.colorant_count
     }
 }
 
@@ -382,7 +396,6 @@ mod tests {
     // --- NamedColorList tests ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn named_color_list_new() {
         let list = NamedColorList::new(3, "prefix", "suffix").unwrap();
         assert_eq!(list.count(), 0);
@@ -392,13 +405,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn named_color_list_new_rejects_too_many_channels() {
         assert!(NamedColorList::new((MAX_CHANNELS + 1) as u32, "", "").is_none());
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn named_color_list_append_and_count() {
         let mut list = NamedColorList::new(3, "", "").unwrap();
         let pcs = [1000, 2000, 3000];
@@ -410,7 +421,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn named_color_list_info() {
         let mut list = NamedColorList::new(3, "", "").unwrap();
         let pcs = [1000, 2000, 3000];
@@ -426,7 +436,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn named_color_list_find() {
         let mut list = NamedColorList::new(3, "", "").unwrap();
         let pcs = [0, 0, 0];
@@ -440,7 +449,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn named_color_list_append_none_colorant() {
         let mut list = NamedColorList::new(4, "", "").unwrap();
         let pcs = [500, 600, 700];
@@ -452,7 +460,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn named_color_list_clone() {
         let mut list = NamedColorList::new(3, "pfx", "sfx").unwrap();
         let pcs = [100, 200, 300];
