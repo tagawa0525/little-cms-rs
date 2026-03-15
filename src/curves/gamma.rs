@@ -735,7 +735,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tabulated_16_identity() {
         // Build identity table: output = input
         let n = 256;
@@ -751,7 +750,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tabulated_16_gamma_2_2() {
         // Build gamma 2.2 table
         let n = 4096;
@@ -781,7 +779,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tabulated_float_identity() {
         // Build identity table
         let n = 256;
@@ -799,7 +796,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tabulated_float_gamma_curve() {
         // Build gamma 2.2 table from float values
         let n = 1024;
@@ -823,7 +819,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn segmented_srgb() {
         // Build sRGB as 3 segments:
         // seg0: x < 0.04045 → Y = X/12.92 (type 6: Y = aX + b, with a=1/12.92, b=0)
@@ -846,14 +841,12 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn empty_table_returns_none() {
         assert!(ToneCurve::build_tabulated_16(&[]).is_none());
         assert!(ToneCurve::build_tabulated_float(&[]).is_none());
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn oversized_table_returns_none() {
         // MAX_TABLE_ENTRIES = 65530
         let values = vec![0u16; 65531];
