@@ -122,10 +122,15 @@ impl IoHandler {
                 data,
                 pointer,
                 reported_size,
-                ..
+                is_write,
+                used_space,
             } => {
                 let p = *pointer as usize;
-                let size = *reported_size as usize;
+                let size = if *is_write {
+                    *used_space as usize
+                } else {
+                    *reported_size as usize
+                };
                 if len > size || p > size - len {
                     return false;
                 }
@@ -262,84 +267,185 @@ impl IoHandler {
     // C版: cmsplugin.c
     // ========================================================================
 
+    fn read_err() -> CmsError {
+        CmsError {
+            code: ErrorCode::Read,
+            message: "Read error".to_string(),
+        }
+    }
+
+    fn write_err() -> CmsError {
+        CmsError {
+            code: ErrorCode::Write,
+            message: "Write error".to_string(),
+        }
+    }
+
     pub fn read_u8(&mut self) -> Result<u8, CmsError> {
-        todo!()
+        let mut buf = [0u8; 1];
+        if !self.read(&mut buf) {
+            return Err(Self::read_err());
+        }
+        Ok(buf[0])
     }
 
     pub fn read_u16(&mut self) -> Result<u16, CmsError> {
-        todo!()
+        let mut buf = [0u8; 2];
+        if !self.read(&mut buf) {
+            return Err(Self::read_err());
+        }
+        Ok(u16::from_be_bytes(buf))
     }
 
     pub fn read_u32(&mut self) -> Result<u32, CmsError> {
-        todo!()
+        let mut buf = [0u8; 4];
+        if !self.read(&mut buf) {
+            return Err(Self::read_err());
+        }
+        Ok(u32::from_be_bytes(buf))
     }
 
     pub fn read_u64(&mut self) -> Result<u64, CmsError> {
-        todo!()
+        let mut buf = [0u8; 8];
+        if !self.read(&mut buf) {
+            return Err(Self::read_err());
+        }
+        Ok(u64::from_be_bytes(buf))
     }
 
     pub fn read_f32(&mut self) -> Result<f32, CmsError> {
-        todo!()
+        let bits = self.read_u32()?;
+        let v = f32::from_bits(bits);
+        // C版: reject |v| > 1E20 and non-normal/non-zero
+        if v.is_nan() || v.is_infinite() || (v != 0.0 && !v.is_normal()) {
+            return Err(Self::read_err());
+        }
+        if v.abs() > 1E20 {
+            return Err(Self::read_err());
+        }
+        Ok(v)
     }
 
     pub fn read_s15fixed16(&mut self) -> Result<f64, CmsError> {
-        todo!()
+        let raw = self.read_u32()? as i32;
+        Ok(raw as f64 / 65536.0)
     }
 
     pub fn read_xyz(&mut self) -> Result<CieXyz, CmsError> {
-        todo!()
+        let x = self.read_s15fixed16()?;
+        let y = self.read_s15fixed16()?;
+        let z = self.read_s15fixed16()?;
+        Ok(CieXyz { x, y, z })
     }
 
-    pub fn read_u16_array(&mut self, _n: usize) -> Result<Vec<u16>, CmsError> {
-        todo!()
+    pub fn read_u16_array(&mut self, n: usize) -> Result<Vec<u16>, CmsError> {
+        let mut arr = Vec::with_capacity(n);
+        for _ in 0..n {
+            arr.push(self.read_u16()?);
+        }
+        Ok(arr)
     }
 
-    pub fn write_u8(&mut self, _v: u8) -> Result<(), CmsError> {
-        todo!()
+    pub fn write_u8(&mut self, v: u8) -> Result<(), CmsError> {
+        if !self.write(&[v]) {
+            return Err(Self::write_err());
+        }
+        Ok(())
     }
 
-    pub fn write_u16(&mut self, _v: u16) -> Result<(), CmsError> {
-        todo!()
+    pub fn write_u16(&mut self, v: u16) -> Result<(), CmsError> {
+        if !self.write(&v.to_be_bytes()) {
+            return Err(Self::write_err());
+        }
+        Ok(())
     }
 
-    pub fn write_u32(&mut self, _v: u32) -> Result<(), CmsError> {
-        todo!()
+    pub fn write_u32(&mut self, v: u32) -> Result<(), CmsError> {
+        if !self.write(&v.to_be_bytes()) {
+            return Err(Self::write_err());
+        }
+        Ok(())
     }
 
-    pub fn write_u64(&mut self, _v: u64) -> Result<(), CmsError> {
-        todo!()
+    pub fn write_u64(&mut self, v: u64) -> Result<(), CmsError> {
+        if !self.write(&v.to_be_bytes()) {
+            return Err(Self::write_err());
+        }
+        Ok(())
     }
 
-    pub fn write_f32(&mut self, _v: f32) -> Result<(), CmsError> {
-        todo!()
+    pub fn write_f32(&mut self, v: f32) -> Result<(), CmsError> {
+        self.write_u32(v.to_bits())
     }
 
-    pub fn write_s15fixed16(&mut self, _v: f64) -> Result<(), CmsError> {
-        todo!()
+    pub fn write_s15fixed16(&mut self, v: f64) -> Result<(), CmsError> {
+        let fixed = (v * 65536.0 + 0.5).floor() as i32;
+        self.write_u32(fixed as u32)
     }
 
-    pub fn write_xyz(&mut self, _xyz: &CieXyz) -> Result<(), CmsError> {
-        todo!()
+    pub fn write_xyz(&mut self, xyz: &CieXyz) -> Result<(), CmsError> {
+        self.write_s15fixed16(xyz.x)?;
+        self.write_s15fixed16(xyz.y)?;
+        self.write_s15fixed16(xyz.z)?;
+        Ok(())
     }
 
-    pub fn write_u16_array(&mut self, _arr: &[u16]) -> Result<(), CmsError> {
-        todo!()
+    pub fn write_u16_array(&mut self, arr: &[u16]) -> Result<(), CmsError> {
+        for &v in arr {
+            self.write_u16(v)?;
+        }
+        Ok(())
     }
 
+    /// Align read position to 4-byte boundary.
+    /// C版: `_cmsReadAlignment`
     pub fn read_alignment(&mut self) -> Result<(), CmsError> {
-        todo!()
+        let at = self.tell();
+        let next_aligned = (at + 3) & !3;
+        let pad = (next_aligned - at) as usize;
+        if pad == 0 {
+            return Ok(());
+        }
+        let mut buf = [0u8; 4];
+        if !self.read(&mut buf[..pad]) {
+            return Err(Self::read_err());
+        }
+        Ok(())
     }
 
+    /// Align write position to 4-byte boundary with zero padding.
+    /// C版: `_cmsWriteAlignment`
     pub fn write_alignment(&mut self) -> Result<(), CmsError> {
-        todo!()
+        let at = self.tell();
+        let next_aligned = (at + 3) & !3;
+        let pad = (next_aligned - at) as usize;
+        if pad == 0 {
+            return Ok(());
+        }
+        let zeros = [0u8; 4];
+        if !self.write(&zeros[..pad]) {
+            return Err(Self::write_err());
+        }
+        Ok(())
     }
 
+    /// Read tag type base: 4 bytes signature + 4 bytes reserved.
+    /// C版: `_cmsReadTypeBase`
     pub fn read_type_base(&mut self) -> Result<TagTypeSignature, CmsError> {
-        todo!()
+        let sig_raw = self.read_u32()?;
+        let _reserved = self.read_u32()?;
+        TagTypeSignature::try_from(sig_raw).map_err(|_| CmsError {
+            code: ErrorCode::BadSignature,
+            message: format!("Unknown tag type signature: 0x{:08X}", sig_raw),
+        })
     }
 
-    pub fn write_type_base(&mut self, _sig: TagTypeSignature) -> Result<(), CmsError> {
-        todo!()
+    /// Write tag type base: 4 bytes signature + 4 bytes reserved (zero).
+    /// C版: `_cmsWriteTypeBase`
+    pub fn write_type_base(&mut self, sig: TagTypeSignature) -> Result<(), CmsError> {
+        self.write_u32(sig as u32)?;
+        self.write_u32(0)?;
+        Ok(())
     }
 }
 
@@ -472,7 +578,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_write_u16_big_endian() {
         let mut io = IoHandler::from_memory_write(64);
         io.write_u16(0x1234).unwrap();
@@ -487,7 +592,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_write_u32_big_endian() {
         let mut io = IoHandler::from_memory_write(64);
         io.write_u32(0xDEADBEEF).unwrap();
@@ -500,7 +604,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_write_f32_roundtrip() {
         let mut io = IoHandler::from_memory_write(64);
         let val: f32 = 1.5;
@@ -511,7 +614,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_write_s15fixed16_roundtrip() {
         use crate::types::{D50_X, D50_Y, D50_Z};
         let mut io = IoHandler::from_memory_write(64);
@@ -529,7 +631,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_write_xyz_roundtrip() {
         use crate::types::{D50_X, D50_Y, D50_Z};
         let xyz = CieXyz {
@@ -547,7 +648,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_write_u16_array_roundtrip() {
         let arr = vec![100, 200, 300, 400, 500];
         let mut io = IoHandler::from_memory_write(64);
@@ -558,7 +658,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn write_alignment_pads_to_4bytes() {
         let mut io = IoHandler::from_memory_write(64);
         // Write 5 bytes (not aligned)
@@ -575,7 +674,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_type_base_roundtrip() {
         let mut io = IoHandler::from_memory_write(64);
         io.write_type_base(TagTypeSignature::Xyz).unwrap();
