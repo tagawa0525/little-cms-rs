@@ -253,26 +253,124 @@ impl ToneCurve {
 
     /// Reverse the tone curve with a specified number of samples.
     ///
+    /// If the curve is a single parametric segment, returns the analytical
+    /// inverse. Otherwise, builds a tabulated inverse by sampling.
+    ///
     /// C版: `cmsReverseToneCurveEx`
     #[allow(dead_code)]
-    pub fn reverse_with_samples(&self, _n_result_samples: u32) -> ToneCurve {
-        todo!()
+    pub fn reverse_with_samples(&self, n_result_samples: u32) -> ToneCurve {
+        // Analytical path: single parametric segment with known inverse
+        if self.segments.len() == 1 && self.segments[0].curve_type > 0 {
+            let seg = &self.segments[0];
+            if param_count(-seg.curve_type).is_some() {
+                let inv_seg = CurveSegment {
+                    x0: seg.x0,
+                    x1: seg.x1,
+                    curve_type: -seg.curve_type,
+                    params: seg.params,
+                    sampled_points: Vec::new(),
+                };
+                if let Some(result) = Self::build_segmented(&[inv_seg]) {
+                    return result;
+                }
+            }
+        }
+
+        // Tabular path: sample the inverse
+        let descending = self.is_descending();
+        let n = n_result_samples as usize;
+        let mut result = vec![0u16; n];
+
+        for (i, slot) in result.iter_mut().enumerate() {
+            let target = (i as f64 * 65535.0 / (n - 1) as f64 + 0.5) as u16;
+            *slot = reverse_lookup(target, descending, &self.table16);
+        }
+
+        ToneCurve::build_tabulated_16(&result)
+            .expect("reverse_with_samples: build_tabulated_16 should not fail")
     }
 
     /// Join two tone curves: Y⁻¹(X(t)).
     ///
     /// C版: `cmsJoinToneCurve`
     #[allow(dead_code)]
-    pub fn join(_x: &ToneCurve, _y: &ToneCurve, _n_result_points: u32) -> ToneCurve {
-        todo!()
+    pub fn join(x: &ToneCurve, y: &ToneCurve, n_result_points: u32) -> ToneCurve {
+        let y_rev = y.reverse_with_samples(n_result_points);
+        let n = n_result_points as usize;
+        let mut values = vec![0.0f32; n];
+        for (i, slot) in values.iter_mut().enumerate() {
+            let t = i as f32 / (n - 1) as f32;
+            let xval = x.eval_f32(t);
+            *slot = y_rev.eval_f32(xval);
+        }
+        ToneCurve::build_tabulated_float(&values)
+            .expect("join: build_tabulated_float should not fail")
     }
 
-    /// Smooth the tone curve using Whittaker smoothing.
+    /// Smooth the tone curve using Whittaker-Eilers smoothing.
     ///
     /// C版: `cmsSmoothToneCurve`
     #[allow(dead_code)]
-    pub fn smooth(&mut self, _lambda: f64) -> bool {
-        todo!()
+    pub fn smooth(&mut self, lambda: f64) -> bool {
+        if self.is_linear() {
+            return true;
+        }
+
+        let n = self.table16.len();
+        if n < 2 {
+            return false;
+        }
+
+        // Whittaker-Eilers smoothing with second-order differences
+        let w = vec![1.0f64; n];
+        let y: Vec<f64> = self.table16.iter().map(|&v| v as f64).collect();
+        let mut z = vec![0.0f64; n];
+
+        if !smooth2(&w, &y, &mut z, lambda, n) {
+            return false;
+        }
+
+        // Validate: check monotonicity and degeneracy
+        let skip_checks = lambda < 0.0;
+        if !skip_checks {
+            // Monotonicity check (allow 2-unit ripple)
+            let mut last = z[0];
+            let descending = z[0] > z[n - 1];
+            for &val in &z[1..n] {
+                if descending {
+                    if val - last > 2.0 {
+                        return false;
+                    }
+                } else if last - val > 2.0 {
+                    return false;
+                }
+                last = val;
+            }
+
+            // Degeneracy check: reject if >33% zeros or poles
+            let mut zeros = 0usize;
+            let mut poles = 0usize;
+            for &v in &z {
+                if v < 1.0 {
+                    zeros += 1;
+                }
+                if v >= 65534.0 {
+                    poles += 1;
+                }
+            }
+            if zeros > n / 3 || poles > n / 3 {
+                return false;
+            }
+        }
+
+        // Apply smoothed values
+        for (slot, &val) in self.table16.iter_mut().zip(z.iter()) {
+            *slot = intrp::quick_saturate_word(val);
+        }
+
+        let _ = (w, y);
+
+        true
     }
 
     /// Check if the curve is linear (identity) within 12-bit precision.
@@ -280,7 +378,15 @@ impl ToneCurve {
     /// C版: `cmsIsToneCurveLinear`
     #[allow(dead_code)]
     pub fn is_linear(&self) -> bool {
-        todo!()
+        let n = self.n_entries as usize;
+        for i in 0..n {
+            let expected = quantize_val(i, n);
+            let diff = (self.table16[i] as i32 - expected as i32).unsigned_abs();
+            if diff > 0x0f {
+                return false;
+            }
+        }
+        true
     }
 
     /// Check if the curve is monotonic (within 2-unit tolerance).
@@ -288,7 +394,30 @@ impl ToneCurve {
     /// C版: `cmsIsToneCurveMonotonic`
     #[allow(dead_code)]
     pub fn is_monotonic(&self) -> bool {
-        todo!()
+        let n = self.n_entries as usize;
+        if n < 2 {
+            return true;
+        }
+
+        let descending = self.is_descending();
+        if descending {
+            let mut last = self.table16[0];
+            for i in 1..n {
+                if self.table16[i] as i32 - last as i32 > 2 {
+                    return false;
+                }
+                last = self.table16[i];
+            }
+        } else {
+            let mut last = self.table16[n - 1];
+            for i in (0..n - 1).rev() {
+                if self.table16[i] as i32 - last as i32 > 2 {
+                    return false;
+                }
+                last = self.table16[i];
+            }
+        }
+        true
     }
 
     /// Check if the curve is descending (first entry > last entry).
@@ -296,7 +425,7 @@ impl ToneCurve {
     /// C版: `cmsIsToneCurveDescending`
     #[allow(dead_code)]
     pub fn is_descending(&self) -> bool {
-        todo!()
+        self.table16[0] > self.table16[self.n_entries as usize - 1]
     }
 
     /// Check if the curve has multiple segments.
@@ -304,7 +433,7 @@ impl ToneCurve {
     /// C版: `cmsIsToneCurveMultisegment`
     #[allow(dead_code)]
     pub fn is_multisegment(&self) -> bool {
-        todo!()
+        self.segments.len() > 1
     }
 
     /// Estimate the gamma exponent via least-squares fitting.
@@ -312,9 +441,147 @@ impl ToneCurve {
     ///
     /// C版: `cmsEstimateGamma`
     #[allow(dead_code)]
-    pub fn estimate_gamma(&self, _precision: f64) -> f64 {
-        todo!()
+    pub fn estimate_gamma(&self, precision: f64) -> f64 {
+        const ESTIMATE_NODES: usize = 4096;
+        let mut sum = 0.0f64;
+        let mut sum2 = 0.0f64;
+        let mut n = 0usize;
+
+        for i in 1..ESTIMATE_NODES - 1 {
+            let x = i as f64 / (ESTIMATE_NODES - 1) as f64;
+            if x < 0.07 {
+                continue; // Skip lower 7% (linear ramp region)
+            }
+            let y = self.eval_f32(x as f32) as f64;
+            if y <= 0.0 || y >= 1.0 {
+                continue;
+            }
+            let gamma = y.ln() / x.ln();
+            sum += gamma;
+            sum2 += gamma * gamma;
+            n += 1;
+        }
+
+        if n <= 1 {
+            return -1.0;
+        }
+
+        // Standard deviation
+        let nf = n as f64;
+        let std = ((nf * sum2 - sum * sum) / (nf * (nf - 1.0))).sqrt();
+        if std > precision {
+            return -1.0;
+        }
+
+        sum / nf
     }
+}
+
+/// Scale index to 0-65535 range (C版: `_cmsQuantizeVal`).
+fn quantize_val(i: usize, n_items: usize) -> u16 {
+    (i as f64 * 65535.0 / (n_items - 1) as f64 + 0.5) as u16
+}
+
+/// Reverse lookup: find the input value that maps to target output.
+fn reverse_lookup(target: u16, descending: bool, table: &[u16]) -> u16 {
+    let n = table.len();
+    if n < 2 {
+        return target;
+    }
+
+    // Find enclosing interval
+    if descending {
+        // Table goes from high to low
+        if target >= table[0] {
+            return 0;
+        }
+        if target <= table[n - 1] {
+            return 0xFFFF;
+        }
+        for j in 0..n - 1 {
+            if target <= table[j] && target >= table[j + 1] {
+                return interpolate_in_interval(target, j, table, n);
+            }
+        }
+    } else {
+        // Table goes from low to high
+        if target <= table[0] {
+            return 0;
+        }
+        if target >= table[n - 1] {
+            return 0xFFFF;
+        }
+        for j in 0..n - 1 {
+            if target >= table[j] && target <= table[j + 1] {
+                return interpolate_in_interval(target, j, table, n);
+            }
+        }
+    }
+
+    // Fallback
+    0
+}
+
+/// Linear interpolation within a table interval.
+fn interpolate_in_interval(target: u16, j: usize, table: &[u16], n: usize) -> u16 {
+    let y0 = table[j] as f64;
+    let y1 = table[j + 1] as f64;
+
+    // Collapsed interval
+    if (y1 - y0).abs() < 1.0 {
+        return quantize_val(j, n);
+    }
+
+    let x0 = quantize_val(j, n) as f64;
+    let x1 = quantize_val(j + 1, n) as f64;
+
+    // Linear interpolation: x = x0 + (target - y0) * (x1 - x0) / (y1 - y0)
+    let x = x0 + (target as f64 - y0) * (x1 - x0) / (y1 - y0);
+    intrp::quick_saturate_word(x)
+}
+
+/// Whittaker-Eilers smoothing with second-order finite differences.
+fn smooth2(w: &[f64], y: &[f64], z: &mut [f64], lambda: f64, m: usize) -> bool {
+    let lambda = lambda.abs();
+
+    let mut c = vec![0.0f64; m];
+    let mut d = vec![0.0f64; m];
+    let mut e = vec![0.0f64; m];
+
+    d[0] = w[0] + lambda;
+    c[0] = -2.0 * lambda / d[0];
+    e[0] = lambda / d[0];
+    z[0] = w[0] * y[0];
+
+    d[1] = w[1] + 5.0 * lambda - d[0] * c[0] * c[0];
+    c[1] = (-4.0 * lambda - d[0] * c[0] * e[0]) / d[1];
+    e[1] = lambda / d[1];
+    z[1] = w[1] * y[1] - c[0] * z[0];
+
+    for i in 2..m - 2 {
+        d[i] =
+            w[i] + 6.0 * lambda - c[i - 1] * c[i - 1] * d[i - 1] - e[i - 2] * e[i - 2] * d[i - 2];
+        c[i] = (-4.0 * lambda - d[i - 1] * c[i - 1] * e[i - 1]) / d[i];
+        e[i] = lambda / d[i];
+        z[i] = w[i] * y[i] - c[i - 1] * z[i - 1] - e[i - 2] * z[i - 2];
+    }
+
+    let i = m - 2;
+    d[i] = w[i] + 5.0 * lambda - c[i - 1] * c[i - 1] * d[i - 1] - e[i - 2] * e[i - 2] * d[i - 2];
+    c[i] = (-2.0 * lambda - d[i - 1] * c[i - 1] * e[i - 1]) / d[i];
+    z[i] = w[i] * y[i] - c[i - 1] * z[i - 1] - e[i - 2] * z[i - 2];
+
+    let i = m - 1;
+    d[i] = w[i] + lambda - c[i - 1] * c[i - 1] * d[i - 1] - e[i - 2] * e[i - 2] * d[i - 2];
+    z[i] = (w[i] * y[i] - c[i - 1] * z[i - 1] - e[i - 2] * z[i - 2]) / d[i];
+
+    z[m - 2] = z[m - 2] / d[m - 2] - c[m - 2] * z[m - 1];
+
+    for i in (0..m - 2).rev() {
+        z[i] = z[i] / d[i] - c[i] * z[i + 1] - e[i] * z[i + 2];
+    }
+
+    true
 }
 
 /// Determine Table16 size based on gamma value.
@@ -931,7 +1198,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn reverse_gamma_2_2() {
         let curve = ToneCurve::build_gamma(2.2).unwrap();
         let rev = curve.reverse();
@@ -947,7 +1213,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn reverse_with_samples() {
         let curve = ToneCurve::build_gamma(2.2).unwrap();
         let rev = curve.reverse_with_samples(8192);
@@ -962,52 +1227,45 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn join_gamma_and_inverse_is_linear() {
+        // join(X, Y, n) computes Y⁻¹(X(t))
+        // With X = Y = gamma(2.2), result is gamma⁻¹(gamma(t)) = t (identity)
         let fwd = ToneCurve::build_gamma(2.2).unwrap();
-        let inv = ToneCurve::build_parametric(-1, &[2.2]).unwrap();
-        let joined = ToneCurve::join(&fwd, &inv, 4096);
-        // Composition of gamma and its inverse should be ~identity
+        let joined = ToneCurve::join(&fwd, &fwd, 4096);
         assert!(joined.is_linear());
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn is_linear_identity() {
         let curve = ToneCurve::build_gamma(1.0).unwrap();
         assert!(curve.is_linear());
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn is_linear_gamma_2_2_is_false() {
         let curve = ToneCurve::build_gamma(2.2).unwrap();
         assert!(!curve.is_linear());
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn is_monotonic_gamma() {
         let curve = ToneCurve::build_gamma(2.2).unwrap();
         assert!(curve.is_monotonic());
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn is_descending_gamma_is_false() {
         let curve = ToneCurve::build_gamma(2.2).unwrap();
         assert!(!curve.is_descending());
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn is_multisegment_parametric_is_false() {
         let curve = ToneCurve::build_parametric(1, &[2.2]).unwrap();
         assert!(!curve.is_multisegment());
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn is_multisegment_srgb_float_is_true() {
         let n = 256;
         let values: Vec<f32> = (0..n).map(|i| i as f32 / (n - 1) as f32).collect();
@@ -1017,7 +1275,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn estimate_gamma_2_2() {
         let curve = ToneCurve::build_gamma(2.2).unwrap();
         let estimated = curve.estimate_gamma(0.1);
@@ -1028,7 +1285,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn estimate_gamma_identity() {
         let curve = ToneCurve::build_gamma(1.0).unwrap();
         let estimated = curve.estimate_gamma(0.1);
@@ -1039,7 +1295,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn smooth_noisy_table() {
         // Build a gamma 2.2 table with some noise
         let n = 256;
