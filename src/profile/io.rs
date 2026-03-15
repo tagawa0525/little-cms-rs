@@ -4,7 +4,11 @@
 #![allow(dead_code)]
 
 use crate::context::{CmsError, ErrorCode};
-use crate::types::{CieXyz, IccHeader, TagSignature, TagTypeSignature};
+use crate::types::{
+    CieXyz, ColorSpaceSignature, D50_X, D50_Y, D50_Z, DateTimeNumber, EncodedXyzNumber,
+    ICC_MAGIC_NUMBER, IccHeader, LCMS_SIGNATURE, PlatformSignature, ProfileClassSignature,
+    ProfileId, S15Fixed16, TagSignature, TagTypeSignature,
+};
 
 // ============================================================================
 // IoHandler
@@ -487,66 +491,570 @@ pub struct Profile {
 impl Profile {
     /// C版: `cmsCreateProfilePlaceholder`
     pub fn new_placeholder() -> Self {
-        todo!()
+        Profile {
+            header: IccHeader {
+                size: 0,
+                cmm_id: LCMS_SIGNATURE,
+                version: 0x02100000,
+                device_class: ProfileClassSignature::Display,
+                color_space: ColorSpaceSignature::RgbData,
+                pcs: ColorSpaceSignature::XyzData,
+                date: DateTimeNumber::default(),
+                magic: ICC_MAGIC_NUMBER,
+                platform: PlatformSignature::Unices,
+                flags: 0,
+                manufacturer: 0,
+                model: 0,
+                attributes: 0,
+                rendering_intent: 0,
+                illuminant: EncodedXyzNumber {
+                    x: S15Fixed16::from(D50_X),
+                    y: S15Fixed16::from(D50_Y),
+                    z: S15Fixed16::from(D50_Z),
+                },
+                creator: LCMS_SIGNATURE,
+                profile_id: ProfileId::default(),
+                reserved: [0; 28],
+            },
+            tags: Vec::new(),
+            io: None,
+            is_write: false,
+        }
     }
 
     /// C版: `cmsOpenProfileFromMemTHR`
-    pub fn open_mem(_data: &[u8]) -> Result<Self, CmsError> {
-        todo!()
+    pub fn open_mem(data: &[u8]) -> Result<Self, CmsError> {
+        let io = IoHandler::from_memory_read(data);
+        Self::open_from_io(io)
     }
 
     /// C版: `cmsOpenProfileFromFileTHR`
-    pub fn open_file(_path: &str) -> Result<Self, CmsError> {
-        todo!()
+    pub fn open_file(path: &str) -> Result<Self, CmsError> {
+        let io = IoHandler::from_file_read(path)?;
+        Self::open_from_io(io)
+    }
+
+    fn open_from_io(io: IoHandler) -> Result<Self, CmsError> {
+        let mut profile = Self::new_placeholder();
+        profile.io = Some(io);
+        profile.read_header()?;
+        Ok(profile)
     }
 
     /// C版: `cmsSaveProfileToMem`
     pub fn save_to_mem(&mut self) -> Result<Vec<u8>, CmsError> {
-        todo!()
+        // Pass 1: compute size using Null handler
+        let size = {
+            let mut null_io = IoHandler::new_null();
+            self.save_to_io(&mut null_io)?;
+            null_io.used_space()
+        };
+
+        // Pass 2: write to memory
+        let mut io = IoHandler::from_memory_write(size as usize);
+        self.save_to_io(&mut io)?;
+        let used = io.used_space() as usize;
+        let mut buf = io.into_memory_buffer().unwrap();
+        buf.truncate(used);
+        Ok(buf)
     }
 
     /// C版: `cmsSaveProfileToFile`
-    pub fn save_to_file(&mut self, _path: &str) -> Result<(), CmsError> {
-        todo!()
+    pub fn save_to_file(&mut self, path: &str) -> Result<(), CmsError> {
+        let size = {
+            let mut null_io = IoHandler::new_null();
+            self.save_to_io(&mut null_io)?;
+            null_io.used_space()
+        };
+
+        let mut io = IoHandler::from_file_write(path)?;
+        // Pre-write size into header
+        self.header.size = size;
+        self.save_to_io(&mut io)?;
+        Ok(())
     }
+
+    // ========================================================================
+    // Tag directory operations
+    // ========================================================================
 
     pub fn tag_count(&self) -> usize {
-        todo!()
+        self.tags.len()
     }
 
-    pub fn tag_signature(&self, _n: usize) -> Option<TagSignature> {
-        todo!()
+    pub fn tag_signature(&self, n: usize) -> Option<TagSignature> {
+        self.tags.get(n).map(|t| t.sig)
     }
 
-    pub fn has_tag(&self, _sig: TagSignature) -> bool {
-        todo!()
+    pub fn has_tag(&self, sig: TagSignature) -> bool {
+        self.tags.iter().any(|t| t.sig == sig)
     }
 
-    pub fn read_raw_tag(&mut self, _sig: TagSignature) -> Result<Vec<u8>, CmsError> {
-        todo!()
+    fn search_tag(&self, sig: TagSignature) -> Option<usize> {
+        self.tags.iter().position(|t| t.sig == sig)
     }
 
-    pub fn write_raw_tag(&mut self, _sig: TagSignature, _data: &[u8]) -> Result<(), CmsError> {
-        todo!()
+    fn search_tag_follow_links(&self, sig: TagSignature) -> Option<usize> {
+        let mut current_sig = sig;
+        loop {
+            let idx = self.search_tag(current_sig)?;
+            match self.tags[idx].linked {
+                Some(linked_sig) => current_sig = linked_sig,
+                None => return Some(idx),
+            }
+        }
     }
 
-    pub fn link_tag(&mut self, _sig: TagSignature, _dest: TagSignature) -> Result<(), CmsError> {
-        todo!()
+    /// Read raw tag bytes from the profile.
+    /// C版: `cmsReadRawTag`
+    pub fn read_raw_tag(&mut self, sig: TagSignature) -> Result<Vec<u8>, CmsError> {
+        let idx = self.search_tag_follow_links(sig).ok_or(CmsError {
+            code: ErrorCode::Internal,
+            message: format!("Tag {:?} not found", sig),
+        })?;
+
+        // If already loaded as raw, return it
+        match &self.tags[idx].data {
+            TagDataState::Raw(data) => return Ok(data.clone()),
+            TagDataState::NotLoaded => {}
+        }
+
+        // Load from IO
+        let offset = self.tags[idx].offset;
+        let size = self.tags[idx].size;
+        let io = self.io.as_mut().ok_or(CmsError {
+            code: ErrorCode::Read,
+            message: "No IO handler".to_string(),
+        })?;
+
+        if !io.seek(offset) {
+            return Err(CmsError {
+                code: ErrorCode::Seek,
+                message: "Seek error reading tag".to_string(),
+            });
+        }
+
+        let mut buf = vec![0u8; size as usize];
+        if !io.read(&mut buf) {
+            return Err(CmsError {
+                code: ErrorCode::Read,
+                message: "Read error reading tag".to_string(),
+            });
+        }
+
+        self.tags[idx].data = TagDataState::Raw(buf.clone());
+        Ok(buf)
     }
 
-    pub fn tag_linked_to(&self, _sig: TagSignature) -> Option<TagSignature> {
-        todo!()
+    /// Write raw tag bytes into the profile (in-memory).
+    /// C版: `cmsWriteRawTag`
+    pub fn write_raw_tag(&mut self, sig: TagSignature, data: &[u8]) -> Result<(), CmsError> {
+        if let Some(idx) = self.search_tag(sig) {
+            // Overwrite existing
+            self.tags[idx].data = TagDataState::Raw(data.to_vec());
+            self.tags[idx].save_as_raw = true;
+            self.tags[idx].linked = None;
+            self.tags[idx].size = data.len() as u32;
+        } else {
+            if self.tags.len() >= MAX_TABLE_TAG {
+                return Err(CmsError {
+                    code: ErrorCode::Range,
+                    message: format!("Too many tags ({})", MAX_TABLE_TAG),
+                });
+            }
+            self.tags.push(TagEntry {
+                sig,
+                offset: 0,
+                size: data.len() as u32,
+                linked: None,
+                data: TagDataState::Raw(data.to_vec()),
+                save_as_raw: true,
+            });
+        }
+        Ok(())
+    }
+
+    /// C版: `cmsLinkTag`
+    pub fn link_tag(&mut self, sig: TagSignature, dest: TagSignature) -> Result<(), CmsError> {
+        // Ensure dest exists
+        if !self.has_tag(dest) {
+            return Err(CmsError {
+                code: ErrorCode::Internal,
+                message: format!("Link destination {:?} not found", dest),
+            });
+        }
+
+        if let Some(idx) = self.search_tag(sig) {
+            self.tags[idx].linked = Some(dest);
+        } else {
+            if self.tags.len() >= MAX_TABLE_TAG {
+                return Err(CmsError {
+                    code: ErrorCode::Range,
+                    message: format!("Too many tags ({})", MAX_TABLE_TAG),
+                });
+            }
+            self.tags.push(TagEntry {
+                sig,
+                offset: 0,
+                size: 0,
+                linked: Some(dest),
+                data: TagDataState::NotLoaded,
+                save_as_raw: false,
+            });
+        }
+        Ok(())
+    }
+
+    /// C版: `cmsTagLinkedTo`
+    pub fn tag_linked_to(&self, sig: TagSignature) -> Option<TagSignature> {
+        let idx = self.search_tag(sig)?;
+        self.tags[idx].linked
     }
 
     /// C版: `cmsGetProfileVersion`
     pub fn version_f64(&self) -> f64 {
-        todo!()
+        let n = self.header.version >> 16;
+        base_to_base(n, 16, 10) as f64 / 100.0
     }
 
     /// C版: `cmsSetProfileVersion`
-    pub fn set_version_f64(&mut self, _v: f64) {
-        todo!()
+    pub fn set_version_f64(&mut self, v: f64) {
+        let encoded = base_to_base((v * 100.0 + 0.5) as u32, 10, 16) << 16;
+        self.header.version = encoded;
     }
+
+    // ========================================================================
+    // Header read/write (private)
+    // ========================================================================
+
+    /// C版: `_cmsReadHeader`
+    fn read_header(&mut self) -> Result<(), CmsError> {
+        let io = self.io.as_mut().ok_or(CmsError {
+            code: ErrorCode::Read,
+            message: "No IO handler".to_string(),
+        })?;
+
+        io.seek(0);
+
+        // Read 128-byte ICC header fields
+        let size = io.read_u32()?;
+        let cmm_id = io.read_u32()?;
+        let version_raw = io.read_u32()?;
+        let device_class_raw = io.read_u32()?;
+        let color_space_raw = io.read_u32()?;
+        let pcs_raw = io.read_u32()?;
+
+        // Date (6 × u16)
+        let year = io.read_u16()?;
+        let month = io.read_u16()?;
+        let day = io.read_u16()?;
+        let hours = io.read_u16()?;
+        let minutes = io.read_u16()?;
+        let seconds = io.read_u16()?;
+
+        let magic = io.read_u32()?;
+        if magic != ICC_MAGIC_NUMBER {
+            return Err(CmsError {
+                code: ErrorCode::BadSignature,
+                message: "not an ICC profile, invalid signature".to_string(),
+            });
+        }
+
+        let platform_raw = io.read_u32()?;
+        let flags = io.read_u32()?;
+        let manufacturer = io.read_u32()?;
+        let model = io.read_u32()?;
+        let attributes = io.read_u64()?;
+        let rendering_intent = io.read_u32()?;
+
+        // Illuminant (3 × S15Fixed16 as raw u32)
+        let ill_x = io.read_u32()? as i32;
+        let ill_y = io.read_u32()? as i32;
+        let ill_z = io.read_u32()? as i32;
+
+        let creator = io.read_u32()?;
+
+        // Profile ID (16 bytes)
+        let mut profile_id_bytes = [0u8; 16];
+        io.read(&mut profile_id_bytes);
+
+        // Reserved (28 bytes)
+        let mut reserved = [0u8; 28];
+        io.read(&mut reserved);
+
+        // Validate version
+        let version = validated_version(version_raw);
+        if version > 0x05000000 {
+            return Err(CmsError {
+                code: ErrorCode::UnknownExtension,
+                message: format!("Unsupported profile version '0x{:08X}'", version),
+            });
+        }
+
+        // Parse signatures (tolerate unknown values)
+        let device_class = ProfileClassSignature::try_from(device_class_raw)
+            .unwrap_or(ProfileClassSignature::Display);
+        let color_space =
+            ColorSpaceSignature::try_from(color_space_raw).unwrap_or(ColorSpaceSignature::RgbData);
+        let pcs = ColorSpaceSignature::try_from(pcs_raw).unwrap_or(ColorSpaceSignature::XyzData);
+        let platform =
+            PlatformSignature::try_from(platform_raw).unwrap_or(PlatformSignature::Unices);
+
+        let reported_size = self.io.as_ref().map(|io| io.reported_size()).unwrap_or(0);
+        let header_size = size.min(reported_size.max(size));
+
+        self.header = IccHeader {
+            size: header_size,
+            cmm_id,
+            version,
+            device_class,
+            color_space,
+            pcs,
+            date: DateTimeNumber {
+                year,
+                month,
+                day,
+                hours,
+                minutes,
+                seconds,
+            },
+            magic,
+            platform,
+            flags,
+            manufacturer,
+            model,
+            attributes,
+            rendering_intent,
+            illuminant: EncodedXyzNumber {
+                x: S15Fixed16(ill_x),
+                y: S15Fixed16(ill_y),
+                z: S15Fixed16(ill_z),
+            },
+            creator,
+            profile_id: ProfileId(profile_id_bytes),
+            reserved,
+        };
+
+        // Read tag directory
+        let io = self.io.as_mut().unwrap();
+        let tag_count = io.read_u32()? as usize;
+        if tag_count > MAX_TABLE_TAG {
+            return Err(CmsError {
+                code: ErrorCode::Range,
+                message: format!("Too many tags ({})", tag_count),
+            });
+        }
+
+        self.tags.clear();
+        for _ in 0..tag_count {
+            let sig_raw = io.read_u32()?;
+            let offset = io.read_u32()?;
+            let tsize = io.read_u32()?;
+
+            // Sanity: skip zero-offset/size or overflow
+            if tsize == 0 || offset == 0 {
+                continue;
+            }
+            if offset.checked_add(tsize).is_none() || offset + tsize > header_size {
+                continue;
+            }
+
+            let sig = match TagSignature::try_from(sig_raw) {
+                Ok(s) => s,
+                Err(_) => continue, // Unknown tag, skip
+            };
+
+            // Detect linked tags (same offset+size as existing)
+            let linked = self.tags.iter().find_map(|existing| {
+                if existing.offset == offset && existing.size == tsize {
+                    Some(existing.sig)
+                } else {
+                    None
+                }
+            });
+
+            self.tags.push(TagEntry {
+                sig,
+                offset,
+                size: tsize,
+                linked,
+                data: TagDataState::NotLoaded,
+                save_as_raw: false,
+            });
+        }
+
+        // Check for duplicate tags
+        for i in 0..self.tags.len() {
+            for j in (i + 1)..self.tags.len() {
+                if self.tags[i].sig == self.tags[j].sig {
+                    return Err(CmsError {
+                        code: ErrorCode::Range,
+                        message: "Duplicate tag found".to_string(),
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Write the profile to an I/O handler.
+    /// C版: `cmsSaveProfileToIOhandler` + `_cmsWriteHeader` + `SaveTags`
+    fn save_to_io(&mut self, io: &mut IoHandler) -> Result<(), CmsError> {
+        // Compute total size:
+        // 128 (header) + 4 (tag count) + 12*N (tag directory) + tag data
+        let tag_count = self.active_tag_count();
+        let dir_size = 128 + 4 + 12 * tag_count as u32;
+
+        // First, compute offsets for each tag's data
+        let mut offsets: Vec<u32> = Vec::new();
+        let mut sizes: Vec<u32> = Vec::new();
+        let mut current_offset = dir_size;
+
+        for tag in &self.tags {
+            if tag.linked.is_some() {
+                // Linked tags share the offset of their target
+                offsets.push(0); // placeholder, resolved below
+                sizes.push(0);
+                continue;
+            }
+            // Align to 4 bytes
+            current_offset = (current_offset + 3) & !3;
+            offsets.push(current_offset);
+            let data_size = match &tag.data {
+                TagDataState::Raw(d) => d.len() as u32,
+                TagDataState::NotLoaded => tag.size,
+            };
+            sizes.push(data_size);
+            current_offset += data_size;
+        }
+
+        // Resolve linked tag offsets
+        for i in 0..self.tags.len() {
+            if let Some(dest_sig) = self.tags[i].linked
+                && let Some(dest_idx) = self.tags.iter().position(|t| t.sig == dest_sig)
+            {
+                offsets[i] = offsets[dest_idx];
+                sizes[i] = sizes[dest_idx];
+            }
+        }
+
+        let total_size = (current_offset + 3) & !3;
+
+        // Write header
+        self.write_header(io, total_size)?;
+
+        // Write tag directory
+        io.write_u32(tag_count as u32)?;
+        for (i, tag) in self.tags.iter().enumerate() {
+            io.write_u32(tag.sig as u32)?;
+            io.write_u32(offsets[i])?;
+            io.write_u32(sizes[i])?;
+        }
+
+        // Write tag data
+        for (i, tag) in self.tags.iter().enumerate() {
+            if tag.linked.is_some() {
+                continue; // Linked tags share data, don't write twice
+            }
+
+            // Pad to offset
+            let current = io.tell();
+            let target = offsets[i];
+            if current < target {
+                let pad = vec![0u8; (target - current) as usize];
+                io.write(&pad);
+            }
+
+            match &tag.data {
+                TagDataState::Raw(data) => {
+                    io.write(data);
+                }
+                TagDataState::NotLoaded => {
+                    // Read from source IO and write
+                    if let Some(src_io) = &mut self.io {
+                        let mut buf = vec![0u8; tag.size as usize];
+                        src_io.seek(tag.offset);
+                        src_io.read(&mut buf);
+                        io.write(&buf);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn active_tag_count(&self) -> usize {
+        self.tags.len()
+    }
+
+    /// C版: `_cmsWriteHeader`
+    fn write_header(&self, io: &mut IoHandler, total_size: u32) -> Result<(), CmsError> {
+        io.write_u32(total_size)?;
+        io.write_u32(self.header.cmm_id)?;
+        io.write_u32(self.header.version)?;
+        io.write_u32(self.header.device_class as u32)?;
+        io.write_u32(self.header.color_space as u32)?;
+        io.write_u32(self.header.pcs as u32)?;
+
+        // Date
+        io.write_u16(self.header.date.year)?;
+        io.write_u16(self.header.date.month)?;
+        io.write_u16(self.header.date.day)?;
+        io.write_u16(self.header.date.hours)?;
+        io.write_u16(self.header.date.minutes)?;
+        io.write_u16(self.header.date.seconds)?;
+
+        io.write_u32(self.header.magic)?;
+        io.write_u32(self.header.platform as u32)?;
+        io.write_u32(self.header.flags)?;
+        io.write_u32(self.header.manufacturer)?;
+        io.write_u32(self.header.model)?;
+        io.write_u64(self.header.attributes)?;
+        io.write_u32(self.header.rendering_intent)?;
+
+        // Illuminant
+        io.write_u32(self.header.illuminant.x.0 as u32)?;
+        io.write_u32(self.header.illuminant.y.0 as u32)?;
+        io.write_u32(self.header.illuminant.z.0 as u32)?;
+
+        io.write_u32(self.header.creator)?;
+
+        // Profile ID
+        io.write(&self.header.profile_id.0);
+
+        // Reserved
+        io.write(&self.header.reserved);
+
+        Ok(())
+    }
+}
+
+/// BCD version validation.
+/// C版: `_validatedVersion`
+fn validated_version(raw: u32) -> u32 {
+    let bytes = raw.to_be_bytes();
+    let b0 = bytes[0].min(0x09);
+    let hi = (bytes[1] & 0xF0).min(0x90);
+    let lo = (bytes[1] & 0x0F).min(0x09);
+    let b1 = hi | lo;
+    u32::from_be_bytes([b0, b1, 0, 0])
+}
+
+/// Base conversion helper for version encoding/decoding.
+/// C版: `BaseToBase`
+fn base_to_base(mut input: u32, base_in: u32, base_out: u32) -> u32 {
+    let mut digits = Vec::new();
+    while input > 0 {
+        digits.push(input % base_in);
+        input /= base_in;
+    }
+    let mut out = 0u32;
+    for &d in digits.iter().rev() {
+        out = out * base_out + d;
+    }
+    out
 }
 
 #[cfg(test)]
@@ -757,7 +1265,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn header_roundtrip_in_memory() {
         let mut p = Profile::new_placeholder();
         p.header.device_class = ProfileClassSignature::Input;
@@ -774,7 +1281,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn header_magic_number_validation() {
         // Build a minimal "profile" with wrong magic number
         let mut io = IoHandler::from_memory_write(256);
@@ -803,7 +1309,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tag_directory_roundtrip() {
         let mut p = Profile::new_placeholder();
         p.write_raw_tag(TagSignature::RedTRC, &[1, 2, 3, 4, 5, 6, 7, 8])
@@ -819,7 +1324,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tag_directory_max_100_tags() {
         let mut p = Profile::new_placeholder();
         // Write 100 tags (using various sigs that exist in TagSignature)
@@ -910,7 +1414,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tag_linking() {
         let mut p = Profile::new_placeholder();
         p.write_raw_tag(TagSignature::RedTRC, &[1, 2, 3, 4, 5, 6, 7, 8])
@@ -934,7 +1437,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn placeholder_profile_defaults() {
         let p = Profile::new_placeholder();
         assert_eq!(p.header.magic, ICC_MAGIC_NUMBER);
@@ -944,7 +1446,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn save_to_memory_roundtrip() {
         let mut p = Profile::new_placeholder();
         p.write_raw_tag(TagSignature::Copyright, b"test copyright data!")
@@ -957,7 +1458,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_raw_tag_write_raw_tag() {
         let mut p = Profile::new_placeholder();
         let payload = vec![0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x00, 0x00, 0x00];
@@ -971,7 +1471,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn version_f64_encoding() {
         let mut p = Profile::new_placeholder();
         p.set_version_f64(4.3);
@@ -980,7 +1479,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn open_from_file_roundtrip() {
         let dir = std::env::temp_dir();
         let path = dir.join("lcms_test_profile_roundtrip.icc");
