@@ -294,30 +294,39 @@ pub struct ProfileSequenceDescEntry {
 /// C版: `cmsSEQ`
 #[derive(Debug, Clone)]
 pub struct ProfileSequenceDesc {
-    #[allow(dead_code)]
     entries: Vec<ProfileSequenceDescEntry>,
 }
 
 impl ProfileSequenceDesc {
-    /// Create a new profile sequence description with `n` empty entries.
-    pub fn new(_n: usize) -> Self {
-        todo!()
+    /// Create a new profile sequence description with `n` default entries.
+    pub fn new(n: usize) -> Self {
+        let entries = (0..n)
+            .map(|_| ProfileSequenceDescEntry {
+                device_mfg: 0,
+                device_model: 0,
+                attributes: 0,
+                technology: None,
+                manufacturer: Mlu::new(),
+                model: Mlu::new(),
+            })
+            .collect();
+        Self { entries }
     }
 
     pub fn len(&self) -> usize {
-        todo!()
+        self.entries.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        todo!()
+        self.entries.is_empty()
     }
 
-    pub fn get(&self, _index: usize) -> Option<&ProfileSequenceDescEntry> {
-        todo!()
+    pub fn get(&self, index: usize) -> Option<&ProfileSequenceDescEntry> {
+        self.entries.get(index)
     }
 
-    pub fn get_mut(&mut self, _index: usize) -> Option<&mut ProfileSequenceDescEntry> {
-        todo!()
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut ProfileSequenceDescEntry> {
+        self.entries.get_mut(index)
     }
 }
 
@@ -341,7 +350,6 @@ pub struct DictEntry {
 /// C版: `cmsDICT`
 #[derive(Debug, Clone)]
 pub struct Dict {
-    #[allow(dead_code)]
     entries: Vec<DictEntry>,
 }
 
@@ -353,31 +361,37 @@ impl Default for Dict {
 
 impl Dict {
     pub fn new() -> Self {
-        todo!()
+        Self {
+            entries: Vec::new(),
+        }
     }
 
     pub fn add(
         &mut self,
-        _name: &str,
-        _value: Option<&str>,
-        _display_name: Option<&Mlu>,
-        _display_value: Option<&Mlu>,
+        name: &str,
+        value: Option<&str>,
+        display_name: Option<&Mlu>,
+        display_value: Option<&Mlu>,
     ) -> bool {
-        todo!()
+        self.entries.push(DictEntry {
+            name: name.to_string(),
+            value: value.map(|s| s.to_string()),
+            display_name: display_name.cloned(),
+            display_value: display_value.cloned(),
+        });
+        true
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &DictEntry> {
-        todo!();
-        #[allow(unreachable_code)]
-        std::iter::empty()
+        self.entries.iter()
     }
 
     pub fn len(&self) -> usize {
-        todo!()
+        self.entries.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        todo!()
+        self.entries.is_empty()
     }
 }
 
@@ -585,7 +599,7 @@ mod tests {
     // --- ProfileSequenceDesc tests ---
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn profile_sequence_desc_new() {
         let seq = ProfileSequenceDesc::new(3);
         assert_eq!(seq.len(), 3);
@@ -596,7 +610,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn profile_sequence_desc_get_and_mutate() {
         let mut seq = ProfileSequenceDesc::new(2);
 
@@ -615,7 +629,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn profile_sequence_desc_clone() {
         let mut seq = ProfileSequenceDesc::new(1);
         seq.get_mut(0).unwrap().device_model = 42;
@@ -627,7 +641,7 @@ mod tests {
     // --- Dict tests ---
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn dict_new_is_empty() {
         let dict = Dict::new();
         assert_eq!(dict.len(), 0);
@@ -635,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn dict_add_and_iterate() {
         let mut dict = Dict::new();
         assert!(dict.add("key1", Some("value1"), None, None));
@@ -649,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn dict_add_with_display_names() {
         let mut dict = Dict::new();
         let mut display_name = Mlu::new();
@@ -665,7 +679,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn dict_add_none_value() {
         let mut dict = Dict::new();
         assert!(dict.add("key_only", None, None, None));
@@ -676,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn dict_clone() {
         let mut dict = Dict::new();
         dict.add("k", Some("v"), None, None);
