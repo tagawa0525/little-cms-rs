@@ -501,4 +501,278 @@ mod tests {
             assert!((v16 - vf).abs() < 0.001, "x={x}: 16bit={v16}, float={vf}");
         }
     }
+
+    // ========================================================================
+    // 2D interpolation (BilinearInterp16 / BilinearInterpFloat)
+    // ========================================================================
+
+    /// Build a 2D identity LUT: output[ch] = input[ch] for 3-channel output
+    fn build_2d_identity_table_16(n: u32, n_out: u32) -> Vec<u16> {
+        let mut table = vec![0u16; (n * n * n_out) as usize];
+        for y in 0..n {
+            for x in 0..n {
+                let idx = ((y * n + x) * n_out) as usize;
+                table[idx] = (x * 0xFFFF / (n - 1)) as u16;
+                table[idx + 1] = (y * 0xFFFF / (n - 1)) as u16;
+                if n_out > 2 {
+                    // Average of x and y
+                    table[idx + 2] = ((x * 0xFFFF / (n - 1) + y * 0xFFFF / (n - 1)) / 2) as u16;
+                }
+            }
+        }
+        table
+    }
+
+    fn build_2d_identity_table_float(n: u32, n_out: u32) -> Vec<f32> {
+        let mut table = vec![0.0f32; (n * n * n_out) as usize];
+        for y in 0..n {
+            for x in 0..n {
+                let idx = ((y * n + x) * n_out) as usize;
+                let xf = x as f32 / (n - 1) as f32;
+                let yf = y as f32 / (n - 1) as f32;
+                table[idx] = xf;
+                table[idx + 1] = yf;
+                if n_out > 2 {
+                    table[idx + 2] = (xf + yf) / 2.0;
+                }
+            }
+        }
+        table
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn identity_2d_16bit() {
+        let n = 17u32;
+        let n_out = 3u32;
+        let table = build_2d_identity_table_16(n, n_out);
+        let params = InterpParams::compute_uniform(n, 2, n_out, LERP_FLAGS_16BITS).unwrap();
+
+        // Test diagonal: input (x, x) should give output (x, x, x)
+        for &v in &[0u16, 0x4000, 0x8000, 0xC000, 0xFFFF] {
+            let mut output = [0u16; 3];
+            params.eval_16(&[v, v], &mut output, &table);
+            assert!(
+                (output[0] as i32 - v as i32).unsigned_abs() <= 2,
+                "v={v}: ch0={}",
+                output[0]
+            );
+            assert!(
+                (output[1] as i32 - v as i32).unsigned_abs() <= 2,
+                "v={v}: ch1={}",
+                output[1]
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn identity_2d_float() {
+        let n = 17u32;
+        let n_out = 3u32;
+        let table = build_2d_identity_table_float(n, n_out);
+        let params = InterpParams::compute_uniform(n, 2, n_out, LERP_FLAGS_FLOAT).unwrap();
+
+        for &v in &[0.0f32, 0.25, 0.5, 0.75, 1.0] {
+            let mut output = [0.0f32; 3];
+            params.eval_float(&[v, v], &mut output, &table);
+            assert!((output[0] - v).abs() < 1e-3, "v={v}: ch0={}", output[0]);
+            assert!((output[1] - v).abs() < 1e-3, "v={v}: ch1={}", output[1]);
+        }
+    }
+
+    // ========================================================================
+    // 3D interpolation (Tetrahedral / Trilinear)
+    // ========================================================================
+
+    /// Build a 3D identity CLUT: 3 inputs → 3 outputs, output == input
+    fn build_3d_identity_clut_16(n: u32) -> Vec<u16> {
+        let n_out = 3u32;
+        let mut table = vec![0u16; (n * n * n * n_out) as usize];
+        for z in 0..n {
+            for y in 0..n {
+                for x in 0..n {
+                    let idx = (((z * n + y) * n + x) * n_out) as usize;
+                    table[idx] = (x * 0xFFFF / (n - 1)) as u16;
+                    table[idx + 1] = (y * 0xFFFF / (n - 1)) as u16;
+                    table[idx + 2] = (z * 0xFFFF / (n - 1)) as u16;
+                }
+            }
+        }
+        table
+    }
+
+    fn build_3d_identity_clut_float(n: u32) -> Vec<f32> {
+        let n_out = 3u32;
+        let mut table = vec![0.0f32; (n * n * n * n_out) as usize];
+        for z in 0..n {
+            for y in 0..n {
+                for x in 0..n {
+                    let idx = (((z * n + y) * n + x) * n_out) as usize;
+                    table[idx] = x as f32 / (n - 1) as f32;
+                    table[idx + 1] = y as f32 / (n - 1) as f32;
+                    table[idx + 2] = z as f32 / (n - 1) as f32;
+                }
+            }
+        }
+        table
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn identity_3d_tetrahedral_16bit() {
+        let n = 17u32;
+        let table = build_3d_identity_clut_16(n);
+        let params = InterpParams::compute_uniform(n, 3, 3, LERP_FLAGS_16BITS).unwrap();
+
+        // Test various RGB values
+        let test_values: Vec<[u16; 3]> = vec![
+            [0, 0, 0],
+            [0xFFFF, 0xFFFF, 0xFFFF],
+            [0x8000, 0x8000, 0x8000],
+            [0xFFFF, 0, 0],
+            [0, 0xFFFF, 0],
+            [0, 0, 0xFFFF],
+            [0x4000, 0x8000, 0xC000],
+        ];
+
+        for input in &test_values {
+            let mut output = [0u16; 3];
+            params.eval_16(input, &mut output, &table);
+            for ch in 0..3 {
+                let diff = (output[ch] as i32 - input[ch] as i32).unsigned_abs();
+                assert!(
+                    diff <= 2,
+                    "input={input:?}: ch{ch} output={}, expected={}",
+                    output[ch],
+                    input[ch]
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn identity_3d_tetrahedral_float() {
+        let n = 33u32;
+        let table = build_3d_identity_clut_float(n);
+        let params = InterpParams::compute_uniform(n, 3, 3, LERP_FLAGS_FLOAT).unwrap();
+
+        let test_values: Vec<[f32; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [0.5, 0.5, 0.5],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.25, 0.5, 0.75],
+        ];
+
+        for input in &test_values {
+            let mut output = [0.0f32; 3];
+            params.eval_float(input, &mut output, &table);
+            for ch in 0..3 {
+                assert!(
+                    (output[ch] - input[ch]).abs() < 1e-3,
+                    "input={input:?}: ch{ch} output={}, expected={}",
+                    output[ch],
+                    input[ch]
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn identity_3d_trilinear_16bit() {
+        let n = 17u32;
+        let table = build_3d_identity_clut_16(n);
+        let params =
+            InterpParams::compute_uniform(n, 3, 3, LERP_FLAGS_16BITS | LERP_FLAGS_TRILINEAR)
+                .unwrap();
+
+        let mut output = [0u16; 3];
+        params.eval_16(&[0x8000, 0x4000, 0xC000], &mut output, &table);
+        assert!((output[0] as i32 - 0x8000).unsigned_abs() <= 2);
+        assert!((output[1] as i32 - 0x4000).unsigned_abs() <= 2);
+        assert!((output[2] as i32 - 0xC000).unsigned_abs() <= 2);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn identity_3d_trilinear_float() {
+        let n = 17u32;
+        let table = build_3d_identity_clut_float(n);
+        let params =
+            InterpParams::compute_uniform(n, 3, 3, LERP_FLAGS_FLOAT | LERP_FLAGS_TRILINEAR)
+                .unwrap();
+
+        let mut output = [0.0f32; 3];
+        params.eval_float(&[0.5, 0.25, 0.75], &mut output, &table);
+        assert!((output[0] - 0.5).abs() < 1e-3);
+        assert!((output[1] - 0.25).abs() < 1e-3);
+        assert!((output[2] - 0.75).abs() < 1e-3);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn consistency_3d_tetrahedral_vs_trilinear() {
+        // Both should give same results on identity CLUT
+        let n = 33u32;
+        let table = build_3d_identity_clut_16(n);
+        let p_tet = InterpParams::compute_uniform(n, 3, 3, LERP_FLAGS_16BITS).unwrap();
+        let p_tri =
+            InterpParams::compute_uniform(n, 3, 3, LERP_FLAGS_16BITS | LERP_FLAGS_TRILINEAR)
+                .unwrap();
+
+        for r in (0..=0xFFFFu32).step_by(0x3333) {
+            for g in (0..=0xFFFFu32).step_by(0x5555) {
+                let input = [r as u16, g as u16, 0x8000u16];
+                let mut out_tet = [0u16; 3];
+                let mut out_tri = [0u16; 3];
+                p_tet.eval_16(&input, &mut out_tet, &table);
+                p_tri.eval_16(&input, &mut out_tri, &table);
+                for ch in 0..3 {
+                    let diff = (out_tet[ch] as i32 - out_tri[ch] as i32).unsigned_abs();
+                    assert!(
+                        diff <= 2,
+                        "input={input:?}: ch{ch} tet={}, tri={}",
+                        out_tet[ch],
+                        out_tri[ch]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn consistency_3d_16bit_vs_float() {
+        let n = 33u32;
+        let table_16 = build_3d_identity_clut_16(n);
+        let table_f = build_3d_identity_clut_float(n);
+        let p16 = InterpParams::compute_uniform(n, 3, 3, LERP_FLAGS_16BITS).unwrap();
+        let pf = InterpParams::compute_uniform(n, 3, 3, LERP_FLAGS_FLOAT).unwrap();
+
+        let test_values: Vec<[f64; 3]> = vec![[0.1, 0.2, 0.3], [0.5, 0.5, 0.5], [0.9, 0.1, 0.5]];
+
+        for input in &test_values {
+            let input_16: Vec<u16> = input.iter().map(|&x| (x * 65535.0 + 0.5) as u16).collect();
+            let input_f: Vec<f32> = input.iter().map(|&x| x as f32).collect();
+
+            let mut out_16 = [0u16; 3];
+            let mut out_f = [0.0f32; 3];
+            p16.eval_16(&input_16, &mut out_16, &table_16);
+            pf.eval_float(&input_f, &mut out_f, &table_f);
+
+            for ch in 0..3 {
+                let v16 = out_16[ch] as f64 / 65535.0;
+                let vf = out_f[ch] as f64;
+                assert!(
+                    (v16 - vf).abs() < 0.002,
+                    "input={input:?}: ch{ch} 16bit={v16}, float={vf}"
+                );
+            }
+        }
+    }
 }
