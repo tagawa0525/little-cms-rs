@@ -354,6 +354,10 @@ fn adapt_matrix_to_d50(m: &Mat3, source_wp: &CieXyY) -> Option<Mat3> {
 /// C版: `_cmsBuildRGB2XYZtransferMatrix`
 #[allow(dead_code)]
 pub fn build_rgb_to_xyz_matrix(wp: &CieXyY, primaries: &CieXyYTriple) -> Option<Mat3> {
+    if wp.y.abs() < f64::EPSILON {
+        return None;
+    }
+
     let xr = primaries.red.x;
     let yr = primaries.red.y;
     let xg = primaries.green.x;
