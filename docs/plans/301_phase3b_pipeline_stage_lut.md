@@ -1,6 +1,6 @@
 # Phase 3b: Pipeline・Stage（lut モジュール）
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmslut.c`（1,852行）
 **Rust見積**: ~1,400行（impl）+ ~600行（tests）
 **ブランチ**: `feat/phase3-lut`
