@@ -181,6 +181,81 @@ impl Mlu {
     }
 }
 
+// ============================================================================
+// Named Color
+// ============================================================================
+
+use crate::types::MAX_CHANNELS;
+
+/// A single named color entry.
+///
+/// C版: `_cmsNAMEDCOLOR`
+#[derive(Debug, Clone)]
+pub struct NamedColor {
+    pub name: String,
+    pub pcs: [u16; 3],
+    pub colorant: [u16; MAX_CHANNELS],
+}
+
+/// Named color palette.
+///
+/// C版: `cmsNAMEDCOLORLIST`
+#[derive(Debug, Clone)]
+pub struct NamedColorList {
+    #[allow(dead_code)]
+    colors: Vec<NamedColor>,
+    #[allow(dead_code)]
+    colorant_count: u32,
+    #[allow(dead_code)]
+    prefix: String,
+    #[allow(dead_code)]
+    suffix: String,
+}
+
+impl NamedColorList {
+    /// Create a new named color list.
+    ///
+    /// `colorant_count` is the number of device colorant channels (must be <= MAX_CHANNELS).
+    /// Returns `None` if `colorant_count` exceeds `MAX_CHANNELS`.
+    pub fn new(_colorant_count: u32, _prefix: &str, _suffix: &str) -> Option<Self> {
+        todo!()
+    }
+
+    /// Append a named color.
+    ///
+    /// `colorant` slice length must match the list's `colorant_count`.
+    pub fn append(&mut self, _name: &str, _pcs: &[u16; 3], _colorant: Option<&[u16]>) -> bool {
+        todo!()
+    }
+
+    /// Number of colors in the list.
+    pub fn count(&self) -> usize {
+        todo!()
+    }
+
+    /// Get color info at `index`.
+    pub fn info(&self, _index: usize) -> Option<&NamedColor> {
+        todo!()
+    }
+
+    /// Find a color by name (case-sensitive). Returns its index.
+    pub fn find(&self, _name: &str) -> Option<usize> {
+        todo!()
+    }
+
+    pub fn prefix(&self) -> &str {
+        todo!()
+    }
+
+    pub fn suffix(&self) -> &str {
+        todo!()
+    }
+
+    pub fn colorant_count(&self) -> u32 {
+        todo!()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,5 +377,90 @@ mod tests {
         let mlu2 = mlu.clone();
         assert_eq!(mlu2.get_utf8("en", "US"), Some("Hello".to_string()));
         assert_eq!(mlu2.translations_count(), 1);
+    }
+
+    // --- NamedColorList tests ---
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn named_color_list_new() {
+        let list = NamedColorList::new(3, "prefix", "suffix").unwrap();
+        assert_eq!(list.count(), 0);
+        assert_eq!(list.colorant_count(), 3);
+        assert_eq!(list.prefix(), "prefix");
+        assert_eq!(list.suffix(), "suffix");
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn named_color_list_new_rejects_too_many_channels() {
+        assert!(NamedColorList::new((MAX_CHANNELS + 1) as u32, "", "").is_none());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn named_color_list_append_and_count() {
+        let mut list = NamedColorList::new(3, "", "").unwrap();
+        let pcs = [1000, 2000, 3000];
+        let colorant = [100, 200, 300];
+
+        assert!(list.append("Red", &pcs, Some(&colorant)));
+        assert!(list.append("Green", &pcs, Some(&colorant)));
+        assert_eq!(list.count(), 2);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn named_color_list_info() {
+        let mut list = NamedColorList::new(3, "", "").unwrap();
+        let pcs = [1000, 2000, 3000];
+        let colorant = [100, 200, 300];
+        list.append("Red", &pcs, Some(&colorant));
+
+        let color = list.info(0).unwrap();
+        assert_eq!(color.name, "Red");
+        assert_eq!(color.pcs, pcs);
+        assert_eq!(color.colorant[..3], colorant);
+
+        assert!(list.info(1).is_none());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn named_color_list_find() {
+        let mut list = NamedColorList::new(3, "", "").unwrap();
+        let pcs = [0, 0, 0];
+        list.append("Red", &pcs, None);
+        list.append("Green", &pcs, None);
+        list.append("Blue", &pcs, None);
+
+        assert_eq!(list.find("Green"), Some(1));
+        assert_eq!(list.find("Blue"), Some(2));
+        assert_eq!(list.find("Yellow"), None);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn named_color_list_append_none_colorant() {
+        let mut list = NamedColorList::new(4, "", "").unwrap();
+        let pcs = [500, 600, 700];
+        assert!(list.append("Test", &pcs, None));
+
+        let color = list.info(0).unwrap();
+        assert_eq!(color.pcs, pcs);
+        assert_eq!(color.colorant, [0u16; MAX_CHANNELS]);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn named_color_list_clone() {
+        let mut list = NamedColorList::new(3, "pfx", "sfx").unwrap();
+        let pcs = [100, 200, 300];
+        list.append("Color1", &pcs, None);
+
+        let list2 = list.clone();
+        assert_eq!(list2.count(), 1);
+        assert_eq!(list2.prefix(), "pfx");
+        assert_eq!(list2.info(0).unwrap().name, "Color1");
     }
 }
