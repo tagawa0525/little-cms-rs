@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 use crate::context::{CmsError, ErrorCode};
-use crate::types::{IccHeader, TagSignature};
+use crate::types::{CieXyz, IccHeader, TagSignature, TagTypeSignature};
 
 // ============================================================================
 // IoHandler
@@ -256,6 +256,91 @@ impl IoHandler {
             _ => None,
         }
     }
+
+    // ========================================================================
+    // Number I/O helpers (big-endian)
+    // C版: cmsplugin.c
+    // ========================================================================
+
+    pub fn read_u8(&mut self) -> Result<u8, CmsError> {
+        todo!()
+    }
+
+    pub fn read_u16(&mut self) -> Result<u16, CmsError> {
+        todo!()
+    }
+
+    pub fn read_u32(&mut self) -> Result<u32, CmsError> {
+        todo!()
+    }
+
+    pub fn read_u64(&mut self) -> Result<u64, CmsError> {
+        todo!()
+    }
+
+    pub fn read_f32(&mut self) -> Result<f32, CmsError> {
+        todo!()
+    }
+
+    pub fn read_s15fixed16(&mut self) -> Result<f64, CmsError> {
+        todo!()
+    }
+
+    pub fn read_xyz(&mut self) -> Result<CieXyz, CmsError> {
+        todo!()
+    }
+
+    pub fn read_u16_array(&mut self, _n: usize) -> Result<Vec<u16>, CmsError> {
+        todo!()
+    }
+
+    pub fn write_u8(&mut self, _v: u8) -> Result<(), CmsError> {
+        todo!()
+    }
+
+    pub fn write_u16(&mut self, _v: u16) -> Result<(), CmsError> {
+        todo!()
+    }
+
+    pub fn write_u32(&mut self, _v: u32) -> Result<(), CmsError> {
+        todo!()
+    }
+
+    pub fn write_u64(&mut self, _v: u64) -> Result<(), CmsError> {
+        todo!()
+    }
+
+    pub fn write_f32(&mut self, _v: f32) -> Result<(), CmsError> {
+        todo!()
+    }
+
+    pub fn write_s15fixed16(&mut self, _v: f64) -> Result<(), CmsError> {
+        todo!()
+    }
+
+    pub fn write_xyz(&mut self, _xyz: &CieXyz) -> Result<(), CmsError> {
+        todo!()
+    }
+
+    pub fn write_u16_array(&mut self, _arr: &[u16]) -> Result<(), CmsError> {
+        todo!()
+    }
+
+    pub fn read_alignment(&mut self) -> Result<(), CmsError> {
+        todo!()
+    }
+
+    pub fn write_alignment(&mut self) -> Result<(), CmsError> {
+        todo!()
+    }
+
+    pub fn read_type_base(&mut self) -> Result<TagTypeSignature, CmsError> {
+        todo!()
+    }
+
+    pub fn write_type_base(&mut self, _sig: TagTypeSignature) -> Result<(), CmsError> {
+        todo!()
+    }
 }
 
 // ============================================================================
@@ -380,5 +465,124 @@ mod tests {
         }
 
         std::fs::remove_file(&path).ok();
+    }
+
+    // ========================================================================
+    // Number I/O helper tests
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_write_u16_big_endian() {
+        let mut io = IoHandler::from_memory_write(64);
+        io.write_u16(0x1234).unwrap();
+        io.seek(0);
+        // Verify raw bytes are big-endian
+        let mut raw = [0u8; 2];
+        io.read(&mut raw);
+        assert_eq!(raw, [0x12, 0x34]);
+        // Read back as u16
+        io.seek(0);
+        assert_eq!(io.read_u16().unwrap(), 0x1234);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_write_u32_big_endian() {
+        let mut io = IoHandler::from_memory_write(64);
+        io.write_u32(0xDEADBEEF).unwrap();
+        io.seek(0);
+        let mut raw = [0u8; 4];
+        io.read(&mut raw);
+        assert_eq!(raw, [0xDE, 0xAD, 0xBE, 0xEF]);
+        io.seek(0);
+        assert_eq!(io.read_u32().unwrap(), 0xDEADBEEF);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_write_f32_roundtrip() {
+        let mut io = IoHandler::from_memory_write(64);
+        let val: f32 = 1.5;
+        io.write_f32(val).unwrap();
+        io.seek(0);
+        let read_val = io.read_f32().unwrap();
+        assert_eq!(val, read_val);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_write_s15fixed16_roundtrip() {
+        use crate::types::{D50_X, D50_Y, D50_Z};
+        let mut io = IoHandler::from_memory_write(64);
+        io.write_s15fixed16(D50_X).unwrap();
+        io.write_s15fixed16(D50_Y).unwrap();
+        io.write_s15fixed16(D50_Z).unwrap();
+        io.seek(0);
+        let x = io.read_s15fixed16().unwrap();
+        let y = io.read_s15fixed16().unwrap();
+        let z = io.read_s15fixed16().unwrap();
+        // S15Fixed16 round-trip precision: within 1/65536
+        assert!((x - D50_X).abs() < 1.0 / 65536.0);
+        assert!((y - D50_Y).abs() < 1.0 / 65536.0);
+        assert!((z - D50_Z).abs() < 1.0 / 65536.0);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_write_xyz_roundtrip() {
+        use crate::types::{D50_X, D50_Y, D50_Z};
+        let xyz = CieXyz {
+            x: D50_X,
+            y: D50_Y,
+            z: D50_Z,
+        };
+        let mut io = IoHandler::from_memory_write(64);
+        io.write_xyz(&xyz).unwrap();
+        io.seek(0);
+        let read_xyz = io.read_xyz().unwrap();
+        assert!((read_xyz.x - xyz.x).abs() < 1.0 / 65536.0);
+        assert!((read_xyz.y - xyz.y).abs() < 1.0 / 65536.0);
+        assert!((read_xyz.z - xyz.z).abs() < 1.0 / 65536.0);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_write_u16_array_roundtrip() {
+        let arr = vec![100, 200, 300, 400, 500];
+        let mut io = IoHandler::from_memory_write(64);
+        io.write_u16_array(&arr).unwrap();
+        io.seek(0);
+        let read_arr = io.read_u16_array(5).unwrap();
+        assert_eq!(arr, read_arr);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn write_alignment_pads_to_4bytes() {
+        let mut io = IoHandler::from_memory_write(64);
+        // Write 5 bytes (not aligned)
+        io.write(&[1, 2, 3, 4, 5]);
+        assert_eq!(io.tell(), 5);
+        io.write_alignment().unwrap();
+        // Should be at offset 8 (next 4-byte boundary)
+        assert_eq!(io.tell(), 8);
+        // Verify padding bytes are zero
+        io.seek(5);
+        let mut pad = [0xFFu8; 3];
+        io.read(&mut pad);
+        assert_eq!(pad, [0, 0, 0]);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_type_base_roundtrip() {
+        let mut io = IoHandler::from_memory_write(64);
+        io.write_type_base(TagTypeSignature::Xyz).unwrap();
+        io.seek(0);
+        let sig = io.read_type_base().unwrap();
+        assert_eq!(sig, TagTypeSignature::Xyz);
+        // Type base is 8 bytes: 4 bytes sig + 4 bytes reserved
+        assert_eq!(io.tell(), 8);
     }
 }
