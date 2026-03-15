@@ -3,7 +3,7 @@
 
 #![allow(dead_code)]
 
-use crate::context::CmsError;
+use crate::context::{CmsError, ErrorCode};
 use crate::curves::gamma::ToneCurve;
 use crate::pipeline::named::{Mlu, NamedColorList, ProfileSequenceDesc};
 use crate::profile::io::IoHandler;
@@ -224,61 +224,324 @@ pub fn write_uint64_type(io: &mut IoHandler, arr: &[u64]) -> Result<(), CmsError
 
 // --- Text type ---
 // C版: Type_Text_Read / Type_Text_Write
-// Reads ASCII text and stores as Mlu.
+// Reads ASCII text, stores as Mlu with "no language"/"no country".
 
-pub fn read_text_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    todo!()
+pub fn read_text_type(io: &mut IoHandler, size: u32) -> Result<TagData, CmsError> {
+    let mut buf = vec![0u8; size as usize];
+    if size > 0 && !io.read(&mut buf) {
+        return Err(IoHandler::read_err());
+    }
+    // Trim trailing NUL
+    while buf.last() == Some(&0) {
+        buf.pop();
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let mut mlu = Mlu::new();
+    mlu.set_ascii("en", "US", &text);
+    Ok(TagData::Mlu(mlu))
 }
 
-pub fn write_text_type(_io: &mut IoHandler, _mlu: &Mlu) -> Result<(), CmsError> {
-    todo!()
+pub fn write_text_type(io: &mut IoHandler, mlu: &Mlu) -> Result<(), CmsError> {
+    let text = mlu.get_ascii("en", "US").unwrap_or_default();
+    let bytes = text.as_bytes();
+    if !io.write(bytes) {
+        return Err(IoHandler::write_err());
+    }
+    // Write NUL terminator
+    io.write_u8(0)?;
+    Ok(())
 }
 
 // --- TextDescription type (v2) ---
 // C版: Type_Text_Description_Read / Type_Text_Description_Write
+// Structure: u32 ascii_len + ascii_bytes + u32 unicode_lang + u32 unicode_count + utf16 + ...
 
-pub fn read_text_description_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    todo!()
+pub fn read_text_description_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    let ascii_len = io.read_u32()? as usize;
+    let mut ascii_buf = vec![0u8; ascii_len];
+    if ascii_len > 0 && !io.read(&mut ascii_buf) {
+        return Err(IoHandler::read_err());
+    }
+    // Trim trailing NUL
+    while ascii_buf.last() == Some(&0) {
+        ascii_buf.pop();
+    }
+    let text = String::from_utf8_lossy(&ascii_buf);
+    let mut mlu = Mlu::new();
+    mlu.set_ascii("en", "US", &text);
+    // Skip unicode and scriptcode sections (tolerate missing data)
+    Ok(TagData::Mlu(mlu))
 }
 
-pub fn write_text_description_type(_io: &mut IoHandler, _mlu: &Mlu) -> Result<(), CmsError> {
-    todo!()
+pub fn write_text_description_type(io: &mut IoHandler, mlu: &Mlu) -> Result<(), CmsError> {
+    let text = mlu.get_ascii("en", "US").unwrap_or_default();
+    let bytes = text.as_bytes();
+    let len = bytes.len() + 1; // include NUL
+    io.write_u32(len as u32)?;
+    if !io.write(bytes) {
+        return Err(IoHandler::write_err());
+    }
+    io.write_u8(0)?; // NUL terminator
+
+    // Unicode section: language=0, count=0
+    io.write_u32(0)?; // unicode language code
+    io.write_u32(0)?; // unicode count
+
+    // ScriptCode section: code=0, count=0, data=67 zero bytes
+    io.write_u16(0)?; // script code
+    io.write_u8(0)?; // count
+    let zeros = [0u8; 67];
+    if !io.write(&zeros) {
+        return Err(IoHandler::write_err());
+    }
+    Ok(())
 }
 
 // --- MLU type (v4) ---
 // C版: Type_MLU_Read / Type_MLU_Write
+// Structure: u32 count + u32 rec_len(=12) + records[count] + UTF-16BE pool
 
-pub fn read_mlu_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    todo!()
+pub fn read_mlu_type(io: &mut IoHandler, size: u32) -> Result<TagData, CmsError> {
+    let count = io.read_u32()? as usize;
+    let rec_len = io.read_u32()?;
+    if rec_len != 12 {
+        return Err(CmsError {
+            code: ErrorCode::UnknownExtension,
+            message: "MLU record length != 12".to_string(),
+        });
+    }
+
+    // Header size: type_base(8) already consumed by caller in full pipeline,
+    // but here we work with raw payload. The directory is 12*count bytes.
+    let dir_size = 12 * count;
+
+    struct MluRecord {
+        lang: [u8; 2],
+        country: [u8; 2],
+        len: u32,
+        offset: u32,
+    }
+
+    let mut records = Vec::with_capacity(count);
+    for _ in 0..count {
+        let lang_raw = io.read_u16()?;
+        let country_raw = io.read_u16()?;
+        let len = io.read_u32()?;
+        let offset = io.read_u32()?;
+        records.push(MluRecord {
+            lang: lang_raw.to_be_bytes(),
+            country: country_raw.to_be_bytes(),
+            len,
+            offset,
+        });
+    }
+
+    // Read the UTF-16BE string pool (rest of the tag)
+    let pool_start = 8 + dir_size as u32; // 8 = count(4) + rec_len(4)
+    let pool_size = size.saturating_sub(pool_start);
+    let mut pool = vec![0u8; pool_size as usize];
+    if pool_size > 0 && !io.read(&mut pool) {
+        return Err(IoHandler::read_err());
+    }
+
+    let mut mlu = Mlu::new();
+    for rec in &records {
+        // Offset in the MLU is relative to start of tag (after type base).
+        // String data starts at pool_start, so string offset into pool = rec.offset - pool_start
+        let str_offset = rec.offset.saturating_sub(pool_start) as usize;
+        let str_len = rec.len as usize;
+        if str_offset + str_len > pool.len() {
+            continue; // Skip bad records
+        }
+        let utf16_bytes = &pool[str_offset..str_offset + str_len];
+        // Decode UTF-16BE to String
+        let text = decode_utf16be(utf16_bytes);
+        let lang = std::str::from_utf8(&rec.lang).unwrap_or("en");
+        let country = std::str::from_utf8(&rec.country).unwrap_or("US");
+        mlu.set_ascii(lang, country, &text);
+    }
+
+    Ok(TagData::Mlu(mlu))
 }
 
-pub fn write_mlu_type(_io: &mut IoHandler, _mlu: &Mlu) -> Result<(), CmsError> {
-    todo!()
+pub fn write_mlu_type(io: &mut IoHandler, mlu: &Mlu) -> Result<(), CmsError> {
+    let count = mlu.translations_count();
+    io.write_u32(count as u32)?;
+    io.write_u32(12)?; // record length
+
+    // Build UTF-16BE pool and records
+    let header_size = 8 + 12 * count; // 8 = count(4) + rec_len(4)
+    let mut pool = Vec::new();
+    struct WriteRecord {
+        lang: u16,
+        country: u16,
+        offset: u32,
+        len: u32,
+    }
+    let mut records = Vec::with_capacity(count);
+
+    for i in 0..count {
+        if let Some((lang_code, country_code)) = mlu.translation_codes(i) {
+            let lang_str = std::str::from_utf8(&lang_code.0).unwrap_or("en");
+            let country_str = std::str::from_utf8(&country_code.0).unwrap_or("US");
+            let text = mlu.get_ascii(lang_str, country_str).unwrap_or_default();
+            let utf16_bytes = encode_utf16be(&text);
+            let offset = header_size + pool.len();
+            let len = utf16_bytes.len();
+            records.push(WriteRecord {
+                lang: u16::from_be_bytes(lang_code.0),
+                country: u16::from_be_bytes(country_code.0),
+                offset: offset as u32,
+                len: len as u32,
+            });
+            pool.extend_from_slice(&utf16_bytes);
+        }
+    }
+
+    // Write directory
+    for rec in &records {
+        io.write_u16(rec.lang)?;
+        io.write_u16(rec.country)?;
+        io.write_u32(rec.len)?;
+        io.write_u32(rec.offset)?;
+    }
+
+    // Write pool
+    if !pool.is_empty() && !io.write(&pool) {
+        return Err(IoHandler::write_err());
+    }
+
+    Ok(())
+}
+
+fn decode_utf16be(bytes: &[u8]) -> String {
+    let u16s: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+        .collect();
+    String::from_utf16_lossy(&u16s)
+}
+
+fn encode_utf16be(text: &str) -> Vec<u8> {
+    let mut result = Vec::new();
+    for c in text.encode_utf16() {
+        result.extend_from_slice(&c.to_be_bytes());
+    }
+    result
 }
 
 // --- Curve type ---
 // C版: Type_Curve_Read / Type_Curve_Write
 
-pub fn read_curve_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    todo!()
+pub fn read_curve_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    let count = io.read_u32()?;
+    let curve = match count {
+        0 => {
+            // Linear
+            ToneCurve::build_parametric(1, &[1.0]).ok_or_else(|| CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to build linear curve".to_string(),
+            })?
+        }
+        1 => {
+            // Single gamma as 8.8 fixed point
+            let gamma_fixed = io.read_u16()?;
+            let gamma = gamma_fixed as f64 / 256.0;
+            ToneCurve::build_parametric(1, &[gamma]).ok_or_else(|| CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to build gamma curve".to_string(),
+            })?
+        }
+        _ => {
+            if count > 0x7FFF {
+                return Err(CmsError {
+                    code: ErrorCode::Range,
+                    message: "Curve table too large".to_string(),
+                });
+            }
+            let table = io.read_u16_array(count as usize)?;
+            ToneCurve::build_tabulated_16(&table).ok_or_else(|| CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to build tabulated curve".to_string(),
+            })?
+        }
+    };
+    Ok(TagData::Curve(curve))
 }
 
-pub fn write_curve_type(_io: &mut IoHandler, _curve: &ToneCurve) -> Result<(), CmsError> {
-    todo!()
+pub fn write_curve_type(io: &mut IoHandler, curve: &ToneCurve) -> Result<(), CmsError> {
+    // Check if this is a single-segment parametric type 1 (pure gamma)
+    if let Some(seg) = curve.segment(0)
+        && !curve.is_multisegment()
+        && seg.curve_type == 1
+    {
+        let gamma = seg.params[0];
+        let gamma_fixed = ((gamma * 256.0) + 0.5) as u16;
+        io.write_u32(1)?;
+        io.write_u16(gamma_fixed)?;
+        return Ok(());
+    }
+
+    // Tabulated curve
+    let table = curve.table16();
+    io.write_u32(table.len() as u32)?;
+    io.write_u16_array(table)?;
+    Ok(())
 }
 
 // --- ParametricCurve type ---
 // C版: Type_ParametricCurve_Read / Type_ParametricCurve_Write
 
-pub fn read_parametric_curve_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    todo!()
+const PARAMS_BY_TYPE: [usize; 5] = [1, 3, 4, 5, 7];
+
+pub fn read_parametric_curve_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    let curve_type = io.read_u16()?;
+    let _reserved = io.read_u16()?;
+
+    if curve_type > 4 {
+        return Err(CmsError {
+            code: ErrorCode::UnknownExtension,
+            message: format!("Unknown parametric curve type '{}'", curve_type),
+        });
+    }
+
+    let n_params = PARAMS_BY_TYPE[curve_type as usize];
+    let mut params = [0.0f64; 10];
+    for p in params.iter_mut().take(n_params) {
+        *p = io.read_s15fixed16()?;
+    }
+
+    // cmstypes.c uses Type+1 for cmsBuildParametricToneCurve
+    let curve = ToneCurve::build_parametric(curve_type as i32 + 1, &params[..n_params])
+        .ok_or_else(|| CmsError {
+            code: ErrorCode::Internal,
+            message: "Failed to build parametric curve".to_string(),
+        })?;
+    Ok(TagData::Curve(curve))
 }
 
-pub fn write_parametric_curve_type(
-    _io: &mut IoHandler,
-    _curve: &ToneCurve,
-) -> Result<(), CmsError> {
-    todo!()
+pub fn write_parametric_curve_type(io: &mut IoHandler, curve: &ToneCurve) -> Result<(), CmsError> {
+    let seg = curve.segment(0).ok_or_else(|| CmsError {
+        code: ErrorCode::Internal,
+        message: "No segment in parametric curve".to_string(),
+    })?;
+
+    let typen = seg.curve_type;
+    if !(1..=5).contains(&typen) {
+        return Err(CmsError {
+            code: ErrorCode::UnknownExtension,
+            message: "Unsupported parametric curve type for write".to_string(),
+        });
+    }
+
+    let n_params = PARAMS_BY_TYPE[(typen - 1) as usize];
+    io.write_u16((typen - 1) as u16)?;
+    io.write_u16(0)?; // reserved
+
+    for i in 0..n_params {
+        io.write_s15fixed16(seg.params[i])?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -290,7 +553,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-
     fn xyz_type_roundtrip() {
         let xyz = CieXyz {
             x: D50_X,
@@ -317,7 +579,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-
     fn signature_type_roundtrip() {
         let sig = ColorSpaceSignature::RgbData as u32;
         let mut io = IoHandler::from_memory_write(256);
@@ -336,7 +597,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-
     fn datetime_type_roundtrip() {
         let dt = DateTimeNumber {
             year: 2024,
@@ -369,7 +629,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-
     fn s15fixed16_array_roundtrip() {
         let arr = vec![1.0, -0.5, D50_X, D50_Y, D50_Z];
         let mut io = IoHandler::from_memory_write(256);
@@ -393,7 +652,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-
     fn u16fixed16_array_roundtrip() {
         let arr = vec![1.0, 2.5, 0.0];
         let mut io = IoHandler::from_memory_write(256);
@@ -417,7 +675,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-
     fn uint8_array_roundtrip() {
         let arr: Vec<u8> = vec![1, 2, 3, 4, 5];
         let mut io = IoHandler::from_memory_write(256);
@@ -432,7 +689,6 @@ mod tests {
     }
 
     #[test]
-
     fn uint16_array_roundtrip() {
         let arr: Vec<u16> = vec![100, 200, 300];
         let mut io = IoHandler::from_memory_write(256);
@@ -447,7 +703,6 @@ mod tests {
     }
 
     #[test]
-
     fn uint32_array_roundtrip() {
         let arr: Vec<u32> = vec![0xDEADBEEF, 0xCAFEBABE];
         let mut io = IoHandler::from_memory_write(256);
@@ -462,7 +717,6 @@ mod tests {
     }
 
     #[test]
-
     fn uint64_array_roundtrip() {
         let arr: Vec<u64> = vec![0x0102030405060708, 0xFFEEDDCCBBAA9988];
         let mut io = IoHandler::from_memory_write(256);
@@ -481,7 +735,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn text_type_roundtrip() {
         let mut mlu = Mlu::new();
         mlu.set_ascii("en", "US", "Hello World");
@@ -506,7 +759,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn text_description_type_roundtrip() {
         let mut mlu = Mlu::new();
         mlu.set_ascii("en", "US", "Test Description");
@@ -531,7 +783,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn mlu_type_roundtrip() {
         let mut mlu = Mlu::new();
         mlu.set_ascii("en", "US", "English");
@@ -555,7 +806,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn curve_type_linear() {
         // count=0 → linear curve
         let mut io = IoHandler::from_memory_write(256);
@@ -574,7 +824,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn curve_type_gamma() {
         // count=1 → single gamma (8.8 fixed point)
         let gamma = 2.2;
@@ -595,7 +844,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn curve_type_tabulated_roundtrip() {
         let table: Vec<u16> = (0..256).map(|i| (i * 257) as u16).collect();
         let curve = ToneCurve::build_tabulated_16(&table).unwrap();
@@ -613,7 +861,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn parametric_curve_type_roundtrip() {
         // Type 1: gamma only (Y = X^gamma)
         let curve = ToneCurve::build_parametric(1, &[2.2]).unwrap();
