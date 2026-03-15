@@ -91,7 +91,15 @@ impl InterpParams {
                     eval_1_input(input, output, self, table);
                 }
             }
-            _ => unimplemented!("dimensions > 1 not yet implemented"),
+            2 => bilinear_interp_16(input, output, self, table),
+            3 => {
+                if self.flags & LERP_FLAGS_TRILINEAR != 0 {
+                    trilinear_interp_16(input, output, self, table);
+                } else {
+                    tetrahedral_interp_16(input, output, self, table);
+                }
+            }
+            _ => unimplemented!("dimensions > 3 not yet implemented"),
         }
     }
 
@@ -107,7 +115,15 @@ impl InterpParams {
                     eval_1_input_float(input, output, self, table);
                 }
             }
-            _ => unimplemented!("dimensions > 1 not yet implemented"),
+            2 => bilinear_interp_float(input, output, self, table),
+            3 => {
+                if self.flags & LERP_FLAGS_TRILINEAR != 0 {
+                    trilinear_interp_float(input, output, self, table);
+                } else {
+                    tetrahedral_interp_float(input, output, self, table);
+                }
+            }
+            _ => unimplemented!("dimensions > 3 not yet implemented"),
         }
     }
 }
@@ -244,6 +260,377 @@ fn eval_1_input_float(input: &[f32], output: &mut [f32], p: &InterpParams, table
 
     for i in 0..p.n_outputs as usize {
         output[i] = table[k0 + i] + (table[k1 + i] - table[k0 + i]) * rest;
+    }
+}
+
+// ============================================================================
+// 2D interpolation
+// ============================================================================
+
+/// 2D bilinear interpolation (u16).
+///
+/// C版: `BilinearInterp16`
+fn bilinear_interp_16(input: &[u16], output: &mut [u16], p: &InterpParams, table: &[u16]) {
+    let fx = to_fixed_domain(input[0] as i32 * p.domain[0] as i32);
+    let x0 = (fx >> 16) as usize;
+    let rx = fx & 0xffff;
+
+    let fy = to_fixed_domain(input[1] as i32 * p.domain[1] as i32);
+    let y0 = (fy >> 16) as usize;
+    let ry = fy & 0xffff;
+
+    let x0_stride = p.opta[1] as usize * x0;
+    let x1_stride = if input[0] == 0xffff {
+        x0_stride
+    } else {
+        x0_stride + p.opta[1] as usize
+    };
+    let y0_stride = p.opta[0] as usize * y0;
+    let y1_stride = if input[1] == 0xffff {
+        y0_stride
+    } else {
+        y0_stride + p.opta[0] as usize
+    };
+
+    for i in 0..p.n_outputs as usize {
+        let d00 = table[x0_stride + y0_stride + i] as i32;
+        let d10 = table[x1_stride + y0_stride + i] as i32;
+        let d01 = table[x0_stride + y1_stride + i] as i32;
+        let d11 = table[x1_stride + y1_stride + i] as i32;
+
+        let dx0 = d00 + (((d10 - d00) * rx + 0x8000) >> 16);
+        let dx1 = d01 + (((d11 - d01) * rx + 0x8000) >> 16);
+        output[i] = (dx0 + (((dx1 - dx0) * ry + 0x8000) >> 16)) as u16;
+    }
+}
+
+/// 2D bilinear interpolation (f32).
+///
+/// C版: `BilinearInterpFloat`
+fn bilinear_interp_float(input: &[f32], output: &mut [f32], p: &InterpParams, table: &[f32]) {
+    let px = fclamp(input[0]) * p.domain[0] as f32;
+    let x0 = px.floor() as usize;
+    let rx = px - x0 as f32;
+
+    let py = fclamp(input[1]) * p.domain[1] as f32;
+    let y0 = py.floor() as usize;
+    let ry = py - y0 as f32;
+
+    let x0_stride = p.opta[1] as usize * x0;
+    let x1_stride = if fclamp(input[0]) >= 1.0 {
+        x0_stride
+    } else {
+        x0_stride + p.opta[1] as usize
+    };
+    let y0_stride = p.opta[0] as usize * y0;
+    let y1_stride = if fclamp(input[1]) >= 1.0 {
+        y0_stride
+    } else {
+        y0_stride + p.opta[0] as usize
+    };
+
+    for i in 0..p.n_outputs as usize {
+        let d00 = table[x0_stride + y0_stride + i];
+        let d10 = table[x1_stride + y0_stride + i];
+        let d01 = table[x0_stride + y1_stride + i];
+        let d11 = table[x1_stride + y1_stride + i];
+
+        let dx0 = d00 + (d10 - d00) * rx;
+        let dx1 = d01 + (d11 - d01) * rx;
+        output[i] = dx0 + (dx1 - dx0) * ry;
+    }
+}
+
+// ============================================================================
+// 3D interpolation
+// ============================================================================
+
+/// 3D trilinear interpolation (u16).
+///
+/// C版: `TrilinearInterp16`
+fn trilinear_interp_16(input: &[u16], output: &mut [u16], p: &InterpParams, table: &[u16]) {
+    let fx = to_fixed_domain(input[0] as i32 * p.domain[0] as i32);
+    let x0 = (fx >> 16) as usize;
+    let rx = fx & 0xffff;
+
+    let fy = to_fixed_domain(input[1] as i32 * p.domain[1] as i32);
+    let y0 = (fy >> 16) as usize;
+    let ry = fy & 0xffff;
+
+    let fz = to_fixed_domain(input[2] as i32 * p.domain[2] as i32);
+    let z0 = (fz >> 16) as usize;
+    let rz = fz & 0xffff;
+
+    let x0s = p.opta[2] as usize * x0;
+    let x1s = if input[0] == 0xffff {
+        x0s
+    } else {
+        x0s + p.opta[2] as usize
+    };
+    let y0s = p.opta[1] as usize * y0;
+    let y1s = if input[1] == 0xffff {
+        y0s
+    } else {
+        y0s + p.opta[1] as usize
+    };
+    let z0s = p.opta[0] as usize * z0;
+    let z1s = if input[2] == 0xffff {
+        z0s
+    } else {
+        z0s + p.opta[0] as usize
+    };
+
+    for i in 0..p.n_outputs as usize {
+        let d000 = table[x0s + y0s + z0s + i] as i32;
+        let d100 = table[x1s + y0s + z0s + i] as i32;
+        let d010 = table[x0s + y1s + z0s + i] as i32;
+        let d110 = table[x1s + y1s + z0s + i] as i32;
+        let d001 = table[x0s + y0s + z1s + i] as i32;
+        let d101 = table[x1s + y0s + z1s + i] as i32;
+        let d011 = table[x0s + y1s + z1s + i] as i32;
+        let d111 = table[x1s + y1s + z1s + i] as i32;
+
+        let dx00 = d000 + (((d100 - d000) * rx + 0x8000) >> 16);
+        let dx01 = d001 + (((d101 - d001) * rx + 0x8000) >> 16);
+        let dx10 = d010 + (((d110 - d010) * rx + 0x8000) >> 16);
+        let dx11 = d011 + (((d111 - d011) * rx + 0x8000) >> 16);
+        let dxy0 = dx00 + (((dx10 - dx00) * ry + 0x8000) >> 16);
+        let dxy1 = dx01 + (((dx11 - dx01) * ry + 0x8000) >> 16);
+        output[i] = (dxy0 + (((dxy1 - dxy0) * rz + 0x8000) >> 16)) as u16;
+    }
+}
+
+/// 3D trilinear interpolation (f32).
+///
+/// C版: `TrilinearInterpFloat`
+fn trilinear_interp_float(input: &[f32], output: &mut [f32], p: &InterpParams, table: &[f32]) {
+    let px = fclamp(input[0]) * p.domain[0] as f32;
+    let x0 = px.floor() as usize;
+    let rx = px - x0 as f32;
+
+    let py = fclamp(input[1]) * p.domain[1] as f32;
+    let y0 = py.floor() as usize;
+    let ry = py - y0 as f32;
+
+    let pz = fclamp(input[2]) * p.domain[2] as f32;
+    let z0 = pz.floor() as usize;
+    let rz = pz - z0 as f32;
+
+    let x0s = p.opta[2] as usize * x0;
+    let x1s = if fclamp(input[0]) >= 1.0 {
+        x0s
+    } else {
+        x0s + p.opta[2] as usize
+    };
+    let y0s = p.opta[1] as usize * y0;
+    let y1s = if fclamp(input[1]) >= 1.0 {
+        y0s
+    } else {
+        y0s + p.opta[1] as usize
+    };
+    let z0s = p.opta[0] as usize * z0;
+    let z1s = if fclamp(input[2]) >= 1.0 {
+        z0s
+    } else {
+        z0s + p.opta[0] as usize
+    };
+
+    for i in 0..p.n_outputs as usize {
+        let d000 = table[x0s + y0s + z0s + i];
+        let d100 = table[x1s + y0s + z0s + i];
+        let d010 = table[x0s + y1s + z0s + i];
+        let d110 = table[x1s + y1s + z0s + i];
+        let d001 = table[x0s + y0s + z1s + i];
+        let d101 = table[x1s + y0s + z1s + i];
+        let d011 = table[x0s + y1s + z1s + i];
+        let d111 = table[x1s + y1s + z1s + i];
+
+        let dx00 = d000 + (d100 - d000) * rx;
+        let dx01 = d001 + (d101 - d001) * rx;
+        let dx10 = d010 + (d110 - d010) * rx;
+        let dx11 = d011 + (d111 - d011) * rx;
+        let dxy0 = dx00 + (dx10 - dx00) * ry;
+        let dxy1 = dx01 + (dx11 - dx01) * ry;
+        output[i] = dxy0 + (dxy1 - dxy0) * rz;
+    }
+}
+
+/// 3D tetrahedral interpolation (u16) — Sakamoto algorithm.
+///
+/// C版: `TetrahedralInterp16`
+///
+/// Decomposes the unit cube into 6 tetrahedra based on the sort order of
+/// (rx, ry, rz) fractional parts. Uses 4 lookups + 3 multiplies per output
+/// channel instead of trilinear's 8 lookups + 7 lerps.
+fn tetrahedral_interp_16(input: &[u16], output: &mut [u16], p: &InterpParams, table: &[u16]) {
+    let fx = to_fixed_domain(input[0] as i32 * p.domain[0] as i32);
+    let x0 = (fx >> 16) as usize;
+    let rx = fx & 0xffff;
+
+    let fy = to_fixed_domain(input[1] as i32 * p.domain[1] as i32);
+    let y0 = (fy >> 16) as usize;
+    let ry = fy & 0xffff;
+
+    let fz = to_fixed_domain(input[2] as i32 * p.domain[2] as i32);
+    let z0 = (fz >> 16) as usize;
+    let rz = fz & 0xffff;
+
+    let x0s = p.opta[2] as usize * x0;
+    let x1s = if input[0] == 0xffff {
+        x0s
+    } else {
+        x0s + p.opta[2] as usize
+    };
+    let y0s = p.opta[1] as usize * y0;
+    let y1s = if input[1] == 0xffff {
+        y0s
+    } else {
+        y0s + p.opta[1] as usize
+    };
+    let z0s = p.opta[0] as usize * z0;
+    let z1s = if input[2] == 0xffff {
+        z0s
+    } else {
+        z0s + p.opta[0] as usize
+    };
+
+    let base = x0s + y0s + z0s;
+
+    for i in 0..p.n_outputs as usize {
+        let c0 = table[base + i] as i32;
+
+        let (c1, c2, c3) = if rx >= ry {
+            if ry >= rz {
+                // rx >= ry >= rz
+                (
+                    table[x1s + y0s + z0s + i] as i32 - c0,
+                    table[x1s + y1s + z0s + i] as i32 - table[x1s + y0s + z0s + i] as i32,
+                    table[x1s + y1s + z1s + i] as i32 - table[x1s + y1s + z0s + i] as i32,
+                )
+            } else if rx >= rz {
+                // rx >= rz >= ry
+                (
+                    table[x1s + y0s + z0s + i] as i32 - c0,
+                    table[x1s + y1s + z1s + i] as i32 - table[x1s + y0s + z1s + i] as i32,
+                    table[x1s + y0s + z1s + i] as i32 - table[x1s + y0s + z0s + i] as i32,
+                )
+            } else {
+                // rz > rx >= ry
+                (
+                    table[x1s + y0s + z1s + i] as i32 - table[x0s + y0s + z1s + i] as i32,
+                    table[x1s + y1s + z1s + i] as i32 - table[x1s + y0s + z1s + i] as i32,
+                    table[x0s + y0s + z1s + i] as i32 - c0,
+                )
+            }
+        } else if rx >= rz {
+            // ry > rx >= rz
+            (
+                table[x1s + y1s + z0s + i] as i32 - table[x0s + y1s + z0s + i] as i32,
+                table[x0s + y1s + z0s + i] as i32 - c0,
+                table[x1s + y1s + z1s + i] as i32 - table[x1s + y1s + z0s + i] as i32,
+            )
+        } else if ry >= rz {
+            // ry >= rz > rx
+            (
+                table[x1s + y1s + z1s + i] as i32 - table[x0s + y1s + z1s + i] as i32,
+                table[x0s + y1s + z0s + i] as i32 - c0,
+                table[x0s + y1s + z1s + i] as i32 - table[x0s + y1s + z0s + i] as i32,
+            )
+        } else {
+            // rz > ry > rx
+            (
+                table[x1s + y1s + z1s + i] as i32 - table[x0s + y1s + z1s + i] as i32,
+                table[x0s + y1s + z1s + i] as i32 - table[x0s + y0s + z1s + i] as i32,
+                table[x0s + y0s + z1s + i] as i32 - c0,
+            )
+        };
+
+        let rest = c1 * rx + c2 * ry + c3 * rz + 0x8001;
+        output[i] = (c0 + ((rest + (rest >> 16)) >> 16)) as u16;
+    }
+}
+
+/// 3D tetrahedral interpolation (f32) — Sakamoto algorithm.
+///
+/// C版: `TetrahedralInterpFloat`
+fn tetrahedral_interp_float(input: &[f32], output: &mut [f32], p: &InterpParams, table: &[f32]) {
+    let px = fclamp(input[0]) * p.domain[0] as f32;
+    let x0 = px.floor() as usize;
+    let rx = px - x0 as f32;
+
+    let py = fclamp(input[1]) * p.domain[1] as f32;
+    let y0 = py.floor() as usize;
+    let ry = py - y0 as f32;
+
+    let pz = fclamp(input[2]) * p.domain[2] as f32;
+    let z0 = pz.floor() as usize;
+    let rz = pz - z0 as f32;
+
+    let x0s = p.opta[2] as usize * x0;
+    let x1s = if fclamp(input[0]) >= 1.0 {
+        x0s
+    } else {
+        x0s + p.opta[2] as usize
+    };
+    let y0s = p.opta[1] as usize * y0;
+    let y1s = if fclamp(input[1]) >= 1.0 {
+        y0s
+    } else {
+        y0s + p.opta[1] as usize
+    };
+    let z0s = p.opta[0] as usize * z0;
+    let z1s = if fclamp(input[2]) >= 1.0 {
+        z0s
+    } else {
+        z0s + p.opta[0] as usize
+    };
+
+    let base = x0s + y0s + z0s;
+
+    for i in 0..p.n_outputs as usize {
+        let c0 = table[base + i];
+
+        let (c1, c2, c3) = if rx >= ry {
+            if ry >= rz {
+                (
+                    table[x1s + y0s + z0s + i] - c0,
+                    table[x1s + y1s + z0s + i] - table[x1s + y0s + z0s + i],
+                    table[x1s + y1s + z1s + i] - table[x1s + y1s + z0s + i],
+                )
+            } else if rx >= rz {
+                (
+                    table[x1s + y0s + z0s + i] - c0,
+                    table[x1s + y1s + z1s + i] - table[x1s + y0s + z1s + i],
+                    table[x1s + y0s + z1s + i] - table[x1s + y0s + z0s + i],
+                )
+            } else {
+                (
+                    table[x1s + y0s + z1s + i] - table[x0s + y0s + z1s + i],
+                    table[x1s + y1s + z1s + i] - table[x1s + y0s + z1s + i],
+                    table[x0s + y0s + z1s + i] - c0,
+                )
+            }
+        } else if rx >= rz {
+            (
+                table[x1s + y1s + z0s + i] - table[x0s + y1s + z0s + i],
+                table[x0s + y1s + z0s + i] - c0,
+                table[x1s + y1s + z1s + i] - table[x1s + y1s + z0s + i],
+            )
+        } else if ry >= rz {
+            (
+                table[x1s + y1s + z1s + i] - table[x0s + y1s + z1s + i],
+                table[x0s + y1s + z0s + i] - c0,
+                table[x0s + y1s + z1s + i] - table[x0s + y1s + z0s + i],
+            )
+        } else {
+            (
+                table[x1s + y1s + z1s + i] - table[x0s + y1s + z1s + i],
+                table[x0s + y1s + z1s + i] - table[x0s + y0s + z1s + i],
+                table[x0s + y0s + z1s + i] - c0,
+            )
+        };
+
+        output[i] = c0 + c1 * rx + c2 * ry + c3 * rz;
     }
 }
 
@@ -506,17 +893,19 @@ mod tests {
     // 2D interpolation (BilinearInterp16 / BilinearInterpFloat)
     // ========================================================================
 
-    /// Build a 2D identity LUT: output[ch] = input[ch] for 3-channel output
+    /// Build a 2D identity LUT: output[ch] = input[ch] for 3-channel output.
+    ///
+    /// Table convention: i0 (outermost, Input[0]) varies slowest,
+    /// i1 (innermost, Input[1]) varies fastest.
     fn build_2d_identity_table_16(n: u32, n_out: u32) -> Vec<u16> {
         let mut table = vec![0u16; (n * n * n_out) as usize];
-        for y in 0..n {
-            for x in 0..n {
-                let idx = ((y * n + x) * n_out) as usize;
-                table[idx] = (x * 0xFFFF / (n - 1)) as u16;
-                table[idx + 1] = (y * 0xFFFF / (n - 1)) as u16;
+        for i0 in 0..n {
+            for i1 in 0..n {
+                let idx = ((i0 * n + i1) * n_out) as usize;
+                table[idx] = (i0 * 0xFFFF / (n - 1)) as u16; // Output[0] = Input[0]
+                table[idx + 1] = (i1 * 0xFFFF / (n - 1)) as u16; // Output[1] = Input[1]
                 if n_out > 2 {
-                    // Average of x and y
-                    table[idx + 2] = ((x * 0xFFFF / (n - 1) + y * 0xFFFF / (n - 1)) / 2) as u16;
+                    table[idx + 2] = ((i0 * 0xFFFF / (n - 1) + i1 * 0xFFFF / (n - 1)) / 2) as u16;
                 }
             }
         }
@@ -525,15 +914,15 @@ mod tests {
 
     fn build_2d_identity_table_float(n: u32, n_out: u32) -> Vec<f32> {
         let mut table = vec![0.0f32; (n * n * n_out) as usize];
-        for y in 0..n {
-            for x in 0..n {
-                let idx = ((y * n + x) * n_out) as usize;
-                let xf = x as f32 / (n - 1) as f32;
-                let yf = y as f32 / (n - 1) as f32;
-                table[idx] = xf;
-                table[idx + 1] = yf;
+        for i0 in 0..n {
+            for i1 in 0..n {
+                let idx = ((i0 * n + i1) * n_out) as usize;
+                let v0 = i0 as f32 / (n - 1) as f32;
+                let v1 = i1 as f32 / (n - 1) as f32;
+                table[idx] = v0;
+                table[idx + 1] = v1;
                 if n_out > 2 {
-                    table[idx + 2] = (xf + yf) / 2.0;
+                    table[idx + 2] = (v0 + v1) / 2.0;
                 }
             }
         }
@@ -541,7 +930,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn identity_2d_16bit() {
         let n = 17u32;
         let n_out = 3u32;
@@ -566,7 +955,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn identity_2d_float() {
         let n = 17u32;
         let n_out = 3u32;
@@ -585,17 +974,20 @@ mod tests {
     // 3D interpolation (Tetrahedral / Trilinear)
     // ========================================================================
 
-    /// Build a 3D identity CLUT: 3 inputs → 3 outputs, output == input
+    /// Build a 3D identity CLUT: 3 inputs → 3 outputs, output[ch] == input[ch].
+    ///
+    /// Table convention: i0 (outermost, Input[0]) varies slowest,
+    /// i2 (innermost, Input[2]) varies fastest.
     fn build_3d_identity_clut_16(n: u32) -> Vec<u16> {
         let n_out = 3u32;
         let mut table = vec![0u16; (n * n * n * n_out) as usize];
-        for z in 0..n {
-            for y in 0..n {
-                for x in 0..n {
-                    let idx = (((z * n + y) * n + x) * n_out) as usize;
-                    table[idx] = (x * 0xFFFF / (n - 1)) as u16;
-                    table[idx + 1] = (y * 0xFFFF / (n - 1)) as u16;
-                    table[idx + 2] = (z * 0xFFFF / (n - 1)) as u16;
+        for i0 in 0..n {
+            for i1 in 0..n {
+                for i2 in 0..n {
+                    let idx = (((i0 * n + i1) * n + i2) * n_out) as usize;
+                    table[idx] = (i0 * 0xFFFF / (n - 1)) as u16;
+                    table[idx + 1] = (i1 * 0xFFFF / (n - 1)) as u16;
+                    table[idx + 2] = (i2 * 0xFFFF / (n - 1)) as u16;
                 }
             }
         }
@@ -605,13 +997,13 @@ mod tests {
     fn build_3d_identity_clut_float(n: u32) -> Vec<f32> {
         let n_out = 3u32;
         let mut table = vec![0.0f32; (n * n * n * n_out) as usize];
-        for z in 0..n {
-            for y in 0..n {
-                for x in 0..n {
-                    let idx = (((z * n + y) * n + x) * n_out) as usize;
-                    table[idx] = x as f32 / (n - 1) as f32;
-                    table[idx + 1] = y as f32 / (n - 1) as f32;
-                    table[idx + 2] = z as f32 / (n - 1) as f32;
+        for i0 in 0..n {
+            for i1 in 0..n {
+                for i2 in 0..n {
+                    let idx = (((i0 * n + i1) * n + i2) * n_out) as usize;
+                    table[idx] = i0 as f32 / (n - 1) as f32;
+                    table[idx + 1] = i1 as f32 / (n - 1) as f32;
+                    table[idx + 2] = i2 as f32 / (n - 1) as f32;
                 }
             }
         }
@@ -619,7 +1011,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn identity_3d_tetrahedral_16bit() {
         let n = 17u32;
         let table = build_3d_identity_clut_16(n);
@@ -652,7 +1044,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn identity_3d_tetrahedral_float() {
         let n = 33u32;
         let table = build_3d_identity_clut_float(n);
@@ -683,7 +1075,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn identity_3d_trilinear_16bit() {
         let n = 17u32;
         let table = build_3d_identity_clut_16(n);
@@ -699,7 +1091,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn identity_3d_trilinear_float() {
         let n = 17u32;
         let table = build_3d_identity_clut_float(n);
@@ -715,7 +1107,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn consistency_3d_tetrahedral_vs_trilinear() {
         // Both should give same results on identity CLUT
         let n = 33u32;
@@ -746,7 +1138,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn consistency_3d_16bit_vs_float() {
         let n = 33u32;
         let table_16 = build_3d_identity_clut_16(n);
