@@ -581,10 +581,22 @@ pub struct Pipeline {
     save_as_8bits: bool,
 }
 
-#[allow(dead_code)]
 impl Pipeline {
-    pub fn new(_input_channels: u32, _output_channels: u32) -> Option<Self> {
-        todo!()
+    /// Create a new empty pipeline.
+    ///
+    /// C版: `cmsPipelineAlloc`
+    pub fn new(input_channels: u32, output_channels: u32) -> Option<Self> {
+        if input_channels as usize >= crate::types::MAX_CHANNELS
+            || output_channels as usize >= crate::types::MAX_CHANNELS
+        {
+            return None;
+        }
+        Some(Pipeline {
+            stages: Vec::new(),
+            input_channels,
+            output_channels,
+            save_as_8bits: false,
+        })
     }
 
     pub fn input_channels(&self) -> u32 {
@@ -615,24 +627,97 @@ impl Pipeline {
         &mut self.stages
     }
 
-    pub fn insert_stage(&mut self, _loc: StageLoc, _stage: Stage) -> bool {
-        todo!()
+    /// Insert a stage at the beginning or end of the pipeline.
+    ///
+    /// C版: `cmsPipelineInsertStage`
+    pub fn insert_stage(&mut self, loc: StageLoc, stage: Stage) -> bool {
+        match loc {
+            StageLoc::AtBegin => self.stages.insert(0, stage),
+            StageLoc::AtEnd => self.stages.push(stage),
+        }
+        self.bless()
     }
 
-    pub fn remove_stage(&mut self, _loc: StageLoc) -> Option<Stage> {
-        todo!()
+    /// Remove a stage from the beginning or end. Returns the removed stage.
+    ///
+    /// C版: `cmsPipelineUnlinkStage`
+    pub fn remove_stage(&mut self, loc: StageLoc) -> Option<Stage> {
+        if self.stages.is_empty() {
+            return None;
+        }
+        let removed = match loc {
+            StageLoc::AtBegin => self.stages.remove(0),
+            StageLoc::AtEnd => self.stages.pop().unwrap(),
+        };
+        self.bless();
+        Some(removed)
     }
 
-    pub fn cat(&mut self, _other: &Pipeline) -> bool {
-        todo!()
+    /// Concatenate another pipeline's stages (cloned) onto this one.
+    ///
+    /// C版: `cmsPipelineCat`
+    pub fn cat(&mut self, other: &Pipeline) -> bool {
+        if self.stages.is_empty() && other.stages.is_empty() {
+            self.input_channels = other.input_channels;
+            self.output_channels = other.output_channels;
+        }
+        for stage in &other.stages {
+            self.stages.push(stage.clone());
+        }
+        self.bless()
     }
 
-    pub fn eval_float(&self, _input: &[f32], _output: &mut [f32]) {
-        todo!()
+    /// Evaluate the pipeline on float data.
+    ///
+    /// Uses a double-buffer (ping-pong) pattern with stack-allocated buffers.
+    ///
+    /// C版: `cmsPipelineEvalFloat`
+    pub fn eval_float(&self, input: &[f32], output: &mut [f32]) {
+        if self.stages.is_empty() {
+            let n = self.input_channels.min(self.output_channels) as usize;
+            output[..n].copy_from_slice(&input[..n]);
+            return;
+        }
+
+        let mut buf_a = [0.0f32; intrp::MAX_STAGE_CHANNELS];
+        let mut buf_b = [0.0f32; intrp::MAX_STAGE_CHANNELS];
+        let mut phase = 0usize;
+
+        let n_in = self.input_channels as usize;
+        buf_a[..n_in].copy_from_slice(&input[..n_in]);
+
+        for stage in &self.stages {
+            if phase == 0 {
+                stage.eval(&buf_a, &mut buf_b);
+            } else {
+                stage.eval(&buf_b, &mut buf_a);
+            }
+            phase ^= 1;
+        }
+
+        let n_out = self.output_channels as usize;
+        if phase == 0 {
+            output[..n_out].copy_from_slice(&buf_a[..n_out]);
+        } else {
+            output[..n_out].copy_from_slice(&buf_b[..n_out]);
+        }
     }
 
-    pub fn eval_16(&self, _input: &[u16], _output: &mut [u16]) {
-        todo!()
+    /// Evaluate the pipeline on 16-bit data.
+    ///
+    /// Converts u16→f32, evaluates float pipeline, converts back f32→u16.
+    ///
+    /// C版: `cmsPipelineEval16`
+    pub fn eval_16(&self, input: &[u16], output: &mut [u16]) {
+        let n_in = self.input_channels as usize;
+        let n_out = self.output_channels as usize;
+
+        let mut float_in = [0.0f32; intrp::MAX_STAGE_CHANNELS];
+        let mut float_out = [0.0f32; intrp::MAX_STAGE_CHANNELS];
+
+        from_16_to_float(&input[..n_in], &mut float_in[..n_in]);
+        self.eval_float(&float_in[..n_in], &mut float_out[..n_out]);
+        float_to_16(&float_out[..n_out], &mut output[..n_out]);
     }
 
     pub fn set_save_as_8bits(&mut self, on: bool) -> bool {
@@ -645,8 +730,38 @@ impl Pipeline {
         self.save_as_8bits
     }
 
-    pub fn check_and_retrieve_stages(&self, _types: &[StageSignature]) -> Option<Vec<usize>> {
-        todo!()
+    /// Check if stages match a pattern of types and return their indices.
+    ///
+    /// C版: `cmsPipelineCheckAndRetreiveStages`
+    pub fn check_and_retrieve_stages(&self, types: &[StageSignature]) -> Option<Vec<usize>> {
+        if self.stages.len() != types.len() {
+            return None;
+        }
+        for (stage, &expected) in self.stages.iter().zip(types.iter()) {
+            if stage.stage_type() != expected {
+                return None;
+            }
+        }
+        Some((0..types.len()).collect())
+    }
+
+    /// Update pipeline input/output channels from first/last stage.
+    /// Validate that adjacent stages have compatible channel counts.
+    ///
+    /// C版: `BlessLUT`
+    fn bless(&mut self) -> bool {
+        if self.stages.is_empty() {
+            return true;
+        }
+        self.input_channels = self.stages.first().unwrap().input_channels();
+        self.output_channels = self.stages.last().unwrap().output_channels();
+
+        for w in self.stages.windows(2) {
+            if w[0].output_channels() != w[1].input_channels() {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -1138,7 +1253,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn pipeline_empty() {
         let p = Pipeline::new(3, 3).unwrap();
         assert_eq!(p.input_channels(), 3);
@@ -1162,7 +1277,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn pipeline_insert_at_end() {
         let mut p = Pipeline::new(3, 3).unwrap();
         let s1 = Stage::new_identity(3).unwrap();
@@ -1181,7 +1296,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn pipeline_insert_at_begin() {
         let mut p = Pipeline::new(3, 3).unwrap();
         let s1 = Stage::new_identity(3).unwrap();
@@ -1200,7 +1315,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn pipeline_remove() {
         let mut p = Pipeline::new(3, 3).unwrap();
         let s1 = Stage::new_identity(3).unwrap();
@@ -1224,7 +1339,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn pipeline_eval_float_single_stage() {
         let mut p = Pipeline::new(3, 3).unwrap();
         let matrix = [2.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 4.0];
@@ -1241,7 +1356,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn pipeline_eval_float_chain() {
         // curves(gamma 2.0) → matrix(scale 2x) → curves(gamma 0.5 = sqrt)
         let mut p = Pipeline::new(3, 3).unwrap();
@@ -1276,7 +1391,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn pipeline_eval_16() {
         let mut p = Pipeline::new(3, 3).unwrap();
         let s = Stage::new_identity(3).unwrap();
@@ -1293,7 +1408,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn pipeline_cat() {
         let mut p1 = Pipeline::new(3, 3).unwrap();
         let matrix1 = [2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0];
@@ -1323,7 +1438,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn pipeline_clone() {
         let mut p = Pipeline::new(3, 3).unwrap();
         let curve = ToneCurve::build_gamma(2.2).unwrap();
@@ -1344,7 +1459,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn pipeline_check_and_retrieve_stages() {
         let mut p = Pipeline::new(3, 3).unwrap();
         p.insert_stage(StageLoc::AtEnd, Stage::new_tone_curves(None, 3).unwrap());
