@@ -729,4 +729,134 @@ mod tests {
             assert!((r1 - r2).abs() < 1e-6, "x={x}: g1={r1}, g2={r2}");
         }
     }
+
+    // ========================================================================
+    // Tabulated 16-bit: build → eval round-trip
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn tabulated_16_identity() {
+        // Build identity table: output = input
+        let n = 256;
+        let values: Vec<u16> = (0..n).map(|i| (i * 65535 / (n - 1)) as u16).collect();
+        let curve = ToneCurve::build_tabulated_16(&values).unwrap();
+
+        // eval_u16 should return approximately the input
+        for &input in &[0u16, 100, 1000, 0x4000, 0x8000, 0xC000, 0xFFFF] {
+            let output = curve.eval_u16(input);
+            let diff = (output as i32 - input as i32).unsigned_abs();
+            assert!(diff <= 2, "identity: input={input}, output={output}");
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn tabulated_16_gamma_2_2() {
+        // Build gamma 2.2 table
+        let n = 4096;
+        let values: Vec<u16> = (0..n)
+            .map(|i| {
+                let x = i as f64 / (n - 1) as f64;
+                (x.powf(2.2) * 65535.0 + 0.5) as u16
+            })
+            .collect();
+        let curve = ToneCurve::build_tabulated_16(&values).unwrap();
+
+        // Verify eval_u16 matches expected gamma curve
+        let test_inputs = [0u16, 0x2000, 0x4000, 0x8000, 0xC000, 0xFFFF];
+        for &input in &test_inputs {
+            let output = curve.eval_u16(input);
+            let expected = ((input as f64 / 65535.0).powf(2.2) * 65535.0 + 0.5) as u16;
+            let diff = (output as i32 - expected as i32).unsigned_abs();
+            assert!(
+                diff <= 3,
+                "gamma 2.2: input={input}, output={output}, expected={expected}"
+            );
+        }
+    }
+
+    // ========================================================================
+    // Tabulated float: build → eval round-trip
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn tabulated_float_identity() {
+        // Build identity table
+        let n = 256;
+        let values: Vec<f32> = (0..n).map(|i| i as f32 / (n - 1) as f32).collect();
+        let curve = ToneCurve::build_tabulated_float(&values).unwrap();
+
+        // eval_f32 in [0,1] range should return approximately the input
+        for &x in &[0.0f32, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0] {
+            let result = curve.eval_f32(x);
+            assert!(
+                (result - x).abs() < 1e-3,
+                "float identity: x={x}, result={result}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn tabulated_float_gamma_curve() {
+        // Build gamma 2.2 table from float values
+        let n = 1024;
+        let values: Vec<f32> = (0..n)
+            .map(|i| (i as f64 / (n - 1) as f64).powf(2.2) as f32)
+            .collect();
+        let curve = ToneCurve::build_tabulated_float(&values).unwrap();
+
+        for &x in &[0.0f32, 0.25, 0.5, 0.75, 1.0] {
+            let result = curve.eval_f32(x);
+            let expected = (x as f64).powf(2.2) as f32;
+            assert!(
+                (result - expected).abs() < 1e-3,
+                "float gamma: x={x}, result={result}, expected={expected}"
+            );
+        }
+    }
+
+    // ========================================================================
+    // Segmented curve: multi-segment evaluation
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn segmented_srgb() {
+        // Build sRGB as 3 segments:
+        // seg0: x < 0.04045 → Y = X/12.92 (type 6: Y = aX + b, with a=1/12.92, b=0)
+        // seg1: x >= 0.04045 → Y = ((X+0.055)/1.055)^2.4 (type 1 params via type 4)
+        let params_srgb = [2.4, 1.0 / 1.055, 0.055 / 1.055, 1.0 / 12.92, 0.04045];
+        let curve = ToneCurve::build_parametric(4, &params_srgb).unwrap();
+
+        // Verify it matches hand-computed sRGB values
+        let x = 0.5f32;
+        let result = curve.eval_f32(x);
+        let expected = ((0.5_f64 + 0.055) / 1.055).powf(2.4) as f32;
+        assert!(
+            (result - expected).abs() < 1e-4,
+            "srgb segment: x={x}, result={result}, expected={expected}"
+        );
+    }
+
+    // ========================================================================
+    // Boundary conditions
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn empty_table_returns_none() {
+        assert!(ToneCurve::build_tabulated_16(&[]).is_none());
+        assert!(ToneCurve::build_tabulated_float(&[]).is_none());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn oversized_table_returns_none() {
+        // MAX_TABLE_ENTRIES = 65530
+        let values = vec![0u16; 65531];
+        assert!(ToneCurve::build_tabulated_16(&values).is_none());
+    }
 }
