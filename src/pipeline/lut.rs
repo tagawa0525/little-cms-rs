@@ -611,6 +611,11 @@ impl Stage {
                 }
             }
             _ => {
+                debug_assert!(
+                    false,
+                    "Stage::eval: unhandled stage type {:?}",
+                    self.stage_type
+                );
                 let n = self.input_channels.min(self.output_channels) as usize;
                 output[..n].copy_from_slice(&input[..n]);
             }
