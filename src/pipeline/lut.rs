@@ -172,7 +172,7 @@ impl Stage {
     ///
     /// C版: `cmsStageAllocIdentity`
     pub fn new_identity(n: u32) -> Option<Self> {
-        if n == 0 {
+        if n == 0 || n as usize > intrp::MAX_STAGE_CHANNELS {
             return None;
         }
         Some(Stage {
@@ -188,7 +188,7 @@ impl Stage {
     ///
     /// C版: `cmsStageAllocToneCurves`
     pub fn new_tone_curves(curves: Option<&[ToneCurve]>, n: u32) -> Option<Self> {
-        if n == 0 {
+        if n == 0 || n as usize > intrp::MAX_STAGE_CHANNELS {
             return None;
         }
         let curve_vec: Vec<ToneCurve> = match curves {
@@ -233,7 +233,11 @@ impl Stage {
         matrix: &[f64],
         offset: Option<&[f64]>,
     ) -> Option<Self> {
-        if rows == 0 || cols == 0 {
+        if rows == 0
+            || cols == 0
+            || rows as usize > intrp::MAX_STAGE_CHANNELS
+            || cols as usize > intrp::MAX_STAGE_CHANNELS
+        {
             return None;
         }
         let n = (rows as u64) * (cols as u64);
@@ -281,7 +285,10 @@ impl Stage {
         if input_channels as usize > MAX_INPUT_DIMENSIONS {
             return None;
         }
-        if input_channels == 0 || output_channels == 0 {
+        if input_channels == 0
+            || output_channels == 0
+            || output_channels as usize > intrp::MAX_STAGE_CHANNELS
+        {
             return None;
         }
 
@@ -347,7 +354,10 @@ impl Stage {
         if input_channels as usize > MAX_INPUT_DIMENSIONS {
             return None;
         }
-        if input_channels == 0 || output_channels == 0 {
+        if input_channels == 0
+            || output_channels == 0
+            || output_channels as usize > intrp::MAX_STAGE_CHANNELS
+        {
             return None;
         }
 
@@ -449,7 +459,7 @@ impl Stage {
 
     /// C版: `_cmsStageClipNegatives`
     pub fn new_clip_negatives(n: u32) -> Option<Self> {
-        if n == 0 {
+        if n == 0 || n as usize > intrp::MAX_STAGE_CHANNELS {
             return None;
         }
         Some(Stage {
