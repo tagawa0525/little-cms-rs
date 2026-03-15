@@ -60,79 +60,166 @@ pub fn write_tag_type(
 }
 
 // ============================================================================
-// Individual type handlers (stubs)
+// Individual type handlers
 // ============================================================================
 
-pub fn read_xyz_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    todo!()
+// --- XYZ type ---
+// C版: Type_XYZ_Read / Type_XYZ_Write
+
+pub fn read_xyz_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    let xyz = io.read_xyz()?;
+    Ok(TagData::Xyz(xyz))
 }
 
-pub fn write_xyz_type(_io: &mut IoHandler, _xyz: &CieXyz) -> Result<(), CmsError> {
-    todo!()
+pub fn write_xyz_type(io: &mut IoHandler, xyz: &CieXyz) -> Result<(), CmsError> {
+    io.write_xyz(xyz)
 }
 
-pub fn read_signature_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    todo!()
+// --- Signature type ---
+// C版: Type_Signature_Read / Type_Signature_Write
+
+pub fn read_signature_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    let sig = io.read_u32()?;
+    Ok(TagData::Signature(sig))
 }
 
-pub fn write_signature_type(_io: &mut IoHandler, _sig: u32) -> Result<(), CmsError> {
-    todo!()
+pub fn write_signature_type(io: &mut IoHandler, sig: u32) -> Result<(), CmsError> {
+    io.write_u32(sig)
 }
 
-pub fn read_datetime_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    todo!()
+// --- DateTime type ---
+// C版: Type_DateTime_Read / Type_DateTime_Write
+
+pub fn read_datetime_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    let dt = DateTimeNumber {
+        year: io.read_u16()?,
+        month: io.read_u16()?,
+        day: io.read_u16()?,
+        hours: io.read_u16()?,
+        minutes: io.read_u16()?,
+        seconds: io.read_u16()?,
+    };
+    Ok(TagData::DateTime(dt))
 }
 
-pub fn write_datetime_type(_io: &mut IoHandler, _dt: &DateTimeNumber) -> Result<(), CmsError> {
-    todo!()
+pub fn write_datetime_type(io: &mut IoHandler, dt: &DateTimeNumber) -> Result<(), CmsError> {
+    io.write_u16(dt.year)?;
+    io.write_u16(dt.month)?;
+    io.write_u16(dt.day)?;
+    io.write_u16(dt.hours)?;
+    io.write_u16(dt.minutes)?;
+    io.write_u16(dt.seconds)?;
+    Ok(())
 }
 
-pub fn read_s15fixed16_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    todo!()
+// --- S15Fixed16Array type ---
+// C版: Type_S15Fixed16_Read / Type_S15Fixed16_Write
+
+pub fn read_s15fixed16_type(io: &mut IoHandler, size: u32) -> Result<TagData, CmsError> {
+    let count = size as usize / 4;
+    let mut arr = Vec::with_capacity(count);
+    for _ in 0..count {
+        arr.push(io.read_s15fixed16()?);
+    }
+    Ok(TagData::S15Fixed16Array(arr))
 }
 
-pub fn write_s15fixed16_type(_io: &mut IoHandler, _arr: &[f64]) -> Result<(), CmsError> {
-    todo!()
+pub fn write_s15fixed16_type(io: &mut IoHandler, arr: &[f64]) -> Result<(), CmsError> {
+    for &v in arr {
+        io.write_s15fixed16(v)?;
+    }
+    Ok(())
 }
 
-pub fn read_u16fixed16_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    todo!()
+// --- U16Fixed16Array type ---
+// C版: Type_U16Fixed16_Read / Type_U16Fixed16_Write
+
+pub fn read_u16fixed16_type(io: &mut IoHandler, size: u32) -> Result<TagData, CmsError> {
+    let count = size as usize / 4;
+    let mut arr = Vec::with_capacity(count);
+    for _ in 0..count {
+        let raw = io.read_u32()?;
+        arr.push(raw as f64 / 65536.0);
+    }
+    Ok(TagData::U16Fixed16Array(arr))
 }
 
-pub fn write_u16fixed16_type(_io: &mut IoHandler, _arr: &[f64]) -> Result<(), CmsError> {
-    todo!()
+pub fn write_u16fixed16_type(io: &mut IoHandler, arr: &[f64]) -> Result<(), CmsError> {
+    for &v in arr {
+        let raw = (v * 65536.0 + 0.5).floor() as u32;
+        io.write_u32(raw)?;
+    }
+    Ok(())
 }
 
-pub fn read_uint8_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    todo!()
+// --- UInt8Array type ---
+// C版: Type_UInt8_Read / Type_UInt8_Write
+
+pub fn read_uint8_type(io: &mut IoHandler, size: u32) -> Result<TagData, CmsError> {
+    let count = size as usize;
+    let mut arr = vec![0u8; count];
+    if count > 0 && !io.read(&mut arr) {
+        return Err(IoHandler::read_err());
+    }
+    Ok(TagData::UInt8Array(arr))
 }
 
-pub fn write_uint8_type(_io: &mut IoHandler, _arr: &[u8]) -> Result<(), CmsError> {
-    todo!()
+pub fn write_uint8_type(io: &mut IoHandler, arr: &[u8]) -> Result<(), CmsError> {
+    if !arr.is_empty() && !io.write(arr) {
+        return Err(IoHandler::write_err());
+    }
+    Ok(())
 }
 
-pub fn read_uint16_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    todo!()
+// --- UInt16Array type ---
+// C版: Type_UInt16_Read / Type_UInt16_Write
+
+pub fn read_uint16_type(io: &mut IoHandler, size: u32) -> Result<TagData, CmsError> {
+    let count = size as usize / 2;
+    let arr = io.read_u16_array(count)?;
+    Ok(TagData::UInt16Array(arr))
 }
 
-pub fn write_uint16_type(_io: &mut IoHandler, _arr: &[u16]) -> Result<(), CmsError> {
-    todo!()
+pub fn write_uint16_type(io: &mut IoHandler, arr: &[u16]) -> Result<(), CmsError> {
+    io.write_u16_array(arr)
 }
 
-pub fn read_uint32_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    todo!()
+// --- UInt32Array type ---
+// C版: Type_UInt32_Read / Type_UInt32_Write
+
+pub fn read_uint32_type(io: &mut IoHandler, size: u32) -> Result<TagData, CmsError> {
+    let count = size as usize / 4;
+    let mut arr = Vec::with_capacity(count);
+    for _ in 0..count {
+        arr.push(io.read_u32()?);
+    }
+    Ok(TagData::UInt32Array(arr))
 }
 
-pub fn write_uint32_type(_io: &mut IoHandler, _arr: &[u32]) -> Result<(), CmsError> {
-    todo!()
+pub fn write_uint32_type(io: &mut IoHandler, arr: &[u32]) -> Result<(), CmsError> {
+    for &v in arr {
+        io.write_u32(v)?;
+    }
+    Ok(())
 }
 
-pub fn read_uint64_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    todo!()
+// --- UInt64Array type ---
+// C版: Type_UInt64_Read / Type_UInt64_Write
+
+pub fn read_uint64_type(io: &mut IoHandler, size: u32) -> Result<TagData, CmsError> {
+    let count = size as usize / 8;
+    let mut arr = Vec::with_capacity(count);
+    for _ in 0..count {
+        arr.push(io.read_u64()?);
+    }
+    Ok(TagData::UInt64Array(arr))
 }
 
-pub fn write_uint64_type(_io: &mut IoHandler, _arr: &[u64]) -> Result<(), CmsError> {
-    todo!()
+pub fn write_uint64_type(io: &mut IoHandler, arr: &[u64]) -> Result<(), CmsError> {
+    for &v in arr {
+        io.write_u64(v)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -144,7 +231,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn xyz_type_roundtrip() {
         let xyz = CieXyz {
             x: D50_X,
@@ -171,7 +258,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn signature_type_roundtrip() {
         let sig = ColorSpaceSignature::RgbData as u32;
         let mut io = IoHandler::from_memory_write(256);
@@ -190,7 +277,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn datetime_type_roundtrip() {
         let dt = DateTimeNumber {
             year: 2024,
@@ -223,7 +310,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn s15fixed16_array_roundtrip() {
         let arr = vec![1.0, -0.5, D50_X, D50_Y, D50_Z];
         let mut io = IoHandler::from_memory_write(256);
@@ -247,7 +334,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn u16fixed16_array_roundtrip() {
         let arr = vec![1.0, 2.5, 0.0];
         let mut io = IoHandler::from_memory_write(256);
@@ -271,7 +358,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn uint8_array_roundtrip() {
         let arr: Vec<u8> = vec![1, 2, 3, 4, 5];
         let mut io = IoHandler::from_memory_write(256);
@@ -286,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn uint16_array_roundtrip() {
         let arr: Vec<u16> = vec![100, 200, 300];
         let mut io = IoHandler::from_memory_write(256);
@@ -301,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn uint32_array_roundtrip() {
         let arr: Vec<u32> = vec![0xDEADBEEF, 0xCAFEBABE];
         let mut io = IoHandler::from_memory_write(256);
@@ -316,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn uint64_array_roundtrip() {
         let arr: Vec<u64> = vec![0x0102030405060708, 0xFFEEDDCCBBAA9988];
         let mut io = IoHandler::from_memory_write(256);

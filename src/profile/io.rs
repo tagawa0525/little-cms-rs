@@ -268,14 +268,14 @@ impl IoHandler {
     // C版: cmsplugin.c
     // ========================================================================
 
-    fn read_err() -> CmsError {
+    pub(crate) fn read_err() -> CmsError {
         CmsError {
             code: ErrorCode::Read,
             message: "Read error".to_string(),
         }
     }
 
-    fn write_err() -> CmsError {
+    pub(crate) fn write_err() -> CmsError {
         CmsError {
             code: ErrorCode::Write,
             message: "Write error".to_string(),
