@@ -320,7 +320,7 @@ impl ToneCurve {
         }
 
         let n = self.table16.len();
-        if n < 2 {
+        if n < 4 {
             return false;
         }
 
