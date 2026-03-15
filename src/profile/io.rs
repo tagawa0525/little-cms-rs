@@ -956,6 +956,9 @@ impl Profile {
             io.write_u32(sizes[i])?;
         }
 
+        // Pre-load NotLoaded tags from source IO before writing
+        self.load_all_tags_for_save()?;
+
         // Write tag data
         for (i, tag) in self.tags.iter().enumerate() {
             if tag.linked.is_some() {
@@ -967,25 +970,44 @@ impl Profile {
             let target = offsets[i];
             if current < target {
                 let pad = vec![0u8; (target - current) as usize];
-                io.write(&pad);
+                if !io.write(&pad) {
+                    return Err(IoHandler::write_err());
+                }
             }
 
-            match &tag.data {
-                TagDataState::Raw(data) => {
-                    io.write(data);
-                }
-                TagDataState::NotLoaded => {
-                    // Read from source IO and write
-                    if let Some(src_io) = &mut self.io {
-                        let mut buf = vec![0u8; tag.size as usize];
-                        src_io.seek(tag.offset);
-                        src_io.read(&mut buf);
-                        io.write(&buf);
-                    }
+            if let TagDataState::Raw(data) = &tag.data {
+                if !io.write(data) {
+                    return Err(IoHandler::write_err());
                 }
             }
         }
 
+        Ok(())
+    }
+
+    fn load_all_tags_for_save(&mut self) -> Result<(), CmsError> {
+        for i in 0..self.tags.len() {
+            if self.tags[i].linked.is_some() {
+                continue;
+            }
+            if matches!(self.tags[i].data, TagDataState::NotLoaded) {
+                let offset = self.tags[i].offset;
+                let size = self.tags[i].size;
+                if let Some(src_io) = &mut self.io {
+                    let mut buf = vec![0u8; size as usize];
+                    if !src_io.seek(offset) {
+                        return Err(CmsError {
+                            code: ErrorCode::Seek,
+                            message: "Seek error loading tag for save".to_string(),
+                        });
+                    }
+                    if !src_io.read(&mut buf) {
+                        return Err(IoHandler::read_err());
+                    }
+                    self.tags[i].data = TagDataState::Raw(buf);
+                }
+            }
+        }
         Ok(())
     }
 
