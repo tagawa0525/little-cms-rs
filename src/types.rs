@@ -6,18 +6,21 @@
 ///
 /// C版: `cmsS15Fixed16Number` (i32)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(transparent)]
 pub struct S15Fixed16(pub i32);
 
 /// 16.16 unsigned fixed-point number (16 integer bits + 16 fractional bits).
 ///
 /// C版: `cmsU16Fixed16Number` (u32)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(transparent)]
 pub struct U16Fixed16(pub u32);
 
 /// 8.8 unsigned fixed-point number (8 integer bits + 8 fractional bits).
 ///
 /// C版: `cmsU8Fixed8Number` (u16)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(transparent)]
 pub struct U8Fixed8(pub u16);
 
 // C版: _cmsDoubleTo15Fixed16(v) = floor(v * 65536.0 + 0.5) as i32
@@ -957,6 +960,7 @@ pub enum UsedDirection {
 // ============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(C)]
 pub struct DateTimeNumber {
     pub year: u16,
     pub month: u16,
@@ -967,6 +971,7 @@ pub struct DateTimeNumber {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(C)]
 pub struct EncodedXyzNumber {
     pub x: S15Fixed16,
     pub y: S15Fixed16,
@@ -974,9 +979,11 @@ pub struct EncodedXyzNumber {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(transparent)]
 pub struct ProfileId(pub [u8; 16]);
 
 #[derive(Debug, Clone, Copy)]
+#[repr(C)]
 pub struct IccHeader {
     pub size: u32,
     pub cmm_id: u32,
@@ -997,6 +1004,9 @@ pub struct IccHeader {
     pub profile_id: ProfileId,
     pub reserved: [u8; 28],
 }
+
+// Compile-time assertion: ICC header must be exactly 128 bytes per ICC spec.
+const _: () = assert!(size_of::<IccHeader>() == 128);
 
 // ============================================================================
 // Tests
