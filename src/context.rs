@@ -58,8 +58,8 @@ impl Context {
     }
 }
 
-/// Encoded CMS version.
-pub const VERSION: u32 = 2190;
+/// Encoded CMS version (re-export from types).
+pub use crate::types::VERSION;
 
 #[cfg(test)]
 mod tests {
