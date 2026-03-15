@@ -776,11 +776,15 @@ impl Profile {
 
         // Profile ID (16 bytes)
         let mut profile_id_bytes = [0u8; 16];
-        io.read(&mut profile_id_bytes);
+        if !io.read(&mut profile_id_bytes) {
+            return Err(IoHandler::read_err());
+        }
 
         // Reserved (28 bytes)
         let mut reserved = [0u8; 28];
-        io.read(&mut reserved);
+        if !io.read(&mut reserved) {
+            return Err(IoHandler::read_err());
+        }
 
         // Validate version
         let version = validated_version(version_raw);
