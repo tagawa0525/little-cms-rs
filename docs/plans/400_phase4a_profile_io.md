@@ -1,6 +1,6 @@
 # Phase 4a: Profile I/O 基盤（IoHandler・Profile・Header・Tag Directory）
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmsio0.c`（2,151行）+ `cmsplugin.c`（number helpers 部分、約320行）
 **Rust見積**: ~1,400行（impl）+ ~700行（tests）
 **ブランチ**: `feat/phase4-io`
