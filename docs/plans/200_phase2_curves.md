@@ -1,6 +1,6 @@
 # Phase 2: カーブ・補間・色順応・CIECAM02
 
-- **Status**: PLANNED
+- **Status**: IMPLEMENTED
 - **Phase**: 2 (Level 1)
 - **C版行数**: 3,687行
 - **Rust概算**: ~3,500行
