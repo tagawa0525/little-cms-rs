@@ -244,11 +244,16 @@ impl NamedColorList {
 
     /// Append a named color.
     ///
-    /// `colorant` slice length must match the list's `colorant_count`.
+    /// If `colorant` is `Some`, its length must be >= `colorant_count`.
+    /// Returns `false` if the colorant slice is too short.
+    /// If `colorant` is `None`, device channels are zero-filled.
     pub fn append(&mut self, name: &str, pcs: &[u16; 3], colorant: Option<&[u16]>) -> bool {
         let mut device = [0u16; MAX_CHANNELS];
         if let Some(c) = colorant {
-            let n = c.len().min(self.colorant_count as usize).min(MAX_CHANNELS);
+            let n = self.colorant_count as usize;
+            if c.len() < n {
+                return false;
+            }
             device[..n].copy_from_slice(&c[..n]);
         }
         self.colors.push(NamedColor {
