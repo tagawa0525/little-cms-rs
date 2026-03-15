@@ -1,6 +1,6 @@
 # Phase 1: 基盤型・ユーティリティ
 
-- **Status**: PLANNED
+- **Status**: IMPLEMENTED
 - **Phase**: 1 (Level 0)
 - **C版行数**: 2,680行
 - **Rust概算**: ~2,500行
