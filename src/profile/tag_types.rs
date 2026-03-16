@@ -1203,58 +1203,609 @@ pub fn write_video_signal_type(io: &mut IoHandler, vs: &VideoSignalType) -> Resu
     Ok(())
 }
 
+// --- Embedded text helper ---
+// C版: ReadEmbeddedText — reads Text, TextDescription, or MLU based on embedded type marker.
+
+fn read_embedded_text(io: &mut IoHandler, size: u32) -> Result<Mlu, CmsError> {
+    if size < 8 {
+        return Ok(Mlu::new());
+    }
+    let type_sig = io.read_u32()?;
+    let _reserved = io.read_u32()?;
+    let payload_size = size.saturating_sub(8);
+
+    match TagTypeSignature::try_from(type_sig) {
+        Ok(TagTypeSignature::Text) => match read_text_type(io, payload_size)? {
+            TagData::Mlu(mlu) => Ok(mlu),
+            _ => Ok(Mlu::new()),
+        },
+        Ok(TagTypeSignature::TextDescription) => {
+            match read_text_description_type(io, payload_size)? {
+                TagData::Mlu(mlu) => Ok(mlu),
+                _ => Ok(Mlu::new()),
+            }
+        }
+        Ok(TagTypeSignature::MultiLocalizedUnicode) => match read_mlu_type(io, payload_size)? {
+            TagData::Mlu(mlu) => Ok(mlu),
+            _ => Ok(Mlu::new()),
+        },
+        _ => Ok(Mlu::new()),
+    }
+}
+
+/// Write embedded text as MLU (v4) with type base header.
+fn write_embedded_mlu(io: &mut IoHandler, mlu: &Mlu) -> Result<(), CmsError> {
+    io.write_u32(TagTypeSignature::MultiLocalizedUnicode as u32)?;
+    io.write_u32(0)?; // reserved
+    write_mlu_type(io, mlu)
+}
+
 // --- ProfileSequenceDesc type ---
 // C版: Type_ProfileSequenceDesc_Read / Type_ProfileSequenceDesc_Write
 
 pub fn read_profile_sequence_desc_type(
-    _io: &mut IoHandler,
+    io: &mut IoHandler,
     _size: u32,
 ) -> Result<TagData, CmsError> {
-    todo!()
+    let count = io.read_u32()? as usize;
+    if count > 256 {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: "ProfileSequenceDesc count too large".to_string(),
+        });
+    }
+    let mut seq = ProfileSequenceDesc::new(count);
+
+    for i in 0..count {
+        let entry = seq.get_mut(i).unwrap();
+        entry.device_mfg = io.read_u32()?;
+        entry.device_model = io.read_u32()?;
+        entry.attributes = io.read_u64()?;
+        let tech_raw = io.read_u32()?;
+        entry.technology = TechnologySignature::try_from(tech_raw).ok();
+
+        // Read manufacturer description (embedded text)
+        let mfg_size = io.read_u32()?;
+        if mfg_size > 0 {
+            entry.manufacturer = read_embedded_text(io, mfg_size)?;
+        }
+
+        // Read model description (embedded text)
+        let model_size = io.read_u32()?;
+        if model_size > 0 {
+            entry.model = read_embedded_text(io, model_size)?;
+        }
+    }
+
+    Ok(TagData::ProfileSequenceDesc(seq))
 }
 
 pub fn write_profile_sequence_desc_type(
-    _io: &mut IoHandler,
-    _seq: &ProfileSequenceDesc,
+    io: &mut IoHandler,
+    seq: &ProfileSequenceDesc,
     _icc_version: u32,
 ) -> Result<(), CmsError> {
-    todo!()
+    io.write_u32(seq.len() as u32)?;
+
+    for i in 0..seq.len() {
+        let entry = seq.get(i).unwrap();
+        io.write_u32(entry.device_mfg)?;
+        io.write_u32(entry.device_model)?;
+        io.write_u64(entry.attributes)?;
+        io.write_u32(entry.technology.map_or(0, |t| t as u32))?;
+
+        // Write manufacturer: first calculate size, then write
+        let mfg_size = {
+            let mut null_io = IoHandler::new_null();
+            write_embedded_mlu(&mut null_io, &entry.manufacturer)?;
+            null_io.used_space()
+        };
+        io.write_u32(mfg_size)?;
+        write_embedded_mlu(io, &entry.manufacturer)?;
+
+        // Write model
+        let model_size = {
+            let mut null_io = IoHandler::new_null();
+            write_embedded_mlu(&mut null_io, &entry.model)?;
+            null_io.used_space()
+        };
+        io.write_u32(model_size)?;
+        write_embedded_mlu(io, &entry.model)?;
+    }
+
+    Ok(())
 }
 
 // --- ProfileSequenceId type ---
 // C版: Type_ProfileSequenceId_Read / Type_ProfileSequenceId_Write
+// Uses position table for element access.
 
-pub fn read_profile_sequence_id_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    todo!()
+pub fn read_profile_sequence_id_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    let base_offset = io.tell().saturating_sub(8); // before type base
+    let count = io.read_u32()? as usize;
+    if count > 256 {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: "ProfileSequenceId count too large".to_string(),
+        });
+    }
+
+    // Read position table (offset/size pairs)
+    let mut offsets = Vec::with_capacity(count);
+    let mut sizes = Vec::with_capacity(count);
+    for _ in 0..count {
+        let offset = io.read_u32()?;
+        let size = io.read_u32()?;
+        offsets.push(if offset > 0 { offset + base_offset } else { 0 });
+        sizes.push(size);
+    }
+
+    let mut seq = ProfileSequenceDesc::new(count);
+
+    for i in 0..count {
+        if offsets[i] == 0 || sizes[i] == 0 {
+            continue;
+        }
+        io.seek(offsets[i]);
+        let entry = seq.get_mut(i).unwrap();
+
+        // Read 16-byte ProfileID
+        let mut id_bytes = [0u8; 16];
+        if !io.read(&mut id_bytes) {
+            return Err(IoHandler::read_err());
+        }
+        entry.profile_id = ProfileId(id_bytes);
+
+        // Read description (embedded text) — remaining bytes
+        let desc_size = sizes[i].saturating_sub(16);
+        if desc_size > 0 {
+            entry.description = read_embedded_text(io, desc_size)?;
+        }
+    }
+
+    Ok(TagData::ProfileSequenceDesc(seq))
 }
 
 pub fn write_profile_sequence_id_type(
-    _io: &mut IoHandler,
-    _seq: &ProfileSequenceDesc,
+    io: &mut IoHandler,
+    seq: &ProfileSequenceDesc,
 ) -> Result<(), CmsError> {
-    todo!()
+    let base_offset = io.tell().saturating_sub(8);
+    let count = seq.len();
+    io.write_u32(count as u32)?;
+
+    // Save directory position, write placeholder
+    let dir_pos = io.tell();
+    for _ in 0..count {
+        io.write_u32(0)?; // offset placeholder
+        io.write_u32(0)?; // size placeholder
+    }
+
+    // Write each element, recording offset/size
+    let mut offsets = Vec::with_capacity(count);
+    let mut elem_sizes = Vec::with_capacity(count);
+    for i in 0..count {
+        let entry = seq.get(i).unwrap();
+        let before = io.tell();
+        offsets.push(before - base_offset);
+
+        // Write 16-byte ProfileID
+        if !io.write(&entry.profile_id.0) {
+            return Err(IoHandler::write_err());
+        }
+
+        // Write description as embedded MLU
+        write_embedded_mlu(io, &entry.description)?;
+
+        elem_sizes.push(io.tell() - before);
+    }
+
+    // Go back and fill in the directory
+    let end_pos = io.tell();
+    io.seek(dir_pos);
+    for i in 0..count {
+        io.write_u32(offsets[i])?;
+        io.write_u32(elem_sizes[i])?;
+    }
+    io.seek(end_pos);
+
+    Ok(())
 }
 
 // --- vcgt type ---
 // C版: Type_vcgt_Read / Type_vcgt_Write
+// Video card gamma: table type (0) or formula type (1).
 
-pub fn read_vcgt_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    todo!()
+const VCGT_TABLE_TYPE: u32 = 0;
+const VCGT_FORMULA_TYPE: u32 = 1;
+
+pub fn read_vcgt_type(io: &mut IoHandler, size: u32) -> Result<TagData, CmsError> {
+    let tag_type = io.read_u32()?;
+
+    match tag_type {
+        VCGT_TABLE_TYPE => {
+            let n_channels = io.read_u16()? as usize;
+            let n_elems = io.read_u16()? as usize;
+            let mut n_bytes = io.read_u16()? as usize;
+
+            if n_channels != 3 {
+                return Err(CmsError {
+                    code: ErrorCode::Range,
+                    message: "vcgt table must have 3 channels".to_string(),
+                });
+            }
+
+            // Adobe quirk: sometimes nBytes is wrong
+            if n_elems == 256 && n_bytes == 1 && size == 1576 {
+                n_bytes = 2;
+            }
+
+            let mut built_curves = Vec::with_capacity(3);
+            for _ in 0..3 {
+                let mut table = Vec::with_capacity(n_elems);
+                for _ in 0..n_elems {
+                    let val = match n_bytes {
+                        1 => {
+                            let v = io.read_u8()? as u16;
+                            v * 257 // FROM_8_TO_16
+                        }
+                        2 => io.read_u16()?,
+                        _ => {
+                            return Err(CmsError {
+                                code: ErrorCode::UnknownExtension,
+                                message: format!("vcgt: unsupported entry size {n_bytes}"),
+                            });
+                        }
+                    };
+                    table.push(val);
+                }
+                built_curves.push(ToneCurve::build_tabulated_16(&table).ok_or_else(|| {
+                    CmsError {
+                        code: ErrorCode::Internal,
+                        message: "Failed to build vcgt curve".to_string(),
+                    }
+                })?);
+            }
+
+            let [r, g, b]: [ToneCurve; 3] = built_curves.try_into().ok().expect("exactly 3 curves");
+            Ok(TagData::Vcgt(Box::new([r, g, b])))
+        }
+        VCGT_FORMULA_TYPE => {
+            // 3 channels × 3 parameters (Gamma, Min, Max) as S15Fixed16
+            let mut gammas = Vec::with_capacity(3);
+            for _ in 0..3 {
+                let gamma = io.read_s15fixed16()?;
+                let min = io.read_s15fixed16()?;
+                let max = io.read_s15fixed16()?;
+                gammas.push((gamma, min, max));
+            }
+            let mut built_curves = Vec::with_capacity(3);
+            for &(gamma, min, max) in &gammas {
+                // Convert to parametric type 5: Y = (aX+b)^G + e
+                let a = if gamma > 0.0 {
+                    (max - min).powf(1.0 / gamma)
+                } else {
+                    1.0
+                };
+                let params = [gamma, a, 0.0, 0.0, 0.0, min, 0.0];
+                built_curves.push(ToneCurve::build_parametric(5, &params).ok_or_else(|| {
+                    CmsError {
+                        code: ErrorCode::Internal,
+                        message: "Failed to build vcgt parametric curve".to_string(),
+                    }
+                })?);
+            }
+            let [r, g, b]: [ToneCurve; 3] = built_curves.try_into().ok().expect("exactly 3 curves");
+            Ok(TagData::Vcgt(Box::new([r, g, b])))
+        }
+        _ => Err(CmsError {
+            code: ErrorCode::UnknownExtension,
+            message: format!("Unknown vcgt type {tag_type}"),
+        }),
+    }
 }
 
-pub fn write_vcgt_type(_io: &mut IoHandler, _curves: &[ToneCurve; 3]) -> Result<(), CmsError> {
-    todo!()
+pub fn write_vcgt_type(io: &mut IoHandler, curves: &[ToneCurve; 3]) -> Result<(), CmsError> {
+    // Check if all 3 curves are parametric type 5 (formula-encodable)
+    let all_formula = curves.iter().all(|c| c.parametric_type() == 5);
+
+    if all_formula {
+        io.write_u32(VCGT_FORMULA_TYPE)?;
+        for curve in curves {
+            let seg = curve.segment(0).unwrap();
+            let gamma = seg.params[0];
+            let min = seg.params[5];
+            // Max = a^Gamma + Min
+            let a = seg.params[1];
+            let max = a.powf(gamma) + min;
+            io.write_s15fixed16(gamma)?;
+            io.write_s15fixed16(min)?;
+            io.write_s15fixed16(max)?;
+        }
+    } else {
+        // Table type: always 256 entries, 2 bytes each
+        io.write_u32(VCGT_TABLE_TYPE)?;
+        io.write_u16(3)?; // channels
+        io.write_u16(256)?; // entries
+        io.write_u16(2)?; // bytes per entry
+        for curve in curves {
+            for i in 0..256u16 {
+                let input = (i as f32) / 255.0;
+                let output = curve.eval_f32(input);
+                let val = (output * 65535.0 + 0.5).clamp(0.0, 65535.0) as u16;
+                io.write_u16(val)?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 // --- Dict type ---
 // C版: Type_Dictionary_Read / Type_Dictionary_Write
+// Stores name/value pairs as UTF-16, with optional DisplayName/DisplayValue as MLU.
 
-pub fn read_dict_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    todo!()
+pub fn read_dict_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    let base_offset = io.tell().saturating_sub(8);
+    let count = io.read_u32()? as usize;
+    let rec_len = io.read_u32()?;
+
+    // Record length determines which fields are present:
+    // 16 = Name + Value offsets only
+    // 24 = + DisplayName
+    // 32 = + DisplayValue
+    let has_display_name = rec_len > 16;
+    let has_display_value = rec_len > 24;
+
+    if count > 0x10000 {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: "Dict count too large".to_string(),
+        });
+    }
+
+    // Read offset/size directory
+    struct DictRecord {
+        name_offset: u32,
+        name_size: u32,
+        value_offset: u32,
+        value_size: u32,
+        display_name_offset: u32,
+        display_name_size: u32,
+        display_value_offset: u32,
+        display_value_size: u32,
+    }
+
+    let mut records = Vec::with_capacity(count);
+    for _ in 0..count {
+        let name_offset = io.read_u32()?;
+        let name_size = io.read_u32()?;
+        let value_offset = io.read_u32()?;
+        let value_size = io.read_u32()?;
+        let (dn_off, dn_sz) = if has_display_name {
+            (io.read_u32()?, io.read_u32()?)
+        } else {
+            (0, 0)
+        };
+        let (dv_off, dv_sz) = if has_display_value {
+            (io.read_u32()?, io.read_u32()?)
+        } else {
+            (0, 0)
+        };
+        records.push(DictRecord {
+            name_offset: if name_offset > 0 {
+                name_offset + base_offset
+            } else {
+                0
+            },
+            name_size,
+            value_offset: if value_offset > 0 {
+                value_offset + base_offset
+            } else {
+                0
+            },
+            value_size,
+            display_name_offset: if dn_off > 0 { dn_off + base_offset } else { 0 },
+            display_name_size: dn_sz,
+            display_value_offset: if dv_off > 0 { dv_off + base_offset } else { 0 },
+            display_value_size: dv_sz,
+        });
+    }
+
+    let mut dict = Dict::new();
+
+    for rec in &records {
+        // Read name (UTF-16)
+        let name = if rec.name_offset > 0 && rec.name_size > 0 {
+            io.seek(rec.name_offset);
+            read_utf16_string(io, rec.name_size)?
+        } else {
+            String::new()
+        };
+
+        // Read value (UTF-16)
+        let value = if rec.value_offset > 0 && rec.value_size > 0 {
+            io.seek(rec.value_offset);
+            Some(read_utf16_string(io, rec.value_size)?)
+        } else {
+            None
+        };
+
+        // Read DisplayName (MLU)
+        let display_name = if rec.display_name_offset > 0 && rec.display_name_size > 0 {
+            io.seek(rec.display_name_offset);
+            Some(read_embedded_mlu(io, rec.display_name_size)?)
+        } else {
+            None
+        };
+
+        // Read DisplayValue (MLU)
+        let display_value = if rec.display_value_offset > 0 && rec.display_value_size > 0 {
+            io.seek(rec.display_value_offset);
+            Some(read_embedded_mlu(io, rec.display_value_size)?)
+        } else {
+            None
+        };
+
+        dict.add(
+            &name,
+            value.as_deref(),
+            display_name.as_ref(),
+            display_value.as_ref(),
+        );
+    }
+
+    Ok(TagData::Dict(dict))
 }
 
-pub fn write_dict_type(_io: &mut IoHandler, _dict: &Dict) -> Result<(), CmsError> {
-    todo!()
+/// Read a UTF-16BE string of the given byte size.
+fn read_utf16_string(io: &mut IoHandler, byte_size: u32) -> Result<String, CmsError> {
+    let n_chars = byte_size as usize / 2;
+    let mut chars = Vec::with_capacity(n_chars);
+    for _ in 0..n_chars {
+        chars.push(io.read_u16()?);
+    }
+    // Remove trailing NUL
+    while chars.last() == Some(&0) {
+        chars.pop();
+    }
+    Ok(String::from_utf16_lossy(&chars))
+}
+
+/// Write a UTF-16BE string (no type base header).
+fn write_utf16_string(io: &mut IoHandler, s: &str) -> Result<(), CmsError> {
+    for c in s.encode_utf16() {
+        io.write_u16(c)?;
+    }
+    Ok(())
+}
+
+/// Read an embedded MLU (with type base header) for Dict.
+fn read_embedded_mlu(io: &mut IoHandler, size: u32) -> Result<Mlu, CmsError> {
+    if size < 8 {
+        return Ok(Mlu::new());
+    }
+    let _type_sig = io.read_u32()?;
+    let _reserved = io.read_u32()?;
+    let payload_size = size.saturating_sub(8);
+    match read_mlu_type(io, payload_size) {
+        Ok(TagData::Mlu(mlu)) => Ok(mlu),
+        _ => Ok(Mlu::new()),
+    }
+}
+
+/// Write an embedded MLU (with type base header) for Dict.
+fn write_embedded_mlu_for_dict(io: &mut IoHandler, mlu: &Mlu) -> Result<(), CmsError> {
+    io.write_u32(TagTypeSignature::MultiLocalizedUnicode as u32)?;
+    io.write_u32(0)?; // reserved
+    write_mlu_type(io, mlu)
+}
+
+pub fn write_dict_type(io: &mut IoHandler, dict: &Dict) -> Result<(), CmsError> {
+    let base_offset = io.tell().saturating_sub(8);
+    let count = dict.len();
+
+    // Determine record length based on whether any display names/values exist
+    let has_display_name = dict.iter().any(|e| e.display_name.is_some());
+    let has_display_value = dict.iter().any(|e| e.display_value.is_some());
+    let rec_len: u32 = if has_display_value {
+        32
+    } else if has_display_name {
+        24
+    } else {
+        16
+    };
+
+    io.write_u32(count as u32)?;
+    io.write_u32(rec_len)?;
+
+    // Save directory position, write placeholder
+    let dir_pos = io.tell();
+    let fields_per_entry = rec_len as usize / 8; // 2, 3, or 4 pairs
+    for _ in 0..(count * fields_per_entry) {
+        io.write_u32(0)?; // offset placeholder
+        io.write_u32(0)?; // size placeholder
+    }
+
+    // Write each entry's data, record offsets/sizes
+    struct DictOffsets {
+        name_offset: u32,
+        name_size: u32,
+        value_offset: u32,
+        value_size: u32,
+        display_name_offset: u32,
+        display_name_size: u32,
+        display_value_offset: u32,
+        display_value_size: u32,
+    }
+
+    let mut all_offsets = Vec::with_capacity(count);
+
+    for entry in dict.iter() {
+        let mut offsets = DictOffsets {
+            name_offset: 0,
+            name_size: 0,
+            value_offset: 0,
+            value_size: 0,
+            display_name_offset: 0,
+            display_name_size: 0,
+            display_value_offset: 0,
+            display_value_size: 0,
+        };
+
+        // Write Name
+        let before = io.tell();
+        offsets.name_offset = before - base_offset;
+        write_utf16_string(io, &entry.name)?;
+        offsets.name_size = io.tell() - before;
+
+        // Write Value
+        if let Some(ref val) = entry.value {
+            let before = io.tell();
+            offsets.value_offset = before - base_offset;
+            write_utf16_string(io, val)?;
+            offsets.value_size = io.tell() - before;
+        }
+
+        // Write DisplayName
+        if has_display_name && let Some(ref dn) = entry.display_name {
+            let before = io.tell();
+            offsets.display_name_offset = before - base_offset;
+            write_embedded_mlu_for_dict(io, dn)?;
+            offsets.display_name_size = io.tell() - before;
+        }
+
+        // Write DisplayValue
+        if has_display_value && let Some(ref dv) = entry.display_value {
+            let before = io.tell();
+            offsets.display_value_offset = before - base_offset;
+            write_embedded_mlu_for_dict(io, dv)?;
+            offsets.display_value_size = io.tell() - before;
+        }
+
+        all_offsets.push(offsets);
+    }
+
+    // Go back and fill in directory
+    let end_pos = io.tell();
+    io.seek(dir_pos);
+    for offsets in &all_offsets {
+        io.write_u32(offsets.name_offset)?;
+        io.write_u32(offsets.name_size)?;
+        io.write_u32(offsets.value_offset)?;
+        io.write_u32(offsets.value_size)?;
+        if has_display_name {
+            io.write_u32(offsets.display_name_offset)?;
+            io.write_u32(offsets.display_name_size)?;
+        }
+        if has_display_value {
+            io.write_u32(offsets.display_value_offset)?;
+            io.write_u32(offsets.display_value_size)?;
+        }
+    }
+    io.seek(end_pos);
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1930,7 +2481,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn profile_sequence_desc_type_roundtrip() {
         let mut seq = ProfileSequenceDesc::new(2);
 
@@ -1983,7 +2533,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn profile_sequence_id_type_roundtrip() {
         let mut seq = ProfileSequenceDesc::new(2);
 
@@ -2026,7 +2575,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn vcgt_table_type_roundtrip() {
         let r = ToneCurve::build_tabulated_16(&[0, 32768, 65535]).unwrap();
         let g = ToneCurve::build_tabulated_16(&[0, 16384, 65535]).unwrap();
@@ -2055,7 +2603,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn vcgt_formula_type_roundtrip() {
         // Build parametric type 5 curves that vcgt formula can encode
         // Y = (aX + b)^Gamma + e  where a=(Max-Min)^(1/Gamma), b=0, e=Min
@@ -2086,7 +2633,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn dict_type_roundtrip_basic() {
         let mut dict = Dict::new();
         dict.add("key1", Some("value1"), None, None);
@@ -2111,7 +2657,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn dict_type_roundtrip_with_display() {
         let mut dict = Dict::new();
         let mut dn = Mlu::new();
