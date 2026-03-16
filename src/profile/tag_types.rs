@@ -1024,11 +1024,12 @@ pub fn read_ucr_bg_type(io: &mut IoHandler, size: u32) -> Result<TagData, CmsErr
     }
     let ucr_count = io.read_u32()? as usize;
     remaining -= 4;
-    if remaining < (ucr_count * 2) as i32 {
-        return Err(IoHandler::read_err());
+    let ucr_bytes = ucr_count.checked_mul(2).and_then(|v| i32::try_from(v).ok());
+    match ucr_bytes {
+        Some(b) if remaining >= b => remaining -= b,
+        _ => return Err(IoHandler::read_err()),
     }
     let ucr_table = io.read_u16_array(ucr_count)?;
-    remaining -= (ucr_count * 2) as i32;
     let ucr = ToneCurve::build_tabulated_16(&ucr_table).ok_or_else(|| CmsError {
         code: ErrorCode::Internal,
         message: "Failed to build UCR curve".to_string(),
@@ -1040,11 +1041,12 @@ pub fn read_ucr_bg_type(io: &mut IoHandler, size: u32) -> Result<TagData, CmsErr
     }
     let bg_count = io.read_u32()? as usize;
     remaining -= 4;
-    if remaining < (bg_count * 2) as i32 {
-        return Err(IoHandler::read_err());
+    let bg_bytes = bg_count.checked_mul(2).and_then(|v| i32::try_from(v).ok());
+    match bg_bytes {
+        Some(b) if remaining >= b => remaining -= b,
+        _ => return Err(IoHandler::read_err()),
     }
     let bg_table = io.read_u16_array(bg_count)?;
-    remaining -= (bg_count * 2) as i32;
     let bg = ToneCurve::build_tabulated_16(&bg_table).ok_or_else(|| CmsError {
         code: ErrorCode::Internal,
         message: "Failed to build BG curve".to_string(),
@@ -1092,6 +1094,9 @@ pub fn write_ucr_bg_type(io: &mut IoHandler, u: &UcrBg) -> Result<(), CmsError> 
 // --- CrdInfo type ---
 // C版: Type_CrdInfo_Read / Type_CrdInfo_Write
 // Stores PostScript product name + CRD names as MLU with "PS" language.
+// Note: CrdInfo is a v2 legacy format. read_crd_info_type returns TagData::Mlu,
+// which will be written as MLU (v4) format through write_tag_type dispatch.
+// This is intentional: CrdInfo → MLU upgrade on save.
 
 fn read_count_and_string(
     io: &mut IoHandler,
