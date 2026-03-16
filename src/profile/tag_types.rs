@@ -5,7 +5,7 @@
 
 use crate::context::{CmsError, ErrorCode};
 use crate::curves::gamma::ToneCurve;
-use crate::pipeline::lut::{CLutData, CLutTable, Pipeline, Stage, StageData, StageLoc};
+use crate::pipeline::lut::{CLutTable, Pipeline, Stage, StageData, StageLoc};
 use crate::pipeline::named::{Dict, Mlu, NamedColorList, ProfileSequenceDesc};
 use crate::profile::io::IoHandler;
 use crate::types::*;
@@ -1838,48 +1838,920 @@ fn from_16_to_8(v: u16) -> u8 {
     (((v as u32) * 65281 + 8388608) >> 24) as u8
 }
 
+// --- Lut8/Lut16 helpers ---
+
+/// Read 8-bit curve tables (256 entries per channel) and add as CurveSetElem stage.
+fn read_8bit_tables(
+    io: &mut IoHandler,
+    pipe: &mut Pipeline,
+    n_channels: u32,
+) -> Result<(), CmsError> {
+    let mut curves = Vec::with_capacity(n_channels as usize);
+    for _ in 0..n_channels {
+        let mut table = vec![0u16; 256];
+        for entry in &mut table {
+            *entry = from_8_to_16(io.read_u8()?);
+        }
+        curves.push(
+            ToneCurve::build_tabulated_16(&table).ok_or_else(|| CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to build 8-bit curve".to_string(),
+            })?,
+        );
+    }
+    let stage = Stage::new_tone_curves(Some(&curves), n_channels).ok_or_else(|| CmsError {
+        code: ErrorCode::Internal,
+        message: "Failed to create curve stage".to_string(),
+    })?;
+    if !pipe.insert_stage(StageLoc::AtEnd, stage) {
+        return Err(CmsError {
+            code: ErrorCode::Internal,
+            message: "Failed to insert curve stage".to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Write 8-bit curve tables from curves.
+fn write_8bit_tables(io: &mut IoHandler, curves: &[ToneCurve]) -> Result<(), CmsError> {
+    for curve in curves {
+        for i in 0..256u16 {
+            let val = curve.eval_u16(from_8_to_16(i as u8));
+            io.write_u8(from_16_to_8(val))?;
+        }
+    }
+    Ok(())
+}
+
+/// Read 16-bit curve tables and add as CurveSetElem stage.
+fn read_16bit_tables(
+    io: &mut IoHandler,
+    pipe: &mut Pipeline,
+    n_channels: u32,
+    n_entries: u32,
+) -> Result<(), CmsError> {
+    let mut curves = Vec::with_capacity(n_channels as usize);
+    for _ in 0..n_channels {
+        let table = io.read_u16_array(n_entries as usize)?;
+        curves.push(
+            ToneCurve::build_tabulated_16(&table).ok_or_else(|| CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to build 16-bit curve".to_string(),
+            })?,
+        );
+    }
+    let stage = Stage::new_tone_curves(Some(&curves), n_channels).ok_or_else(|| CmsError {
+        code: ErrorCode::Internal,
+        message: "Failed to create curve stage".to_string(),
+    })?;
+    if !pipe.insert_stage(StageLoc::AtEnd, stage) {
+        return Err(CmsError {
+            code: ErrorCode::Internal,
+            message: "Failed to insert curve stage".to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Write 16-bit curve tables.
+fn write_16bit_tables(
+    io: &mut IoHandler,
+    curves: &[ToneCurve],
+    n_entries: u32,
+) -> Result<(), CmsError> {
+    for curve in curves {
+        for i in 0..n_entries {
+            let input = if n_entries <= 1 {
+                0u16
+            } else {
+                ((i as u64 * 65535 + (n_entries as u64 - 1) / 2) / (n_entries as u64 - 1)) as u16
+            };
+            io.write_u16(curve.eval_u16(input))?;
+        }
+    }
+    Ok(())
+}
+
+/// Overflow-safe computation: n × base^exp.
+/// C版: `uipow`
+fn uipow(n: u32, base: u32, exp: u32) -> Option<u32> {
+    if base == 0 || n == 0 {
+        return Some(0);
+    }
+    let mut rv: u64 = 1;
+    for _ in 0..exp {
+        rv = rv.checked_mul(base as u64)?;
+        if rv > u32::MAX as u64 {
+            return None;
+        }
+    }
+    let result = rv.checked_mul(n as u64)?;
+    if result > u32::MAX as u64 {
+        return None;
+    }
+    Some(result as u32)
+}
+
+/// Check if a 3×3 matrix (as 9 f64s) is identity.
+fn is_matrix_identity(m: &[f64; 9]) -> bool {
+    let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    m.iter()
+        .zip(identity.iter())
+        .all(|(a, b)| (a - b).abs() < 1.0e-6)
+}
+
 // --- Lut8 type ---
 // C版: Type_LUT8_Read / Type_LUT8_Write
 
-pub fn read_lut8_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    todo!()
+pub fn read_lut8_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    let input_channels = io.read_u8()? as u32;
+    let output_channels = io.read_u8()? as u32;
+    let clut_points = io.read_u8()? as u32;
+    let _padding = io.read_u8()?;
+
+    if input_channels == 0 || output_channels == 0 {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: "Lut8: zero channels".to_string(),
+        });
+    }
+    if clut_points == 1 {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: "Lut8: clut_points == 1 is invalid".to_string(),
+        });
+    }
+
+    let mut pipe = Pipeline::new(input_channels, output_channels).ok_or_else(|| CmsError {
+        code: ErrorCode::Internal,
+        message: "Failed to create pipeline".to_string(),
+    })?;
+
+    // Read 3×3 matrix
+    let mut matrix = [0.0f64; 9];
+    for m in &mut matrix {
+        *m = io.read_s15fixed16()?;
+    }
+    if input_channels == 3 && !is_matrix_identity(&matrix) {
+        let stage = Stage::new_matrix(3, 3, &matrix, None).ok_or_else(|| CmsError {
+            code: ErrorCode::Internal,
+            message: "Failed to create matrix stage".to_string(),
+        })?;
+        if !pipe.insert_stage(StageLoc::AtBegin, stage) {
+            return Err(CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to insert matrix stage".to_string(),
+            });
+        }
+    }
+
+    // Input curves (256 × u8 per channel)
+    read_8bit_tables(io, &mut pipe, input_channels)?;
+
+    // CLUT
+    if clut_points > 0 {
+        let n_tab_size =
+            uipow(output_channels, clut_points, input_channels).ok_or_else(|| CmsError {
+                code: ErrorCode::Range,
+                message: "Lut8: CLUT size overflow".to_string(),
+            })?;
+        let mut table = vec![0u16; n_tab_size as usize];
+        for entry in &mut table {
+            *entry = from_8_to_16(io.read_u8()?);
+        }
+        let stage = Stage::new_clut_16bit_uniform(
+            clut_points,
+            input_channels,
+            output_channels,
+            Some(&table),
+        )
+        .ok_or_else(|| CmsError {
+            code: ErrorCode::Internal,
+            message: "Failed to create CLUT stage".to_string(),
+        })?;
+        if !pipe.insert_stage(StageLoc::AtEnd, stage) {
+            return Err(CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to insert CLUT stage".to_string(),
+            });
+        }
+    }
+
+    // Output curves (256 × u8 per channel)
+    read_8bit_tables(io, &mut pipe, output_channels)?;
+
+    Ok(TagData::Pipeline(pipe))
 }
 
-pub fn write_lut8_type(_io: &mut IoHandler, _pipe: &Pipeline) -> Result<(), CmsError> {
-    todo!()
+pub fn write_lut8_type(io: &mut IoHandler, pipe: &Pipeline) -> Result<(), CmsError> {
+    let in_ch = pipe.input_channels();
+    let out_ch = pipe.output_channels();
+    let clut_points = pipe
+        .stages()
+        .iter()
+        .find_map(|s| match s.data() {
+            StageData::CLut(clut) => Some(clut.params.n_samples[0]),
+            _ => None,
+        })
+        .unwrap_or(0);
+
+    io.write_u8(in_ch as u8)?;
+    io.write_u8(out_ch as u8)?;
+    io.write_u8(clut_points as u8)?;
+    io.write_u8(0)?;
+
+    // Write 3×3 matrix (identity if not present)
+    let mut matrix = [0.0f64; 9];
+    matrix[0] = 1.0;
+    matrix[4] = 1.0;
+    matrix[8] = 1.0;
+    for stage in pipe.stages() {
+        if stage.stage_type() == StageSignature::MatrixElem {
+            if let StageData::Matrix { coefficients, .. } = stage.data()
+                && coefficients.len() >= 9
+            {
+                matrix[..9].copy_from_slice(&coefficients[..9]);
+            }
+            break;
+        }
+    }
+    for &m in &matrix {
+        io.write_s15fixed16(m)?;
+    }
+
+    // Write input curves (first CurveSetElem stage)
+    let input_curves: Vec<ToneCurve> = pipe
+        .stages()
+        .iter()
+        .find(|s| s.stage_type() == StageSignature::CurveSetElem)
+        .and_then(|s| s.curves().map(|c| c.to_vec()))
+        .unwrap_or_else(|| {
+            (0..in_ch)
+                .map(|_| ToneCurve::build_gamma(1.0).unwrap())
+                .collect()
+        });
+    write_8bit_tables(io, &input_curves)?;
+
+    // Write CLUT
+    if clut_points > 0 {
+        for stage in pipe.stages() {
+            if let StageData::CLut(clut) = stage.data() {
+                match &clut.table {
+                    CLutTable::U16(data) => {
+                        for &v in data {
+                            io.write_u8(from_16_to_8(v))?;
+                        }
+                    }
+                    CLutTable::Float(data) => {
+                        for &v in data {
+                            io.write_u8(from_16_to_8(
+                                (v * 65535.0 + 0.5).clamp(0.0, 65535.0) as u16
+                            ))?;
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    // Write output curves (last CurveSetElem stage)
+    let output_curves: Vec<ToneCurve> = pipe
+        .stages()
+        .iter()
+        .rev()
+        .find(|s| s.stage_type() == StageSignature::CurveSetElem)
+        .and_then(|s| s.curves().map(|c| c.to_vec()))
+        .unwrap_or_else(|| {
+            (0..out_ch)
+                .map(|_| ToneCurve::build_gamma(1.0).unwrap())
+                .collect()
+        });
+    write_8bit_tables(io, &output_curves)?;
+
+    Ok(())
 }
 
 // --- Lut16 type ---
 // C版: Type_LUT16_Read / Type_LUT16_Write
 
-pub fn read_lut16_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    todo!()
+pub fn read_lut16_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    let input_channels = io.read_u8()? as u32;
+    let output_channels = io.read_u8()? as u32;
+    let clut_points = io.read_u8()? as u32;
+    let _padding = io.read_u8()?;
+    let input_entries = io.read_u16()? as u32;
+    let output_entries = io.read_u16()? as u32;
+
+    if input_channels == 0 || output_channels == 0 {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: "Lut16: zero channels".to_string(),
+        });
+    }
+    if clut_points == 1 || input_entries > 0x7FFF || output_entries > 0x7FFF {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: "Lut16: invalid parameters".to_string(),
+        });
+    }
+
+    let mut pipe = Pipeline::new(input_channels, output_channels).ok_or_else(|| CmsError {
+        code: ErrorCode::Internal,
+        message: "Failed to create pipeline".to_string(),
+    })?;
+
+    // Read 3×3 matrix
+    let mut matrix = [0.0f64; 9];
+    for m in &mut matrix {
+        *m = io.read_s15fixed16()?;
+    }
+    if input_channels == 3 && !is_matrix_identity(&matrix) {
+        let stage = Stage::new_matrix(3, 3, &matrix, None).ok_or_else(|| CmsError {
+            code: ErrorCode::Internal,
+            message: "Failed to create matrix stage".to_string(),
+        })?;
+        if !pipe.insert_stage(StageLoc::AtBegin, stage) {
+            return Err(CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to insert matrix stage".to_string(),
+            });
+        }
+    }
+
+    // Input curves
+    read_16bit_tables(io, &mut pipe, input_channels, input_entries)?;
+
+    // CLUT
+    if clut_points > 0 {
+        let n_tab_size =
+            uipow(output_channels, clut_points, input_channels).ok_or_else(|| CmsError {
+                code: ErrorCode::Range,
+                message: "Lut16: CLUT size overflow".to_string(),
+            })?;
+        let table = io.read_u16_array(n_tab_size as usize)?;
+        let stage = Stage::new_clut_16bit_uniform(
+            clut_points,
+            input_channels,
+            output_channels,
+            Some(&table),
+        )
+        .ok_or_else(|| CmsError {
+            code: ErrorCode::Internal,
+            message: "Failed to create CLUT stage".to_string(),
+        })?;
+        if !pipe.insert_stage(StageLoc::AtEnd, stage) {
+            return Err(CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to insert CLUT stage".to_string(),
+            });
+        }
+    }
+
+    // Output curves
+    read_16bit_tables(io, &mut pipe, output_channels, output_entries)?;
+
+    Ok(TagData::Pipeline(pipe))
 }
 
-pub fn write_lut16_type(_io: &mut IoHandler, _pipe: &Pipeline) -> Result<(), CmsError> {
-    todo!()
+pub fn write_lut16_type(io: &mut IoHandler, pipe: &Pipeline) -> Result<(), CmsError> {
+    let in_ch = pipe.input_channels();
+    let out_ch = pipe.output_channels();
+    let clut_points = pipe
+        .stages()
+        .iter()
+        .find_map(|s| match s.data() {
+            StageData::CLut(clut) => Some(clut.params.n_samples[0]),
+            _ => None,
+        })
+        .unwrap_or(0);
+
+    // Determine curve table sizes
+    let input_entries: u32 = pipe
+        .stages()
+        .iter()
+        .find(|s| s.stage_type() == StageSignature::CurveSetElem)
+        .and_then(|s| s.curves().map(|c| c[0].table16_len()))
+        .unwrap_or(2);
+    let output_entries: u32 = pipe
+        .stages()
+        .iter()
+        .rev()
+        .find(|s| s.stage_type() == StageSignature::CurveSetElem)
+        .and_then(|s| s.curves().map(|c| c[0].table16_len()))
+        .unwrap_or(2);
+
+    io.write_u8(in_ch as u8)?;
+    io.write_u8(out_ch as u8)?;
+    io.write_u8(clut_points as u8)?;
+    io.write_u8(0)?;
+    io.write_u16(input_entries as u16)?;
+    io.write_u16(output_entries as u16)?;
+
+    // Matrix
+    let mut matrix = [0.0f64; 9];
+    matrix[0] = 1.0;
+    matrix[4] = 1.0;
+    matrix[8] = 1.0;
+    for stage in pipe.stages() {
+        if stage.stage_type() == StageSignature::MatrixElem {
+            if let StageData::Matrix { coefficients, .. } = stage.data()
+                && coefficients.len() >= 9
+            {
+                matrix[..9].copy_from_slice(&coefficients[..9]);
+            }
+            break;
+        }
+    }
+    for &m in &matrix {
+        io.write_s15fixed16(m)?;
+    }
+
+    // Input curves
+    let input_curves: Vec<ToneCurve> = pipe
+        .stages()
+        .iter()
+        .find(|s| s.stage_type() == StageSignature::CurveSetElem)
+        .and_then(|s| s.curves().map(|c| c.to_vec()))
+        .unwrap_or_else(|| {
+            (0..in_ch)
+                .map(|_| ToneCurve::build_gamma(1.0).unwrap())
+                .collect()
+        });
+    write_16bit_tables(io, &input_curves, input_entries)?;
+
+    // CLUT
+    if clut_points > 0 {
+        for stage in pipe.stages() {
+            if let StageData::CLut(clut) = stage.data() {
+                match &clut.table {
+                    CLutTable::U16(data) => io.write_u16_array(data)?,
+                    CLutTable::Float(data) => {
+                        for &v in data {
+                            io.write_u16((v * 65535.0 + 0.5).clamp(0.0, 65535.0) as u16)?;
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    // Output curves
+    let output_curves: Vec<ToneCurve> = pipe
+        .stages()
+        .iter()
+        .rev()
+        .find(|s| s.stage_type() == StageSignature::CurveSetElem)
+        .and_then(|s| s.curves().map(|c| c.to_vec()))
+        .unwrap_or_else(|| {
+            (0..out_ch)
+                .map(|_| ToneCurve::build_gamma(1.0).unwrap())
+                .collect()
+        });
+    write_16bit_tables(io, &output_curves, output_entries)?;
+
+    Ok(())
+}
+
+// --- LutAtoB / LutBtoA V4 helpers ---
+
+/// Read embedded V4 curve set (each curve has type base header, 4-byte aligned).
+fn read_v4_curve_set(io: &mut IoHandler, offset: u32, n_curves: u32) -> Result<Stage, CmsError> {
+    io.seek(offset);
+    let mut curves = Vec::with_capacity(n_curves as usize);
+    for _ in 0..n_curves {
+        let type_sig = io.read_u32()?;
+        let _reserved = io.read_u32()?;
+        let curve = match TagTypeSignature::try_from(type_sig) {
+            Ok(TagTypeSignature::Curve) => match read_curve_type(io, 0)? {
+                TagData::Curve(c) => c,
+                _ => {
+                    return Err(CmsError {
+                        code: ErrorCode::UnknownExtension,
+                        message: "Expected curve data".to_string(),
+                    });
+                }
+            },
+            Ok(TagTypeSignature::ParametricCurve) => match read_parametric_curve_type(io, 0)? {
+                TagData::Curve(c) => c,
+                _ => {
+                    return Err(CmsError {
+                        code: ErrorCode::UnknownExtension,
+                        message: "Expected parametric curve data".to_string(),
+                    });
+                }
+            },
+            _ => {
+                return Err(CmsError {
+                    code: ErrorCode::UnknownExtension,
+                    message: format!("Unknown curve type in V4 LUT: 0x{type_sig:08X}"),
+                });
+            }
+        };
+        curves.push(curve);
+        // Align to 4-byte boundary
+        let pos = io.tell();
+        let aligned = (pos + 3) & !3;
+        if aligned > pos {
+            io.seek(aligned);
+        }
+    }
+    Stage::new_tone_curves(Some(&curves), n_curves).ok_or_else(|| CmsError {
+        code: ErrorCode::Internal,
+        message: "Failed to create V4 curve set".to_string(),
+    })
+}
+
+/// Write embedded V4 curve set with type base headers.
+fn write_v4_curve_set(io: &mut IoHandler, curves: &[ToneCurve]) -> Result<(), CmsError> {
+    for curve in curves {
+        if curve.parametric_type() != 0 {
+            io.write_u32(TagTypeSignature::ParametricCurve as u32)?;
+            io.write_u32(0)?;
+            write_parametric_curve_type(io, curve)?;
+        } else {
+            io.write_u32(TagTypeSignature::Curve as u32)?;
+            io.write_u32(0)?;
+            write_curve_type(io, curve)?;
+        }
+        // Align to 4-byte boundary
+        let pos = io.tell();
+        let aligned = (pos + 3) & !3;
+        while io.tell() < aligned {
+            io.write_u8(0)?;
+        }
+    }
+    Ok(())
+}
+
+/// Read V4 CLUT (per-dimension grid + precision byte).
+fn read_v4_clut(
+    io: &mut IoHandler,
+    offset: u32,
+    input_channels: u32,
+    output_channels: u32,
+) -> Result<Stage, CmsError> {
+    use crate::curves::intrp::MAX_INPUT_DIMENSIONS;
+
+    io.seek(offset);
+    let mut buf = [0u8; MAX_INPUT_DIMENSIONS];
+    if !io.read(&mut buf) {
+        return Err(IoHandler::read_err());
+    }
+
+    let mut grid_points = [0u32; MAX_INPUT_DIMENSIONS];
+    for i in 0..input_channels as usize {
+        if buf[i] == 1 {
+            return Err(CmsError {
+                code: ErrorCode::Range,
+                message: "V4 CLUT: grid point == 1 is invalid".to_string(),
+            });
+        }
+        grid_points[i] = buf[i] as u32;
+    }
+
+    let precision = io.read_u8()?;
+    let _pad1 = io.read_u8()?;
+    let _pad2 = io.read_u8()?;
+    let _pad3 = io.read_u8()?;
+
+    // Compute total entries to read
+    let temp_stage = Stage::new_clut_16bit(&grid_points, input_channels, output_channels, None)
+        .ok_or_else(|| CmsError {
+            code: ErrorCode::Internal,
+            message: "Failed to create V4 CLUT".to_string(),
+        })?;
+    let n_entries = match temp_stage.data() {
+        StageData::CLut(clut) => clut.n_entries,
+        _ => unreachable!(),
+    };
+
+    let mut table = Vec::with_capacity(n_entries as usize);
+    if precision == 1 {
+        for _ in 0..n_entries {
+            table.push(from_8_to_16(io.read_u8()?));
+        }
+    } else {
+        for _ in 0..n_entries {
+            table.push(io.read_u16()?);
+        }
+    }
+
+    Stage::new_clut_16bit(&grid_points, input_channels, output_channels, Some(&table)).ok_or_else(
+        || CmsError {
+            code: ErrorCode::Internal,
+            message: "Failed to create V4 CLUT with data".to_string(),
+        },
+    )
+}
+
+/// Write V4 CLUT.
+fn write_v4_clut(io: &mut IoHandler, stage: &Stage) -> Result<(), CmsError> {
+    use crate::curves::intrp::MAX_INPUT_DIMENSIONS;
+
+    let (params, table) = match stage.data() {
+        StageData::CLut(clut) => (&clut.params, &clut.table),
+        _ => {
+            return Err(CmsError {
+                code: ErrorCode::Internal,
+                message: "Expected CLUT stage".to_string(),
+            });
+        }
+    };
+
+    for i in 0..MAX_INPUT_DIMENSIONS {
+        io.write_u8(params.n_samples[i] as u8)?;
+    }
+    io.write_u8(2)?; // precision: 16-bit
+    io.write_u8(0)?;
+    io.write_u8(0)?;
+    io.write_u8(0)?;
+
+    match table {
+        CLutTable::U16(data) => io.write_u16_array(data)?,
+        CLutTable::Float(data) => {
+            for &v in data {
+                io.write_u16((v * 65535.0 + 0.5).clamp(0.0, 65535.0) as u16)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Read V4 matrix (3×3 + 3 offsets).
+fn read_v4_matrix(io: &mut IoHandler, offset: u32) -> Result<Stage, CmsError> {
+    io.seek(offset);
+    let mut matrix = [0.0f64; 9];
+    for m in &mut matrix {
+        *m = io.read_s15fixed16()?;
+    }
+    let mut off = [0.0f64; 3];
+    for o in &mut off {
+        *o = io.read_s15fixed16()?;
+    }
+    Stage::new_matrix(3, 3, &matrix, Some(&off)).ok_or_else(|| CmsError {
+        code: ErrorCode::Internal,
+        message: "Failed to create V4 matrix".to_string(),
+    })
+}
+
+/// Write V4 matrix (3×3 + 3 offsets).
+fn write_v4_matrix(io: &mut IoHandler, stage: &Stage) -> Result<(), CmsError> {
+    let (coefficients, offset) = match stage.data() {
+        StageData::Matrix {
+            coefficients,
+            offset,
+        } => (coefficients, offset),
+        _ => {
+            return Err(CmsError {
+                code: ErrorCode::Internal,
+                message: "Expected matrix stage".to_string(),
+            });
+        }
+    };
+    for i in 0..9 {
+        io.write_s15fixed16(coefficients.get(i).copied().unwrap_or(0.0))?;
+    }
+    for i in 0..3 {
+        io.write_s15fixed16(
+            offset
+                .as_ref()
+                .and_then(|o| o.get(i).copied())
+                .unwrap_or(0.0),
+        )?;
+    }
+    Ok(())
 }
 
 // --- LutAtoB type ---
 // C版: Type_LUTA2B_Read / Type_LUTA2B_Write
 
-pub fn read_lut_atob_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    todo!()
+pub fn read_lut_atob_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    let base_offset = io.tell().saturating_sub(8);
+    let input_channels = io.read_u8()? as u32;
+    let output_channels = io.read_u8()? as u32;
+    let _padding = io.read_u16()?;
+
+    let offset_b = io.read_u32()?;
+    let offset_mat = io.read_u32()?;
+    let offset_m = io.read_u32()?;
+    let offset_clut = io.read_u32()?;
+    let offset_a = io.read_u32()?;
+
+    let mut pipe = Pipeline::new(input_channels, output_channels).ok_or_else(|| CmsError {
+        code: ErrorCode::Internal,
+        message: "Failed to create pipeline".to_string(),
+    })?;
+
+    // AtoB order: A → CLUT → M → Matrix → B
+    if offset_a != 0 {
+        let stage = read_v4_curve_set(io, base_offset + offset_a, input_channels)?;
+        pipe.insert_stage(StageLoc::AtEnd, stage);
+    }
+    if offset_clut != 0 {
+        let stage = read_v4_clut(
+            io,
+            base_offset + offset_clut,
+            input_channels,
+            output_channels,
+        )?;
+        pipe.insert_stage(StageLoc::AtEnd, stage);
+    }
+    if offset_m != 0 {
+        let stage = read_v4_curve_set(io, base_offset + offset_m, output_channels)?;
+        pipe.insert_stage(StageLoc::AtEnd, stage);
+    }
+    if offset_mat != 0 {
+        let stage = read_v4_matrix(io, base_offset + offset_mat)?;
+        pipe.insert_stage(StageLoc::AtEnd, stage);
+    }
+    if offset_b != 0 {
+        let stage = read_v4_curve_set(io, base_offset + offset_b, output_channels)?;
+        pipe.insert_stage(StageLoc::AtEnd, stage);
+    }
+
+    Ok(TagData::Pipeline(pipe))
 }
 
-pub fn write_lut_atob_type(_io: &mut IoHandler, _pipe: &Pipeline) -> Result<(), CmsError> {
-    todo!()
+pub fn write_lut_atob_type(io: &mut IoHandler, pipe: &Pipeline) -> Result<(), CmsError> {
+    let base_offset = io.tell().saturating_sub(8);
+    io.write_u8(pipe.input_channels() as u8)?;
+    io.write_u8(pipe.output_channels() as u8)?;
+    io.write_u16(0)?;
+
+    let dir_pos = io.tell();
+    for _ in 0..5 {
+        io.write_u32(0)?; // placeholders
+    }
+
+    let mut offset_b = 0u32;
+    let mut offset_mat = 0u32;
+    let mut offset_m = 0u32;
+    let mut offset_clut = 0u32;
+    let mut offset_a = 0u32;
+
+    // AtoB = A curves → CLUT → M curves → Matrix → B curves
+    let mut curve_idx = 0;
+    for stage in pipe.stages() {
+        match stage.stage_type() {
+            StageSignature::CurveSetElem => {
+                let pos = io.tell() - base_offset;
+                let curves = stage.curves().unwrap_or(&[]);
+                match curve_idx {
+                    0 => {
+                        offset_a = pos;
+                        write_v4_curve_set(io, curves)?;
+                    }
+                    1 => {
+                        offset_m = pos;
+                        write_v4_curve_set(io, curves)?;
+                    }
+                    2 => {
+                        offset_b = pos;
+                        write_v4_curve_set(io, curves)?;
+                    }
+                    _ => {}
+                }
+                curve_idx += 1;
+            }
+            StageSignature::CLutElem => {
+                offset_clut = io.tell() - base_offset;
+                write_v4_clut(io, stage)?;
+            }
+            StageSignature::MatrixElem => {
+                offset_mat = io.tell() - base_offset;
+                write_v4_matrix(io, stage)?;
+            }
+            _ => {}
+        }
+    }
+
+    let end_pos = io.tell();
+    io.seek(dir_pos);
+    io.write_u32(offset_b)?;
+    io.write_u32(offset_mat)?;
+    io.write_u32(offset_m)?;
+    io.write_u32(offset_clut)?;
+    io.write_u32(offset_a)?;
+    io.seek(end_pos);
+
+    Ok(())
 }
 
 // --- LutBtoA type ---
 // C版: Type_LUTB2A_Read / Type_LUTB2A_Write
 
-pub fn read_lut_btoa_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    todo!()
+pub fn read_lut_btoa_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    let base_offset = io.tell().saturating_sub(8);
+    let input_channels = io.read_u8()? as u32;
+    let output_channels = io.read_u8()? as u32;
+    let _padding = io.read_u16()?;
+
+    let offset_b = io.read_u32()?;
+    let offset_mat = io.read_u32()?;
+    let offset_m = io.read_u32()?;
+    let offset_clut = io.read_u32()?;
+    let offset_a = io.read_u32()?;
+
+    let mut pipe = Pipeline::new(input_channels, output_channels).ok_or_else(|| CmsError {
+        code: ErrorCode::Internal,
+        message: "Failed to create pipeline".to_string(),
+    })?;
+
+    // BtoA order: B → Matrix → M → CLUT → A
+    if offset_b != 0 {
+        let stage = read_v4_curve_set(io, base_offset + offset_b, input_channels)?;
+        pipe.insert_stage(StageLoc::AtEnd, stage);
+    }
+    if offset_mat != 0 {
+        let stage = read_v4_matrix(io, base_offset + offset_mat)?;
+        pipe.insert_stage(StageLoc::AtEnd, stage);
+    }
+    if offset_m != 0 {
+        let stage = read_v4_curve_set(io, base_offset + offset_m, input_channels)?;
+        pipe.insert_stage(StageLoc::AtEnd, stage);
+    }
+    if offset_clut != 0 {
+        let stage = read_v4_clut(
+            io,
+            base_offset + offset_clut,
+            input_channels,
+            output_channels,
+        )?;
+        pipe.insert_stage(StageLoc::AtEnd, stage);
+    }
+    if offset_a != 0 {
+        let stage = read_v4_curve_set(io, base_offset + offset_a, output_channels)?;
+        pipe.insert_stage(StageLoc::AtEnd, stage);
+    }
+
+    Ok(TagData::Pipeline(pipe))
 }
 
-pub fn write_lut_btoa_type(_io: &mut IoHandler, _pipe: &Pipeline) -> Result<(), CmsError> {
-    todo!()
+pub fn write_lut_btoa_type(io: &mut IoHandler, pipe: &Pipeline) -> Result<(), CmsError> {
+    let base_offset = io.tell().saturating_sub(8);
+    io.write_u8(pipe.input_channels() as u8)?;
+    io.write_u8(pipe.output_channels() as u8)?;
+    io.write_u16(0)?;
+
+    let dir_pos = io.tell();
+    for _ in 0..5 {
+        io.write_u32(0)?;
+    }
+
+    let mut offset_b = 0u32;
+    let mut offset_mat = 0u32;
+    let mut offset_m = 0u32;
+    let mut offset_clut = 0u32;
+    let mut offset_a = 0u32;
+
+    // BtoA = B curves → Matrix → M curves → CLUT → A curves
+    let mut curve_idx = 0;
+    for stage in pipe.stages() {
+        match stage.stage_type() {
+            StageSignature::CurveSetElem => {
+                let pos = io.tell() - base_offset;
+                let curves = stage.curves().unwrap_or(&[]);
+                match curve_idx {
+                    0 => {
+                        offset_b = pos;
+                        write_v4_curve_set(io, curves)?;
+                    }
+                    1 => {
+                        offset_m = pos;
+                        write_v4_curve_set(io, curves)?;
+                    }
+                    2 => {
+                        offset_a = pos;
+                        write_v4_curve_set(io, curves)?;
+                    }
+                    _ => {}
+                }
+                curve_idx += 1;
+            }
+            StageSignature::CLutElem => {
+                offset_clut = io.tell() - base_offset;
+                write_v4_clut(io, stage)?;
+            }
+            StageSignature::MatrixElem => {
+                offset_mat = io.tell() - base_offset;
+                write_v4_matrix(io, stage)?;
+            }
+            _ => {}
+        }
+    }
+
+    let end_pos = io.tell();
+    io.seek(dir_pos);
+    io.write_u32(offset_b)?;
+    io.write_u32(offset_mat)?;
+    io.write_u32(offset_m)?;
+    io.write_u32(offset_clut)?;
+    io.write_u32(offset_a)?;
+    io.seek(end_pos);
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2768,7 +3640,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn lut8_type_roundtrip() {
         // Build a 3→3 pipeline: input curves + 3×3 matrix + CLUT + output curves
         let mut pipe = Pipeline::new(3, 3).unwrap();
@@ -2821,7 +3692,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn lut16_type_roundtrip() {
         let mut pipe = Pipeline::new(3, 3).unwrap();
 
@@ -2872,7 +3742,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn lut_atob_type_roundtrip() {
         // Build: A curves → CLUT → M curves → Matrix → B curves
         let mut pipe = Pipeline::new(3, 3).unwrap();
@@ -2933,7 +3802,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn lut_btoa_type_roundtrip() {
         // Build: B curves → Matrix → M curves → CLUT → A curves
         let mut pipe = Pipeline::new(3, 3).unwrap();
