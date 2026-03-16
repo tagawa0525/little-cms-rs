@@ -13,6 +13,14 @@ use crate::types::*;
 // TagData enum
 // ============================================================================
 
+/// UCR/BG curves + description.
+/// C版: `cmsUcrBg`
+pub struct UcrBg {
+    pub ucr: ToneCurve,
+    pub bg: ToneCurve,
+    pub desc: Mlu,
+}
+
 /// Decoded tag data. Each variant holds the deserialized content of one ICC tag type.
 pub enum TagData {
     Xyz(CieXyz),
@@ -29,6 +37,7 @@ pub enum TagData {
     ColorantOrder(Vec<u8>),
     Data(IccData),
     Screening(Screening),
+    UcrBg(Box<UcrBg>),
     UInt8Array(Vec<u8>),
     UInt16Array(Vec<u16>),
     UInt32Array(Vec<u32>),
@@ -70,6 +79,8 @@ pub fn read_tag_type(
         TagTypeSignature::NamedColor2 => read_named_color_type(io, size),
         TagTypeSignature::Data => read_data_type(io, size),
         TagTypeSignature::Screening => read_screening_type(io, size),
+        TagTypeSignature::UcrBg => read_ucr_bg_type(io, size),
+        TagTypeSignature::CrdInfo => read_crd_info_type(io, size),
         _ => {
             // Unknown type: read as raw bytes
             let mut raw = vec![0u8; size as usize];
@@ -160,6 +171,10 @@ pub fn write_tag_type(
         TagData::Screening(s) => {
             write_screening_type(io, s)?;
             TagTypeSignature::Screening
+        }
+        TagData::UcrBg(u) => {
+            write_ucr_bg_type(io, u)?;
+            TagTypeSignature::UcrBg
         }
         TagData::Raw(raw) => {
             if !io.write(raw) {
@@ -991,6 +1006,146 @@ pub fn write_named_color_type(io: &mut IoHandler, list: &NamedColorList) -> Resu
     Ok(())
 }
 
+// --- UcrBg type ---
+// C版: Type_UcrBg_Read / Type_UcrBg_Write
+
+pub fn read_ucr_bg_type(io: &mut IoHandler, size: u32) -> Result<TagData, CmsError> {
+    let mut remaining = size as i32;
+
+    // UCR curve
+    if remaining < 4 {
+        return Err(IoHandler::read_err());
+    }
+    let ucr_count = io.read_u32()? as usize;
+    remaining -= 4;
+    if remaining < (ucr_count * 2) as i32 {
+        return Err(IoHandler::read_err());
+    }
+    let ucr_table = io.read_u16_array(ucr_count)?;
+    remaining -= (ucr_count * 2) as i32;
+    let ucr = ToneCurve::build_tabulated_16(&ucr_table).ok_or_else(|| CmsError {
+        code: ErrorCode::Internal,
+        message: "Failed to build UCR curve".to_string(),
+    })?;
+
+    // BG curve
+    if remaining < 4 {
+        return Err(IoHandler::read_err());
+    }
+    let bg_count = io.read_u32()? as usize;
+    remaining -= 4;
+    if remaining < (bg_count * 2) as i32 {
+        return Err(IoHandler::read_err());
+    }
+    let bg_table = io.read_u16_array(bg_count)?;
+    remaining -= (bg_count * 2) as i32;
+    let bg = ToneCurve::build_tabulated_16(&bg_table).ok_or_else(|| CmsError {
+        code: ErrorCode::Internal,
+        message: "Failed to build BG curve".to_string(),
+    })?;
+
+    // Description text
+    let mut desc = Mlu::new();
+    if remaining > 0 && remaining <= 32000 {
+        let text_len = remaining as usize;
+        let mut text_buf = vec![0u8; text_len];
+        if !io.read(&mut text_buf) {
+            return Err(IoHandler::read_err());
+        }
+        while text_buf.last() == Some(&0) {
+            text_buf.pop();
+        }
+        let text = String::from_utf8_lossy(&text_buf);
+        desc.set_ascii("en", "US", &text);
+    }
+
+    Ok(TagData::UcrBg(Box::new(UcrBg { ucr, bg, desc })))
+}
+
+pub fn write_ucr_bg_type(io: &mut IoHandler, u: &UcrBg) -> Result<(), CmsError> {
+    // UCR curve
+    let ucr_table = u.ucr.table16();
+    io.write_u32(ucr_table.len() as u32)?;
+    io.write_u16_array(ucr_table)?;
+
+    // BG curve
+    let bg_table = u.bg.table16();
+    io.write_u32(bg_table.len() as u32)?;
+    io.write_u16_array(bg_table)?;
+
+    // Description text
+    let text = u.desc.get_ascii("en", "US").unwrap_or_default();
+    let bytes = text.as_bytes();
+    if !io.write(bytes) {
+        return Err(IoHandler::write_err());
+    }
+    io.write_u8(0)?; // NUL terminator
+    Ok(())
+}
+
+// --- CrdInfo type ---
+// C版: Type_CrdInfo_Read / Type_CrdInfo_Write
+// Stores PostScript product name + CRD names as MLU with "PS" language.
+
+fn read_count_and_string(
+    io: &mut IoHandler,
+    mlu: &mut Mlu,
+    remaining: &mut u32,
+    section: &str,
+) -> Result<(), CmsError> {
+    if *remaining < 4 {
+        return Err(IoHandler::read_err());
+    }
+    let count = io.read_u32()? as usize;
+    *remaining = remaining.saturating_sub(4);
+    if (*remaining as usize) < count {
+        return Err(IoHandler::read_err());
+    }
+    let mut buf = vec![0u8; count];
+    if count > 0 && !io.read(&mut buf) {
+        return Err(IoHandler::read_err());
+    }
+    *remaining = remaining.saturating_sub(count as u32);
+    while buf.last() == Some(&0) {
+        buf.pop();
+    }
+    let text = String::from_utf8_lossy(&buf);
+    mlu.set_ascii("PS", section, &text);
+    Ok(())
+}
+
+fn write_count_and_string(io: &mut IoHandler, mlu: &Mlu, section: &str) -> Result<(), CmsError> {
+    let text = mlu.get_ascii("PS", section).unwrap_or_default();
+    let bytes = text.as_bytes();
+    let len = bytes.len() + 1; // include NUL
+    io.write_u32(len as u32)?;
+    if !io.write(bytes) {
+        return Err(IoHandler::write_err());
+    }
+    io.write_u8(0)?;
+    Ok(())
+}
+
+pub fn read_crd_info_type(io: &mut IoHandler, size: u32) -> Result<TagData, CmsError> {
+    let mut mlu = Mlu::new();
+    let mut remaining = size;
+    read_count_and_string(io, &mut mlu, &mut remaining, "nm")?;
+    read_count_and_string(io, &mut mlu, &mut remaining, "#0")?;
+    read_count_and_string(io, &mut mlu, &mut remaining, "#1")?;
+    read_count_and_string(io, &mut mlu, &mut remaining, "#2")?;
+    read_count_and_string(io, &mut mlu, &mut remaining, "#3")?;
+    Ok(TagData::Mlu(mlu))
+}
+
+pub fn write_crd_info_type(io: &mut IoHandler, mlu: &Mlu) -> Result<(), CmsError> {
+    write_count_and_string(io, mlu, "nm")?;
+    write_count_and_string(io, mlu, "#0")?;
+    write_count_and_string(io, mlu, "#1")?;
+    write_count_and_string(io, mlu, "#2")?;
+    write_count_and_string(io, mlu, "#3")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1561,6 +1716,73 @@ mod tests {
                 assert_eq!(color.colorant[2], 6000);
             }
             _ => panic!("Expected TagData::NamedColor"),
+        }
+    }
+
+    // ========================================================================
+    // UcrBg type round-trip
+    // ========================================================================
+
+    #[test]
+    fn ucr_bg_type_roundtrip() {
+        let ucr = ToneCurve::build_tabulated_16(&[0, 32768, 65535]).unwrap();
+        let bg = ToneCurve::build_tabulated_16(&[0, 16384, 65535]).unwrap();
+        let mut desc = Mlu::new();
+        desc.set_ascii("en", "US", "UCR/BG test");
+        let data = UcrBg { ucr, bg, desc };
+
+        let mut io = IoHandler::from_memory_write(512);
+        write_ucr_bg_type(&mut io, &data).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_ucr_bg_type(&mut io, size).unwrap();
+        match result {
+            TagData::UcrBg(read_data) => {
+                assert_eq!(read_data.ucr.table16_len(), 3);
+                assert_eq!(read_data.bg.table16_len(), 3);
+                assert_eq!(
+                    read_data.desc.get_ascii("en", "US"),
+                    Some("UCR/BG test".to_string())
+                );
+            }
+            _ => panic!("Expected TagData::UcrBg"),
+        }
+    }
+
+    // ========================================================================
+    // CrdInfo type round-trip
+    // ========================================================================
+
+    #[test]
+    fn crd_info_type_roundtrip() {
+        let mut mlu = Mlu::new();
+        mlu.set_ascii("PS", "nm", "Product Name");
+        mlu.set_ascii("PS", "#0", "CRD Perceptual");
+        mlu.set_ascii("PS", "#1", "CRD Colorimetric");
+        mlu.set_ascii("PS", "#2", "CRD Saturation");
+        mlu.set_ascii("PS", "#3", "CRD Absolute");
+
+        let mut io = IoHandler::from_memory_write(512);
+        write_crd_info_type(&mut io, &mlu).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_crd_info_type(&mut io, size).unwrap();
+        match result {
+            TagData::Mlu(read_mlu) => {
+                assert_eq!(
+                    read_mlu.get_ascii("PS", "nm"),
+                    Some("Product Name".to_string())
+                );
+                assert_eq!(
+                    read_mlu.get_ascii("PS", "#0"),
+                    Some("CRD Perceptual".to_string())
+                );
+                assert_eq!(
+                    read_mlu.get_ascii("PS", "#3"),
+                    Some("CRD Absolute".to_string())
+                );
+            }
+            _ => panic!("Expected TagData::Mlu"),
         }
     }
 }
