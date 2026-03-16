@@ -13,6 +13,14 @@ use crate::types::*;
 // TagData enum
 // ============================================================================
 
+/// UCR/BG curves + description.
+/// C版: `cmsUcrBg`
+pub struct UcrBg {
+    pub ucr: ToneCurve,
+    pub bg: ToneCurve,
+    pub desc: Mlu,
+}
+
 /// Decoded tag data. Each variant holds the deserialized content of one ICC tag type.
 pub enum TagData {
     Xyz(CieXyz),
@@ -29,6 +37,8 @@ pub enum TagData {
     ColorantOrder(Vec<u8>),
     Data(IccData),
     Screening(Screening),
+    UcrBg(Box<UcrBg>),
+    VideoSignal(VideoSignalType),
     UInt8Array(Vec<u8>),
     UInt16Array(Vec<u16>),
     UInt32Array(Vec<u32>),
@@ -70,6 +80,9 @@ pub fn read_tag_type(
         TagTypeSignature::NamedColor2 => read_named_color_type(io, size),
         TagTypeSignature::Data => read_data_type(io, size),
         TagTypeSignature::Screening => read_screening_type(io, size),
+        TagTypeSignature::UcrBg => read_ucr_bg_type(io, size),
+        TagTypeSignature::CrdInfo => read_crd_info_type(io, size),
+        TagTypeSignature::Cicp => read_video_signal_type(io, size),
         _ => {
             // Unknown type: read as raw bytes
             let mut raw = vec![0u8; size as usize];
@@ -160,6 +173,14 @@ pub fn write_tag_type(
         TagData::Screening(s) => {
             write_screening_type(io, s)?;
             TagTypeSignature::Screening
+        }
+        TagData::UcrBg(u) => {
+            write_ucr_bg_type(io, u)?;
+            TagTypeSignature::UcrBg
+        }
+        TagData::VideoSignal(vs) => {
+            write_video_signal_type(io, vs)?;
+            TagTypeSignature::Cicp
         }
         TagData::Raw(raw) => {
             if !io.write(raw) {
@@ -991,6 +1012,178 @@ pub fn write_named_color_type(io: &mut IoHandler, list: &NamedColorList) -> Resu
     Ok(())
 }
 
+// --- UcrBg type ---
+// C版: Type_UcrBg_Read / Type_UcrBg_Write
+
+pub fn read_ucr_bg_type(io: &mut IoHandler, size: u32) -> Result<TagData, CmsError> {
+    let mut remaining = size as i32;
+
+    // UCR curve
+    if remaining < 4 {
+        return Err(IoHandler::read_err());
+    }
+    let ucr_count = io.read_u32()? as usize;
+    remaining -= 4;
+    let ucr_bytes = ucr_count.checked_mul(2).and_then(|v| i32::try_from(v).ok());
+    match ucr_bytes {
+        Some(b) if remaining >= b => remaining -= b,
+        _ => return Err(IoHandler::read_err()),
+    }
+    let ucr_table = io.read_u16_array(ucr_count)?;
+    let ucr = ToneCurve::build_tabulated_16(&ucr_table).ok_or_else(|| CmsError {
+        code: ErrorCode::Internal,
+        message: "Failed to build UCR curve".to_string(),
+    })?;
+
+    // BG curve
+    if remaining < 4 {
+        return Err(IoHandler::read_err());
+    }
+    let bg_count = io.read_u32()? as usize;
+    remaining -= 4;
+    let bg_bytes = bg_count.checked_mul(2).and_then(|v| i32::try_from(v).ok());
+    match bg_bytes {
+        Some(b) if remaining >= b => remaining -= b,
+        _ => return Err(IoHandler::read_err()),
+    }
+    let bg_table = io.read_u16_array(bg_count)?;
+    let bg = ToneCurve::build_tabulated_16(&bg_table).ok_or_else(|| CmsError {
+        code: ErrorCode::Internal,
+        message: "Failed to build BG curve".to_string(),
+    })?;
+
+    // Description text
+    let mut desc = Mlu::new();
+    if remaining > 0 && remaining <= 32000 {
+        let text_len = remaining as usize;
+        let mut text_buf = vec![0u8; text_len];
+        if !io.read(&mut text_buf) {
+            return Err(IoHandler::read_err());
+        }
+        while text_buf.last() == Some(&0) {
+            text_buf.pop();
+        }
+        let text = String::from_utf8_lossy(&text_buf);
+        desc.set_ascii("en", "US", &text);
+    }
+
+    Ok(TagData::UcrBg(Box::new(UcrBg { ucr, bg, desc })))
+}
+
+pub fn write_ucr_bg_type(io: &mut IoHandler, u: &UcrBg) -> Result<(), CmsError> {
+    // UCR curve
+    let ucr_table = u.ucr.table16();
+    io.write_u32(ucr_table.len() as u32)?;
+    io.write_u16_array(ucr_table)?;
+
+    // BG curve
+    let bg_table = u.bg.table16();
+    io.write_u32(bg_table.len() as u32)?;
+    io.write_u16_array(bg_table)?;
+
+    // Description text
+    let text = u.desc.get_ascii("en", "US").unwrap_or_default();
+    let bytes = text.as_bytes();
+    if !io.write(bytes) {
+        return Err(IoHandler::write_err());
+    }
+    io.write_u8(0)?; // NUL terminator
+    Ok(())
+}
+
+// --- CrdInfo type ---
+// C版: Type_CrdInfo_Read / Type_CrdInfo_Write
+// Stores PostScript product name + CRD names as MLU with "PS" language.
+// Note: CrdInfo is a v2 legacy format. read_crd_info_type returns TagData::Mlu,
+// which will be written as MLU (v4) format through write_tag_type dispatch.
+// This is intentional: CrdInfo → MLU upgrade on save.
+
+fn read_count_and_string(
+    io: &mut IoHandler,
+    mlu: &mut Mlu,
+    remaining: &mut u32,
+    section: &str,
+) -> Result<(), CmsError> {
+    if *remaining < 4 {
+        return Err(IoHandler::read_err());
+    }
+    let count = io.read_u32()? as usize;
+    *remaining = remaining.saturating_sub(4);
+    if (*remaining as usize) < count {
+        return Err(IoHandler::read_err());
+    }
+    let mut buf = vec![0u8; count];
+    if count > 0 && !io.read(&mut buf) {
+        return Err(IoHandler::read_err());
+    }
+    *remaining = remaining.saturating_sub(count as u32);
+    while buf.last() == Some(&0) {
+        buf.pop();
+    }
+    let text = String::from_utf8_lossy(&buf);
+    mlu.set_ascii("PS", section, &text);
+    Ok(())
+}
+
+fn write_count_and_string(io: &mut IoHandler, mlu: &Mlu, section: &str) -> Result<(), CmsError> {
+    let text = mlu.get_ascii("PS", section).unwrap_or_default();
+    let bytes = text.as_bytes();
+    let len = bytes.len() + 1; // include NUL
+    io.write_u32(len as u32)?;
+    if !io.write(bytes) {
+        return Err(IoHandler::write_err());
+    }
+    io.write_u8(0)?;
+    Ok(())
+}
+
+pub fn read_crd_info_type(io: &mut IoHandler, size: u32) -> Result<TagData, CmsError> {
+    let mut mlu = Mlu::new();
+    let mut remaining = size;
+    read_count_and_string(io, &mut mlu, &mut remaining, "nm")?;
+    read_count_and_string(io, &mut mlu, &mut remaining, "#0")?;
+    read_count_and_string(io, &mut mlu, &mut remaining, "#1")?;
+    read_count_and_string(io, &mut mlu, &mut remaining, "#2")?;
+    read_count_and_string(io, &mut mlu, &mut remaining, "#3")?;
+    Ok(TagData::Mlu(mlu))
+}
+
+pub fn write_crd_info_type(io: &mut IoHandler, mlu: &Mlu) -> Result<(), CmsError> {
+    write_count_and_string(io, mlu, "nm")?;
+    write_count_and_string(io, mlu, "#0")?;
+    write_count_and_string(io, mlu, "#1")?;
+    write_count_and_string(io, mlu, "#2")?;
+    write_count_and_string(io, mlu, "#3")?;
+    Ok(())
+}
+
+// --- VideoSignal (cicp) type ---
+// C版: Type_VideoSignal_Read / Type_VideoSignal_Write
+
+pub fn read_video_signal_type(io: &mut IoHandler, size: u32) -> Result<TagData, CmsError> {
+    if size != 4 {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: format!("VideoSignal tag must be 4 bytes, got {}", size),
+        });
+    }
+    let vs = VideoSignalType {
+        colour_primaries: io.read_u8()?,
+        transfer_characteristics: io.read_u8()?,
+        matrix_coefficients: io.read_u8()?,
+        video_full_range_flag: io.read_u8()?,
+    };
+    Ok(TagData::VideoSignal(vs))
+}
+
+pub fn write_video_signal_type(io: &mut IoHandler, vs: &VideoSignalType) -> Result<(), CmsError> {
+    io.write_u8(vs.colour_primaries)?;
+    io.write_u8(vs.transfer_characteristics)?;
+    io.write_u8(vs.matrix_coefficients)?;
+    io.write_u8(vs.video_full_range_flag)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1561,6 +1754,101 @@ mod tests {
                 assert_eq!(color.colorant[2], 6000);
             }
             _ => panic!("Expected TagData::NamedColor"),
+        }
+    }
+
+    // ========================================================================
+    // UcrBg type round-trip
+    // ========================================================================
+
+    #[test]
+    fn ucr_bg_type_roundtrip() {
+        let ucr = ToneCurve::build_tabulated_16(&[0, 32768, 65535]).unwrap();
+        let bg = ToneCurve::build_tabulated_16(&[0, 16384, 65535]).unwrap();
+        let mut desc = Mlu::new();
+        desc.set_ascii("en", "US", "UCR/BG test");
+        let data = UcrBg { ucr, bg, desc };
+
+        let mut io = IoHandler::from_memory_write(512);
+        write_ucr_bg_type(&mut io, &data).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_ucr_bg_type(&mut io, size).unwrap();
+        match result {
+            TagData::UcrBg(read_data) => {
+                assert_eq!(read_data.ucr.table16_len(), 3);
+                assert_eq!(read_data.bg.table16_len(), 3);
+                assert_eq!(
+                    read_data.desc.get_ascii("en", "US"),
+                    Some("UCR/BG test".to_string())
+                );
+            }
+            _ => panic!("Expected TagData::UcrBg"),
+        }
+    }
+
+    // ========================================================================
+    // CrdInfo type round-trip
+    // ========================================================================
+
+    #[test]
+    fn crd_info_type_roundtrip() {
+        let mut mlu = Mlu::new();
+        mlu.set_ascii("PS", "nm", "Product Name");
+        mlu.set_ascii("PS", "#0", "CRD Perceptual");
+        mlu.set_ascii("PS", "#1", "CRD Colorimetric");
+        mlu.set_ascii("PS", "#2", "CRD Saturation");
+        mlu.set_ascii("PS", "#3", "CRD Absolute");
+
+        let mut io = IoHandler::from_memory_write(512);
+        write_crd_info_type(&mut io, &mlu).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_crd_info_type(&mut io, size).unwrap();
+        match result {
+            TagData::Mlu(read_mlu) => {
+                assert_eq!(
+                    read_mlu.get_ascii("PS", "nm"),
+                    Some("Product Name".to_string())
+                );
+                assert_eq!(
+                    read_mlu.get_ascii("PS", "#0"),
+                    Some("CRD Perceptual".to_string())
+                );
+                assert_eq!(
+                    read_mlu.get_ascii("PS", "#3"),
+                    Some("CRD Absolute".to_string())
+                );
+            }
+            _ => panic!("Expected TagData::Mlu"),
+        }
+    }
+
+    // ========================================================================
+    // VideoSignal (cicp) type round-trip
+    // ========================================================================
+
+    #[test]
+    fn video_signal_type_roundtrip() {
+        let vs = VideoSignalType {
+            colour_primaries: 9,          // BT.2020
+            transfer_characteristics: 16, // PQ
+            matrix_coefficients: 0,
+            video_full_range_flag: 1,
+        };
+        let mut io = IoHandler::from_memory_write(64);
+        write_video_signal_type(&mut io, &vs).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_video_signal_type(&mut io, size).unwrap();
+        match result {
+            TagData::VideoSignal(read_vs) => {
+                assert_eq!(read_vs.colour_primaries, 9);
+                assert_eq!(read_vs.transfer_characteristics, 16);
+                assert_eq!(read_vs.matrix_coefficients, 0);
+                assert_eq!(read_vs.video_full_range_flag, 1);
+            }
+            _ => panic!("Expected TagData::VideoSignal"),
         }
     }
 }
