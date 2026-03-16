@@ -296,7 +296,7 @@ impl NamedColorList {
 // Profile Sequence Description
 // ============================================================================
 
-use crate::types::TechnologySignature;
+use crate::types::{ProfileId, TechnologySignature};
 
 /// A single entry in a profile sequence description.
 ///
@@ -309,6 +309,8 @@ pub struct ProfileSequenceDescEntry {
     pub technology: Option<TechnologySignature>,
     pub manufacturer: Mlu,
     pub model: Mlu,
+    pub profile_id: ProfileId,
+    pub description: Mlu,
 }
 
 /// Profile sequence description — ordered list of profiles used in a transform.
@@ -330,6 +332,8 @@ impl ProfileSequenceDesc {
                 technology: None,
                 manufacturer: Mlu::new(),
                 model: Mlu::new(),
+                profile_id: ProfileId::default(),
+                description: Mlu::new(),
             })
             .collect();
         Self { entries }
