@@ -1,6 +1,6 @@
 # Phase 4c-3: LUT タグ型ハンドラ
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmstypes.c`（LUT部分）
 **Rust見積**: ~600行（impl）+ ~300行（tests）
 **ブランチ**: `feat/phase4c3-lut-tags`
