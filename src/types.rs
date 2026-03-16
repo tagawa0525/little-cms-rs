@@ -1057,6 +1057,16 @@ pub struct Screening {
     pub channels: Vec<ScreeningChannel>,
 }
 
+/// Video signal type (CICP / ITU-R BT.2100).
+/// C版: `cmsVideoSignalType`
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VideoSignalType {
+    pub colour_primaries: u8,
+    pub transfer_characteristics: u8,
+    pub matrix_coefficients: u8,
+    pub video_full_range_flag: u8,
+}
+
 // ============================================================================
 // Tests
 // ============================================================================

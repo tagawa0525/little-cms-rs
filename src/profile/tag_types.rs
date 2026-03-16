@@ -38,6 +38,7 @@ pub enum TagData {
     Data(IccData),
     Screening(Screening),
     UcrBg(Box<UcrBg>),
+    VideoSignal(VideoSignalType),
     UInt8Array(Vec<u8>),
     UInt16Array(Vec<u16>),
     UInt32Array(Vec<u32>),
@@ -81,6 +82,7 @@ pub fn read_tag_type(
         TagTypeSignature::Screening => read_screening_type(io, size),
         TagTypeSignature::UcrBg => read_ucr_bg_type(io, size),
         TagTypeSignature::CrdInfo => read_crd_info_type(io, size),
+        TagTypeSignature::Cicp => read_video_signal_type(io, size),
         _ => {
             // Unknown type: read as raw bytes
             let mut raw = vec![0u8; size as usize];
@@ -175,6 +177,10 @@ pub fn write_tag_type(
         TagData::UcrBg(u) => {
             write_ucr_bg_type(io, u)?;
             TagTypeSignature::UcrBg
+        }
+        TagData::VideoSignal(vs) => {
+            write_video_signal_type(io, vs)?;
+            TagTypeSignature::Cicp
         }
         TagData::Raw(raw) => {
             if !io.write(raw) {
@@ -1146,6 +1152,33 @@ pub fn write_crd_info_type(io: &mut IoHandler, mlu: &Mlu) -> Result<(), CmsError
     Ok(())
 }
 
+// --- VideoSignal (cicp) type ---
+// C版: Type_VideoSignal_Read / Type_VideoSignal_Write
+
+pub fn read_video_signal_type(io: &mut IoHandler, size: u32) -> Result<TagData, CmsError> {
+    if size != 4 {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: format!("VideoSignal tag must be 4 bytes, got {}", size),
+        });
+    }
+    let vs = VideoSignalType {
+        colour_primaries: io.read_u8()?,
+        transfer_characteristics: io.read_u8()?,
+        matrix_coefficients: io.read_u8()?,
+        video_full_range_flag: io.read_u8()?,
+    };
+    Ok(TagData::VideoSignal(vs))
+}
+
+pub fn write_video_signal_type(io: &mut IoHandler, vs: &VideoSignalType) -> Result<(), CmsError> {
+    io.write_u8(vs.colour_primaries)?;
+    io.write_u8(vs.transfer_characteristics)?;
+    io.write_u8(vs.matrix_coefficients)?;
+    io.write_u8(vs.video_full_range_flag)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1783,6 +1816,34 @@ mod tests {
                 );
             }
             _ => panic!("Expected TagData::Mlu"),
+        }
+    }
+
+    // ========================================================================
+    // VideoSignal (cicp) type round-trip
+    // ========================================================================
+
+    #[test]
+    fn video_signal_type_roundtrip() {
+        let vs = VideoSignalType {
+            colour_primaries: 9,          // BT.2020
+            transfer_characteristics: 16, // PQ
+            matrix_coefficients: 0,
+            video_full_range_flag: 1,
+        };
+        let mut io = IoHandler::from_memory_write(64);
+        write_video_signal_type(&mut io, &vs).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_video_signal_type(&mut io, size).unwrap();
+        match result {
+            TagData::VideoSignal(read_vs) => {
+                assert_eq!(read_vs.colour_primaries, 9);
+                assert_eq!(read_vs.transfer_characteristics, 16);
+                assert_eq!(read_vs.matrix_coefficients, 0);
+                assert_eq!(read_vs.video_full_range_flag, 1);
+            }
+            _ => panic!("Expected TagData::VideoSignal"),
         }
     }
 }
