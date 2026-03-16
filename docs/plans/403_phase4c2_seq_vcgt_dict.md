@@ -1,6 +1,6 @@
 # Phase 4c-2: ProfileSequenceDesc/Id + vcgt + Dict タグ型
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmstypes.c`（残り部分）
 **Rust見積**: ~500行（impl）+ ~300行（tests）
 **ブランチ**: `feat/phase4c2-seq-vcgt-dict`
