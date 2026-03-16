@@ -460,7 +460,6 @@ const MAX_TABLE_TAG: usize = 100;
 pub(crate) enum TagDataState {
     NotLoaded,
     Raw(Vec<u8>),
-    Loaded(Box<crate::profile::tag_types::TagData>),
 }
 
 /// A single entry in the profile's tag directory.
@@ -616,10 +615,6 @@ impl Profile {
         match &self.tags[idx].data {
             TagDataState::Raw(data) => return Ok(data.clone()),
             TagDataState::NotLoaded => {}
-            TagDataState::Loaded(_) => {
-                // Tag was written via write_tag; need to find raw bytes
-                // Fall through to load from IO or return error
-            }
         }
 
         // Load from IO
@@ -735,23 +730,10 @@ impl Profile {
     pub fn read_tag(
         &mut self,
         sig: TagSignature,
-    ) -> Result<&crate::profile::tag_types::TagData, CmsError> {
+    ) -> Result<crate::profile::tag_types::TagData, CmsError> {
         use crate::profile::tag_types;
 
-        let idx = self.search_tag_follow_links(sig).ok_or(CmsError {
-            code: ErrorCode::Internal,
-            message: format!("Tag {:?} not found", sig),
-        })?;
-
-        // Already loaded?
-        if matches!(self.tags[idx].data, TagDataState::Loaded(_)) {
-            match &self.tags[idx].data {
-                TagDataState::Loaded(d) => return Ok(d),
-                _ => unreachable!(),
-            }
-        }
-
-        // Read raw bytes first
+        // Read raw bytes
         let raw = self.read_raw_tag(sig)?;
 
         // Parse: first 4 bytes = type signature, next 4 = reserved, rest = payload
@@ -762,23 +744,16 @@ impl Profile {
             });
         }
         let type_sig_raw = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]);
-        let type_sig = TagTypeSignature::try_from(type_sig_raw).map_err(|_| CmsError {
-            code: ErrorCode::BadSignature,
-            message: format!("Unknown tag type: 0x{:08X}", type_sig_raw),
-        })?;
+
+        // Handle unknown type signatures by falling back to Raw
+        let type_sig = match TagTypeSignature::try_from(type_sig_raw) {
+            Ok(sig) => sig,
+            Err(_) => return Ok(crate::profile::tag_types::TagData::Raw(raw)),
+        };
 
         let payload = &raw[8..];
         let mut payload_io = IoHandler::from_memory_read(payload);
-        let tag_data = tag_types::read_tag_type(&mut payload_io, type_sig, payload.len() as u32)?;
-
-        // Re-find idx since read_raw_tag may have modified tags
-        let idx = self.search_tag_follow_links(sig).unwrap();
-        self.tags[idx].data = TagDataState::Loaded(Box::new(tag_data));
-
-        match &self.tags[idx].data {
-            TagDataState::Loaded(d) => Ok(d),
-            _ => unreachable!(),
-        }
+        tag_types::read_tag_type(&mut payload_io, type_sig, payload.len() as u32)
     }
 
     /// Write typed tag data into the profile.
@@ -790,19 +765,28 @@ impl Profile {
     ) -> Result<(), CmsError> {
         use crate::profile::tag_types;
 
-        // Serialize to bytes: type_base (8 bytes) + payload
-        let mut io = IoHandler::from_memory_write(4096);
-        let type_sig = tag_types::write_tag_type(&mut io, &data, self.header.version)?;
+        // Pass 1: compute payload size using Null handler
+        let (type_sig, payload_size) = {
+            let mut null_io = IoHandler::new_null();
+            let sig = tag_types::write_tag_type(&mut null_io, &data, self.header.version)?;
+            (sig, null_io.used_space())
+        };
 
-        // Build raw: type_base + payload
-        let payload_size = io.used_space();
+        // Pass 2: write payload to correctly sized buffer
+        let mut io = IoHandler::from_memory_write(payload_size as usize);
+        tag_types::write_tag_type(&mut io, &data, self.header.version)?;
+
+        // Build raw: type_base (8 bytes) + payload
         let mut raw = Vec::with_capacity(8 + payload_size as usize);
-        // Type base: sig(4) + reserved(4)
         raw.extend_from_slice(&(type_sig as u32).to_be_bytes());
         raw.extend_from_slice(&0u32.to_be_bytes());
-        io.seek(0);
+        if !io.seek(0) {
+            return Err(IoHandler::read_err());
+        }
         let mut payload = vec![0u8; payload_size as usize];
-        io.read(&mut payload);
+        if payload_size > 0 && !io.read(&mut payload) {
+            return Err(IoHandler::read_err());
+        }
         raw.extend_from_slice(&payload);
 
         // Store as raw for saving
@@ -1016,7 +1000,6 @@ impl Profile {
             let data_size = match &tag.data {
                 TagDataState::Raw(d) => d.len() as u32,
                 TagDataState::NotLoaded => tag.size,
-                TagDataState::Loaded(_) => tag.size, // Already serialized via write_tag
             };
             sizes.push(data_size);
             current_offset += data_size;

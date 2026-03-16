@@ -5,7 +5,7 @@
 
 use crate::context::{CmsError, ErrorCode};
 use crate::curves::gamma::ToneCurve;
-use crate::pipeline::named::{Mlu, NamedColorList, ProfileSequenceDesc};
+use crate::pipeline::named::{Mlu, NamedColorList};
 use crate::profile::io::IoHandler;
 use crate::types::*;
 
@@ -33,7 +33,6 @@ pub enum TagData {
     UInt16Array(Vec<u16>),
     UInt32Array(Vec<u32>),
     UInt64Array(Vec<u64>),
-    ProfileSequenceDesc(ProfileSequenceDesc),
     Raw(Vec<u8>),
 }
 
@@ -162,12 +161,6 @@ pub fn write_tag_type(
             write_screening_type(io, s)?;
             TagTypeSignature::Screening
         }
-        TagData::ProfileSequenceDesc(_) => {
-            return Err(CmsError {
-                code: ErrorCode::NotSuitable,
-                message: "ProfileSequenceDesc write not yet implemented".to_string(),
-            });
-        }
         TagData::Raw(raw) => {
             if !io.write(raw) {
                 return Err(IoHandler::write_err());
@@ -269,6 +262,12 @@ pub fn read_u16fixed16_type(io: &mut IoHandler, size: u32) -> Result<TagData, Cm
 
 pub fn write_u16fixed16_type(io: &mut IoHandler, arr: &[f64]) -> Result<(), CmsError> {
     for &v in arr {
+        if !(0.0..=65535.0).contains(&v) {
+            return Err(CmsError {
+                code: ErrorCode::Range,
+                message: format!("U16Fixed16 value out of range: {}", v),
+            });
+        }
         let raw = (v * 65536.0 + 0.5).floor() as u32;
         io.write_u32(raw)?;
     }
@@ -481,7 +480,7 @@ pub fn read_mlu_type(io: &mut IoHandler, size: u32) -> Result<TagData, CmsError>
         let text = decode_utf16be(utf16_bytes);
         let lang = std::str::from_utf8(&rec.lang).unwrap_or("en");
         let country = std::str::from_utf8(&rec.country).unwrap_or("US");
-        mlu.set_ascii(lang, country, &text);
+        mlu.set_utf8(lang, country, &text);
     }
 
     Ok(TagData::Mlu(mlu))
@@ -507,7 +506,7 @@ pub fn write_mlu_type(io: &mut IoHandler, mlu: &Mlu) -> Result<(), CmsError> {
         if let Some((lang_code, country_code)) = mlu.translation_codes(i) {
             let lang_str = std::str::from_utf8(&lang_code.0).unwrap_or("en");
             let country_str = std::str::from_utf8(&country_code.0).unwrap_or("US");
-            let text = mlu.get_ascii(lang_str, country_str).unwrap_or_default();
+            let text = mlu.get_utf8(lang_str, country_str).unwrap_or_default();
             let utf16_bytes = encode_utf16be(&text);
             let offset = header_size + pool.len();
             let len = utf16_bytes.len();
@@ -788,7 +787,7 @@ pub fn write_data_type(io: &mut IoHandler, d: &IccData) -> Result<(), CmsError> 
 
 pub fn read_screening_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
     let flags = io.read_u32()?;
-    let n_channels = io.read_u32()?.min(MAX_CHANNELS as u32 - 1) as usize;
+    let n_channels = io.read_u32()?.min(MAX_CHANNELS as u32) as usize;
     let mut channels = Vec::with_capacity(n_channels);
     for _ in 0..n_channels {
         channels.push(ScreeningChannel {
@@ -801,6 +800,12 @@ pub fn read_screening_type(io: &mut IoHandler, _size: u32) -> Result<TagData, Cm
 }
 
 pub fn write_screening_type(io: &mut IoHandler, s: &Screening) -> Result<(), CmsError> {
+    if s.channels.len() > MAX_CHANNELS {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: format!("Too many screening channels: {}", s.channels.len()),
+        });
+    }
     io.write_u32(s.flags)?;
     io.write_u32(s.channels.len() as u32)?;
     for ch in &s.channels {
@@ -824,6 +829,12 @@ pub fn read_colorant_order_type(io: &mut IoHandler, _size: u32) -> Result<TagDat
 }
 
 pub fn write_colorant_order_type(io: &mut IoHandler, order: &[u8]) -> Result<(), CmsError> {
+    if order.len() > MAX_CHANNELS {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: format!("Too many colorant order entries: {}", order.len()),
+        });
+    }
     io.write_u32(order.len() as u32)?;
     if !order.is_empty() && !io.write(order) {
         return Err(IoHandler::write_err());
@@ -905,8 +916,8 @@ pub fn read_named_color_type(io: &mut IoHandler, _size: u32) -> Result<TagData, 
     if !io.read(&mut prefix_buf) || !io.read(&mut suffix_buf) {
         return Err(IoHandler::read_err());
     }
-    let prefix_end = prefix_buf.iter().position(|&b| b == 0).unwrap_or(31);
-    let suffix_end = suffix_buf.iter().position(|&b| b == 0).unwrap_or(31);
+    let prefix_end = prefix_buf.iter().position(|&b| b == 0).unwrap_or(32);
+    let suffix_end = suffix_buf.iter().position(|&b| b == 0).unwrap_or(32);
     let prefix = String::from_utf8_lossy(&prefix_buf[..prefix_end]);
     let suffix = String::from_utf8_lossy(&suffix_buf[..suffix_end]);
 

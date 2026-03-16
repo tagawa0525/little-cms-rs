@@ -115,15 +115,10 @@ pub enum TagData {
 }
 ```
 
-### TagDataState 拡張（profile/io.rs）
+### TagDataState（profile/io.rs）
 
-```rust
-pub(crate) enum TagDataState {
-    NotLoaded,
-    Raw(Vec<u8>),
-    Loaded(TagData),  // 新規追加
-}
-```
+変更なし。`read_tag()` は毎回 Raw からデシリアライズして `TagData` を返す（所有権移転）。
+`write_tag()` はシリアライズして `write_raw_tag()` で Raw として保存する。
 
 ## C版→Rust 関数マッピング
 
