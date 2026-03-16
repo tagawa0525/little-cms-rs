@@ -5,6 +5,7 @@
 
 use crate::context::{CmsError, ErrorCode};
 use crate::curves::gamma::ToneCurve;
+use crate::pipeline::lut::{CLutData, CLutTable, Pipeline, Stage, StageData, StageLoc};
 use crate::pipeline::named::{Dict, Mlu, NamedColorList, ProfileSequenceDesc};
 use crate::profile::io::IoHandler;
 use crate::types::*;
@@ -42,6 +43,7 @@ pub enum TagData {
     ProfileSequenceDesc(ProfileSequenceDesc),
     Vcgt(Box<[ToneCurve; 3]>),
     Dict(Dict),
+    Pipeline(Pipeline),
     UInt8Array(Vec<u8>),
     UInt16Array(Vec<u16>),
     UInt32Array(Vec<u32>),
@@ -90,6 +92,10 @@ pub fn read_tag_type(
         TagTypeSignature::ProfileSequenceId => read_profile_sequence_id_type(io, size),
         TagTypeSignature::Vcgt => read_vcgt_type(io, size),
         TagTypeSignature::Dict => read_dict_type(io, size),
+        TagTypeSignature::Lut8 => read_lut8_type(io, size),
+        TagTypeSignature::Lut16 => read_lut16_type(io, size),
+        TagTypeSignature::LutAtoB => read_lut_atob_type(io, size),
+        TagTypeSignature::LutBtoA => read_lut_btoa_type(io, size),
         _ => {
             // Unknown type: read as raw bytes
             let mut raw = vec![0u8; size as usize];
@@ -200,6 +206,16 @@ pub fn write_tag_type(
         TagData::Dict(dict) => {
             write_dict_type(io, dict)?;
             TagTypeSignature::Dict
+        }
+        TagData::Pipeline(pipe) => {
+            // Choose format based on save_as_8bits flag
+            if pipe.save_as_8bits() {
+                write_lut8_type(io, pipe)?;
+                TagTypeSignature::Lut8
+            } else {
+                write_lut16_type(io, pipe)?;
+                TagTypeSignature::Lut16
+            }
         }
         TagData::Raw(raw) => {
             if !io.write(raw) {
@@ -1808,6 +1824,64 @@ pub fn write_dict_type(io: &mut IoHandler, dict: &Dict) -> Result<(), CmsError> 
     Ok(())
 }
 
+// --- LUT type helpers ---
+
+/// Convert 8-bit to 16-bit: fills MSB with LSB.
+/// C版: `FROM_8_TO_16`
+fn from_8_to_16(v: u8) -> u16 {
+    ((v as u16) << 8) | (v as u16)
+}
+
+/// Convert 16-bit to 8-bit with rounding.
+/// C版: `FROM_16_TO_8`
+fn from_16_to_8(v: u16) -> u8 {
+    (((v as u32) * 65281 + 8388608) >> 24) as u8
+}
+
+// --- Lut8 type ---
+// C版: Type_LUT8_Read / Type_LUT8_Write
+
+pub fn read_lut8_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    todo!()
+}
+
+pub fn write_lut8_type(_io: &mut IoHandler, _pipe: &Pipeline) -> Result<(), CmsError> {
+    todo!()
+}
+
+// --- Lut16 type ---
+// C版: Type_LUT16_Read / Type_LUT16_Write
+
+pub fn read_lut16_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    todo!()
+}
+
+pub fn write_lut16_type(_io: &mut IoHandler, _pipe: &Pipeline) -> Result<(), CmsError> {
+    todo!()
+}
+
+// --- LutAtoB type ---
+// C版: Type_LUTA2B_Read / Type_LUTA2B_Write
+
+pub fn read_lut_atob_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    todo!()
+}
+
+pub fn write_lut_atob_type(_io: &mut IoHandler, _pipe: &Pipeline) -> Result<(), CmsError> {
+    todo!()
+}
+
+// --- LutBtoA type ---
+// C版: Type_LUTB2A_Read / Type_LUTB2A_Write
+
+pub fn read_lut_btoa_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    todo!()
+}
+
+pub fn write_lut_btoa_type(_io: &mut IoHandler, _pipe: &Pipeline) -> Result<(), CmsError> {
+    todo!()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2686,6 +2760,220 @@ mod tests {
                 );
             }
             _ => panic!("Expected TagData::Dict"),
+        }
+    }
+
+    // ========================================================================
+    // Lut8 type round-trip
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn lut8_type_roundtrip() {
+        // Build a 3→3 pipeline: input curves + 3×3 matrix + CLUT + output curves
+        let mut pipe = Pipeline::new(3, 3).unwrap();
+
+        // Input curves (identity)
+        pipe.insert_stage(StageLoc::AtEnd, Stage::new_identity_curves(3).unwrap());
+
+        // 3×3 identity matrix
+        let matrix = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        pipe.insert_stage(
+            StageLoc::AtEnd,
+            Stage::new_matrix(3, 3, &matrix, None).unwrap(),
+        );
+
+        // Small CLUT (2×2×2 grid, 3 output channels)
+        let mut clut_table = vec![0u16; 2 * 2 * 2 * 3];
+        // Set one corner to white
+        let last = clut_table.len() - 3;
+        clut_table[last] = 65535;
+        clut_table[last + 1] = 65535;
+        clut_table[last + 2] = 65535;
+        pipe.insert_stage(
+            StageLoc::AtEnd,
+            Stage::new_clut_16bit_uniform(2, 3, 3, Some(&clut_table)).unwrap(),
+        );
+
+        // Output curves (identity)
+        pipe.insert_stage(StageLoc::AtEnd, Stage::new_identity_curves(3).unwrap());
+
+        let mut io = IoHandler::from_memory_write(65536);
+        write_lut8_type(&mut io, &pipe).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_lut8_type(&mut io, size).unwrap();
+        match result {
+            TagData::Pipeline(read_pipe) => {
+                assert_eq!(read_pipe.input_channels(), 3);
+                assert_eq!(read_pipe.output_channels(), 3);
+                // Evaluate: black in → black out
+                let mut output = [0.0f32; 3];
+                read_pipe.eval_float(&[0.0, 0.0, 0.0], &mut output);
+                assert!(output[0] < 0.01);
+            }
+            _ => panic!("Expected TagData::Pipeline"),
+        }
+    }
+
+    // ========================================================================
+    // Lut16 type round-trip
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn lut16_type_roundtrip() {
+        let mut pipe = Pipeline::new(3, 3).unwrap();
+
+        // Input curves
+        pipe.insert_stage(StageLoc::AtEnd, Stage::new_identity_curves(3).unwrap());
+
+        // Matrix
+        let matrix = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        pipe.insert_stage(
+            StageLoc::AtEnd,
+            Stage::new_matrix(3, 3, &matrix, None).unwrap(),
+        );
+
+        // CLUT (3→3, 5-point grid)
+        let n = 5 * 5 * 5 * 3;
+        let mut clut_table = vec![0u16; n];
+        let last = clut_table.len() - 3;
+        clut_table[last] = 65535;
+        clut_table[last + 1] = 65535;
+        clut_table[last + 2] = 65535;
+        pipe.insert_stage(
+            StageLoc::AtEnd,
+            Stage::new_clut_16bit_uniform(5, 3, 3, Some(&clut_table)).unwrap(),
+        );
+
+        // Output curves
+        pipe.insert_stage(StageLoc::AtEnd, Stage::new_identity_curves(3).unwrap());
+
+        let mut io = IoHandler::from_memory_write(65536);
+        write_lut16_type(&mut io, &pipe).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_lut16_type(&mut io, size).unwrap();
+        match result {
+            TagData::Pipeline(read_pipe) => {
+                assert_eq!(read_pipe.input_channels(), 3);
+                assert_eq!(read_pipe.output_channels(), 3);
+                let mut output = [0.0f32; 3];
+                read_pipe.eval_float(&[1.0, 1.0, 1.0], &mut output);
+                assert!(output[0] > 0.99);
+            }
+            _ => panic!("Expected TagData::Pipeline"),
+        }
+    }
+
+    // ========================================================================
+    // LutAtoB type round-trip
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn lut_atob_type_roundtrip() {
+        // Build: A curves → CLUT → M curves → Matrix → B curves
+        let mut pipe = Pipeline::new(3, 3).unwrap();
+
+        // A curves (input)
+        let gamma_curve = ToneCurve::build_gamma(2.2).unwrap();
+        pipe.insert_stage(
+            StageLoc::AtEnd,
+            Stage::new_tone_curves(
+                Some(&[
+                    gamma_curve.clone(),
+                    gamma_curve.clone(),
+                    gamma_curve.clone(),
+                ]),
+                3,
+            )
+            .unwrap(),
+        );
+
+        // CLUT (3→3, 3-point grid)
+        let n = 3 * 3 * 3 * 3;
+        let clut_table = vec![32768u16; n]; // mid-gray fill
+        pipe.insert_stage(
+            StageLoc::AtEnd,
+            Stage::new_clut_16bit_uniform(3, 3, 3, Some(&clut_table)).unwrap(),
+        );
+
+        // M curves
+        pipe.insert_stage(StageLoc::AtEnd, Stage::new_identity_curves(3).unwrap());
+
+        // Matrix
+        let matrix = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let offset = [0.0, 0.0, 0.0];
+        pipe.insert_stage(
+            StageLoc::AtEnd,
+            Stage::new_matrix(3, 3, &matrix, Some(&offset)).unwrap(),
+        );
+
+        // B curves (output)
+        pipe.insert_stage(StageLoc::AtEnd, Stage::new_identity_curves(3).unwrap());
+
+        let mut io = IoHandler::from_memory_write(65536);
+        write_lut_atob_type(&mut io, &pipe).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_lut_atob_type(&mut io, size).unwrap();
+        match result {
+            TagData::Pipeline(read_pipe) => {
+                assert_eq!(read_pipe.input_channels(), 3);
+                assert_eq!(read_pipe.output_channels(), 3);
+            }
+            _ => panic!("Expected TagData::Pipeline"),
+        }
+    }
+
+    // ========================================================================
+    // LutBtoA type round-trip
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn lut_btoa_type_roundtrip() {
+        // Build: B curves → Matrix → M curves → CLUT → A curves
+        let mut pipe = Pipeline::new(3, 3).unwrap();
+
+        // B curves
+        pipe.insert_stage(StageLoc::AtEnd, Stage::new_identity_curves(3).unwrap());
+
+        // Matrix
+        let matrix = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let offset = [0.0, 0.0, 0.0];
+        pipe.insert_stage(
+            StageLoc::AtEnd,
+            Stage::new_matrix(3, 3, &matrix, Some(&offset)).unwrap(),
+        );
+
+        // M curves
+        pipe.insert_stage(StageLoc::AtEnd, Stage::new_identity_curves(3).unwrap());
+
+        // CLUT (3→3, 3-point grid)
+        let n = 3 * 3 * 3 * 3;
+        let clut_table = vec![32768u16; n];
+        pipe.insert_stage(
+            StageLoc::AtEnd,
+            Stage::new_clut_16bit_uniform(3, 3, 3, Some(&clut_table)).unwrap(),
+        );
+
+        // A curves
+        pipe.insert_stage(StageLoc::AtEnd, Stage::new_identity_curves(3).unwrap());
+
+        let mut io = IoHandler::from_memory_write(65536);
+        write_lut_btoa_type(&mut io, &pipe).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_lut_btoa_type(&mut io, size).unwrap();
+        match result {
+            TagData::Pipeline(read_pipe) => {
+                assert_eq!(read_pipe.input_channels(), 3);
+                assert_eq!(read_pipe.output_channels(), 3);
+            }
+            _ => panic!("Expected TagData::Pipeline"),
         }
     }
 }
