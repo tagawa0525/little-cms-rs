@@ -1,6 +1,6 @@
 # Phase 4c-1: 残りタグ型ハンドラ + ヘルパー
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmstypes.c`（残り部分）
 **Rust見積**: ~600行（impl）+ ~400行（tests）
 **ブランチ**: `feat/phase4c-remaining-tags`
