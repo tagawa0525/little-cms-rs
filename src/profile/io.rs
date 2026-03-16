@@ -268,14 +268,14 @@ impl IoHandler {
     // C版: cmsplugin.c
     // ========================================================================
 
-    fn read_err() -> CmsError {
+    pub(crate) fn read_err() -> CmsError {
         CmsError {
             code: ErrorCode::Read,
             message: "Read error".to_string(),
         }
     }
 
-    fn write_err() -> CmsError {
+    pub(crate) fn write_err() -> CmsError {
         CmsError {
             code: ErrorCode::Write,
             message: "Write error".to_string(),
@@ -719,6 +719,80 @@ impl Profile {
     pub fn set_version_f64(&mut self, v: f64) {
         let encoded = base_to_base((v * 100.0 + 0.5) as u32, 10, 16) << 16;
         self.header.version = encoded;
+    }
+
+    // ========================================================================
+    // Cooked tag read/write
+    // ========================================================================
+
+    /// Read a tag and deserialize it to typed data.
+    /// C版: `cmsReadTag`
+    pub fn read_tag(
+        &mut self,
+        sig: TagSignature,
+    ) -> Result<crate::profile::tag_types::TagData, CmsError> {
+        use crate::profile::tag_types;
+
+        // Read raw bytes
+        let raw = self.read_raw_tag(sig)?;
+
+        // Parse: first 4 bytes = type signature, next 4 = reserved, rest = payload
+        if raw.len() < 8 {
+            return Err(CmsError {
+                code: ErrorCode::Read,
+                message: "Tag too small for type base".to_string(),
+            });
+        }
+        let type_sig_raw = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]);
+
+        // Handle unknown type signatures by falling back to Raw
+        let type_sig = match TagTypeSignature::try_from(type_sig_raw) {
+            Ok(sig) => sig,
+            Err(_) => return Ok(crate::profile::tag_types::TagData::Raw(raw)),
+        };
+
+        let payload = &raw[8..];
+        let mut payload_io = IoHandler::from_memory_read(payload);
+        tag_types::read_tag_type(&mut payload_io, type_sig, payload.len() as u32)
+    }
+
+    /// Write typed tag data into the profile.
+    /// C版: `cmsWriteTag`
+    pub fn write_tag(
+        &mut self,
+        sig: TagSignature,
+        data: crate::profile::tag_types::TagData,
+    ) -> Result<(), CmsError> {
+        use crate::profile::tag_types;
+
+        // Pass 1: compute payload size using Null handler
+        let (type_sig, payload_size) = {
+            let mut null_io = IoHandler::new_null();
+            let sig = tag_types::write_tag_type(&mut null_io, &data, self.header.version)?;
+            (sig, null_io.used_space())
+        };
+
+        // Pass 2: write payload to correctly sized buffer
+        let mut io = IoHandler::from_memory_write(payload_size as usize);
+        tag_types::write_tag_type(&mut io, &data, self.header.version)?;
+
+        // Build raw: type_base (8 bytes) + payload
+        let mut raw = Vec::with_capacity(8 + payload_size as usize);
+        raw.extend_from_slice(&(type_sig as u32).to_be_bytes());
+        raw.extend_from_slice(&0u32.to_be_bytes());
+        if !io.seek(0) {
+            return Err(IoHandler::read_err());
+        }
+        let mut payload = vec![0u8; payload_size as usize];
+        if payload_size > 0 && !io.read(&mut payload) {
+            return Err(IoHandler::read_err());
+        }
+        raw.extend_from_slice(&payload);
+
+        // Store as raw for saving
+        self.write_raw_tag(sig, &raw)?;
+
+        Ok(())
     }
 
     // ========================================================================
@@ -1518,5 +1592,59 @@ mod tests {
         assert_eq!(raw, b"file test!  ");
 
         std::fs::remove_file(&path).ok();
+    }
+
+    // ========================================================================
+    // Cooked read/write tests
+    // ========================================================================
+
+    #[test]
+    fn write_tag_read_tag_xyz_roundtrip() {
+        use crate::profile::tag_types::TagData;
+        use crate::types::CieXyz;
+
+        let mut p = Profile::new_placeholder();
+        let xyz = CieXyz {
+            x: 0.9642,
+            y: 1.0,
+            z: 0.8249,
+        };
+        p.write_tag(TagSignature::MediaWhitePoint, TagData::Xyz(xyz))
+            .unwrap();
+
+        // Save and reopen to test full roundtrip
+        let data = p.save_to_mem().unwrap();
+        let mut p2 = Profile::open_mem(&data).unwrap();
+        let tag = p2.read_tag(TagSignature::MediaWhitePoint).unwrap();
+        match tag {
+            TagData::Xyz(read_xyz) => {
+                assert!((read_xyz.x - xyz.x).abs() < 1.0 / 65536.0);
+                assert!((read_xyz.y - xyz.y).abs() < 1.0 / 65536.0);
+                assert!((read_xyz.z - xyz.z).abs() < 1.0 / 65536.0);
+            }
+            _ => panic!("Expected TagData::Xyz"),
+        }
+    }
+
+    #[test]
+    fn write_tag_read_tag_curve_roundtrip() {
+        use crate::curves::gamma::ToneCurve;
+        use crate::profile::tag_types::TagData;
+
+        let mut p = Profile::new_placeholder();
+        let curve = ToneCurve::build_gamma(2.2).unwrap();
+        p.write_tag(TagSignature::RedTRC, TagData::Curve(curve))
+            .unwrap();
+
+        let data = p.save_to_mem().unwrap();
+        let mut p2 = Profile::open_mem(&data).unwrap();
+        let tag = p2.read_tag(TagSignature::RedTRC).unwrap();
+        match tag {
+            TagData::Curve(read_curve) => {
+                let est = read_curve.estimate_gamma(0.01);
+                assert!((est - 2.2).abs() < 0.1);
+            }
+            _ => panic!("Expected TagData::Curve"),
+        }
     }
 }
