@@ -17,30 +17,30 @@ Phase 4c の PR 分割:
 
 ## 変更対象ファイル
 
-| ファイル | 操作 |
-| --- | --- |
+| ファイル                   | 操作                              |
+| -------------------------- | --------------------------------- |
 | `src/profile/tag_types.rs` | タグ型ハンドラ追加、dispatch 拡張 |
-| `src/types.rs` | VideoSignalType 構造体追加 |
+| `src/types.rs`             | VideoSignalType 構造体追加        |
 
 ## 実装するタグ型
 
-| TagTypeSignature | C版行数 | 内容 |
-| --- | --- | --- |
-| UcrBg | ~93行 | UCR/BG カーブ + 説明テキスト |
-| CrdInfo | ~37行 | PostScript CRD 名（MLU） |
-| ProfileSequenceDesc | ~74行 | プロファイルシーケンス記述 |
-| ProfileSequenceId | ~50行 | プロファイルシーケンス ID |
-| vcgt | ~184行 | ビデオカードガンマテーブル |
-| VideoSignal (cicp) | ~36行 | ITU-R BT.2100 メタデータ |
-| Dict | ~157行 | 名前-値ペア辞書 |
+| TagTypeSignature    | C版行数 | 内容                         |
+| ------------------- | ------- | ---------------------------- |
+| UcrBg               | ~93行   | UCR/BG カーブ + 説明テキスト |
+| CrdInfo             | ~37行   | PostScript CRD 名（MLU）     |
+| ProfileSequenceDesc | ~74行   | プロファイルシーケンス記述   |
+| ProfileSequenceId   | ~50行   | プロファイルシーケンス ID    |
+| vcgt                | ~184行  | ビデオカードガンマテーブル   |
+| VideoSignal (cicp)  | ~36行   | ITU-R BT.2100 メタデータ     |
+| Dict                | ~157行  | 名前-値ペア辞書              |
 
 ## ヘルパー
 
-| ヘルパー | 用途 |
-| --- | --- |
-| `read_position_table` | オフセットテーブル読み込み（ProfileSequenceId, MPE で使用） |
-| `write_position_table` | オフセットテーブル書き込み |
-| `read_embedded_text` | バージョン依存テキスト読み込み（Text/TextDesc/MLU 自動判別） |
+| ヘルパー               | 用途                                                         |
+| ---------------------- | ------------------------------------------------------------ |
+| `read_position_table`  | オフセットテーブル読み込み（ProfileSequenceId, MPE で使用）  |
+| `write_position_table` | オフセットテーブル書き込み                                   |
+| `read_embedded_text`   | バージョン依存テキスト読み込み（Text/TextDesc/MLU 自動判別） |
 
 ## コミット構成（TDD）
 
