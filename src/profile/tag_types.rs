@@ -5,7 +5,7 @@
 
 use crate::context::{CmsError, ErrorCode};
 use crate::curves::gamma::ToneCurve;
-use crate::pipeline::named::{Mlu, NamedColorList};
+use crate::pipeline::named::{Dict, Mlu, NamedColorList, ProfileSequenceDesc};
 use crate::profile::io::IoHandler;
 use crate::types::*;
 
@@ -39,6 +39,9 @@ pub enum TagData {
     Screening(Screening),
     UcrBg(Box<UcrBg>),
     VideoSignal(VideoSignalType),
+    ProfileSequenceDesc(ProfileSequenceDesc),
+    Vcgt(Box<[ToneCurve; 3]>),
+    Dict(Dict),
     UInt8Array(Vec<u8>),
     UInt16Array(Vec<u16>),
     UInt32Array(Vec<u32>),
@@ -83,6 +86,10 @@ pub fn read_tag_type(
         TagTypeSignature::UcrBg => read_ucr_bg_type(io, size),
         TagTypeSignature::CrdInfo => read_crd_info_type(io, size),
         TagTypeSignature::Cicp => read_video_signal_type(io, size),
+        TagTypeSignature::ProfileSequenceDesc => read_profile_sequence_desc_type(io, size),
+        TagTypeSignature::ProfileSequenceId => read_profile_sequence_id_type(io, size),
+        TagTypeSignature::Vcgt => read_vcgt_type(io, size),
+        TagTypeSignature::Dict => read_dict_type(io, size),
         _ => {
             // Unknown type: read as raw bytes
             let mut raw = vec![0u8; size as usize];
@@ -181,6 +188,18 @@ pub fn write_tag_type(
         TagData::VideoSignal(vs) => {
             write_video_signal_type(io, vs)?;
             TagTypeSignature::Cicp
+        }
+        TagData::ProfileSequenceDesc(seq) => {
+            write_profile_sequence_desc_type(io, seq, _icc_version)?;
+            TagTypeSignature::ProfileSequenceDesc
+        }
+        TagData::Vcgt(curves) => {
+            write_vcgt_type(io, curves)?;
+            TagTypeSignature::Vcgt
+        }
+        TagData::Dict(dict) => {
+            write_dict_type(io, dict)?;
+            TagTypeSignature::Dict
         }
         TagData::Raw(raw) => {
             if !io.write(raw) {
@@ -1184,6 +1203,60 @@ pub fn write_video_signal_type(io: &mut IoHandler, vs: &VideoSignalType) -> Resu
     Ok(())
 }
 
+// --- ProfileSequenceDesc type ---
+// C版: Type_ProfileSequenceDesc_Read / Type_ProfileSequenceDesc_Write
+
+pub fn read_profile_sequence_desc_type(
+    _io: &mut IoHandler,
+    _size: u32,
+) -> Result<TagData, CmsError> {
+    todo!()
+}
+
+pub fn write_profile_sequence_desc_type(
+    _io: &mut IoHandler,
+    _seq: &ProfileSequenceDesc,
+    _icc_version: u32,
+) -> Result<(), CmsError> {
+    todo!()
+}
+
+// --- ProfileSequenceId type ---
+// C版: Type_ProfileSequenceId_Read / Type_ProfileSequenceId_Write
+
+pub fn read_profile_sequence_id_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    todo!()
+}
+
+pub fn write_profile_sequence_id_type(
+    _io: &mut IoHandler,
+    _seq: &ProfileSequenceDesc,
+) -> Result<(), CmsError> {
+    todo!()
+}
+
+// --- vcgt type ---
+// C版: Type_vcgt_Read / Type_vcgt_Write
+
+pub fn read_vcgt_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    todo!()
+}
+
+pub fn write_vcgt_type(_io: &mut IoHandler, _curves: &[ToneCurve; 3]) -> Result<(), CmsError> {
+    todo!()
+}
+
+// --- Dict type ---
+// C版: Type_Dictionary_Read / Type_Dictionary_Write
+
+pub fn read_dict_type(_io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
+    todo!()
+}
+
+pub fn write_dict_type(_io: &mut IoHandler, _dict: &Dict) -> Result<(), CmsError> {
+    todo!()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1849,6 +1922,225 @@ mod tests {
                 assert_eq!(read_vs.video_full_range_flag, 1);
             }
             _ => panic!("Expected TagData::VideoSignal"),
+        }
+    }
+
+    // ========================================================================
+    // ProfileSequenceDesc type round-trip
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn profile_sequence_desc_type_roundtrip() {
+        let mut seq = ProfileSequenceDesc::new(2);
+
+        let entry0 = seq.get_mut(0).unwrap();
+        entry0.device_mfg = 0x4150504C; // 'APPL'
+        entry0.device_model = 0x4D4F4E49;
+        entry0.attributes = 0x0000_0001_0000_0000;
+        entry0.technology = Some(TechnologySignature::FilmScanner);
+        entry0.manufacturer.set_ascii("en", "US", "Apple Inc.");
+        entry0.model.set_ascii("en", "US", "Cinema Display");
+
+        let entry1 = seq.get_mut(1).unwrap();
+        entry1.device_mfg = 0x41444245; // 'ADBE'
+        entry1.manufacturer.set_ascii("en", "US", "Adobe");
+
+        let mut io = IoHandler::from_memory_write(2048);
+        write_profile_sequence_desc_type(&mut io, &seq, 0x0400_0000).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_profile_sequence_desc_type(&mut io, size).unwrap();
+        match result {
+            TagData::ProfileSequenceDesc(read_seq) => {
+                assert_eq!(read_seq.len(), 2);
+                let e0 = read_seq.get(0).unwrap();
+                assert_eq!(e0.device_mfg, 0x4150504C);
+                assert_eq!(e0.device_model, 0x4D4F4E49);
+                assert_eq!(e0.attributes, 0x0000_0001_0000_0000);
+                assert_eq!(e0.technology, Some(TechnologySignature::FilmScanner));
+                assert_eq!(
+                    e0.manufacturer.get_ascii("en", "US"),
+                    Some("Apple Inc.".to_string())
+                );
+                assert_eq!(
+                    e0.model.get_ascii("en", "US"),
+                    Some("Cinema Display".to_string())
+                );
+                let e1 = read_seq.get(1).unwrap();
+                assert_eq!(e1.device_mfg, 0x41444245);
+                assert_eq!(
+                    e1.manufacturer.get_ascii("en", "US"),
+                    Some("Adobe".to_string())
+                );
+            }
+            _ => panic!("Expected TagData::ProfileSequenceDesc"),
+        }
+    }
+
+    // ========================================================================
+    // ProfileSequenceId type round-trip
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn profile_sequence_id_type_roundtrip() {
+        let mut seq = ProfileSequenceDesc::new(2);
+
+        let entry0 = seq.get_mut(0).unwrap();
+        entry0.profile_id = ProfileId([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+        entry0.description.set_utf8("en", "US", "sRGB profile");
+
+        let entry1 = seq.get_mut(1).unwrap();
+        entry1.profile_id = ProfileId([0xA0; 16]);
+        entry1.description.set_utf8("ja", "JP", "日本語テスト");
+
+        let mut io = IoHandler::from_memory_write(4096);
+        write_profile_sequence_id_type(&mut io, &seq).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_profile_sequence_id_type(&mut io, size).unwrap();
+        match result {
+            TagData::ProfileSequenceDesc(read_seq) => {
+                assert_eq!(read_seq.len(), 2);
+                let e0 = read_seq.get(0).unwrap();
+                assert_eq!(e0.profile_id.0[0], 1);
+                assert_eq!(e0.profile_id.0[15], 16);
+                assert_eq!(
+                    e0.description.get_utf8("en", "US"),
+                    Some("sRGB profile".to_string())
+                );
+                let e1 = read_seq.get(1).unwrap();
+                assert_eq!(e1.profile_id, ProfileId([0xA0; 16]));
+                assert_eq!(
+                    e1.description.get_utf8("ja", "JP"),
+                    Some("日本語テスト".to_string())
+                );
+            }
+            _ => panic!("Expected TagData::ProfileSequenceDesc"),
+        }
+    }
+
+    // ========================================================================
+    // vcgt type round-trip (table)
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn vcgt_table_type_roundtrip() {
+        let r = ToneCurve::build_tabulated_16(&[0, 32768, 65535]).unwrap();
+        let g = ToneCurve::build_tabulated_16(&[0, 16384, 65535]).unwrap();
+        let b = ToneCurve::build_tabulated_16(&[0, 49152, 65535]).unwrap();
+
+        let mut io = IoHandler::from_memory_write(2048);
+        write_vcgt_type(&mut io, &[r.clone(), g.clone(), b.clone()]).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_vcgt_type(&mut io, size).unwrap();
+        match result {
+            TagData::Vcgt(curves) => {
+                // Table type outputs 256 entries per channel, so verify endpoints
+                assert_eq!(curves[0].eval_u16(0), 0);
+                assert_eq!(curves[0].eval_u16(65535), 65535);
+                assert_eq!(curves[1].eval_u16(0), 0);
+                assert_eq!(curves[2].eval_u16(0), 0);
+                assert_eq!(curves[2].eval_u16(65535), 65535);
+            }
+            _ => panic!("Expected TagData::Vcgt"),
+        }
+    }
+
+    // ========================================================================
+    // vcgt type round-trip (parametric/formula)
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn vcgt_formula_type_roundtrip() {
+        // Build parametric type 5 curves that vcgt formula can encode
+        // Y = (aX + b)^Gamma + e  where a=(Max-Min)^(1/Gamma), b=0, e=Min
+        let gamma: f64 = 2.2;
+        let min: f64 = 0.01;
+        let max: f64 = 0.99;
+        let a = (max - min).powf(1.0 / gamma);
+        let params = [gamma, a, 0.0, 0.0, 0.0, min, 0.0];
+        let curve = ToneCurve::build_parametric(5, &params).unwrap();
+
+        let mut io = IoHandler::from_memory_write(2048);
+        write_vcgt_type(&mut io, &[curve.clone(), curve.clone(), curve.clone()]).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_vcgt_type(&mut io, size).unwrap();
+        match result {
+            TagData::Vcgt(curves) => {
+                // Check mid-point evaluation is reasonable
+                let mid = curves[0].eval_f32(0.5);
+                assert!(mid > 0.0 && mid < 1.0);
+            }
+            _ => panic!("Expected TagData::Vcgt"),
+        }
+    }
+
+    // ========================================================================
+    // Dict type round-trip
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn dict_type_roundtrip_basic() {
+        let mut dict = Dict::new();
+        dict.add("key1", Some("value1"), None, None);
+        dict.add("key2", Some("value2"), None, None);
+
+        let mut io = IoHandler::from_memory_write(4096);
+        write_dict_type(&mut io, &dict).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_dict_type(&mut io, size).unwrap();
+        match result {
+            TagData::Dict(read_dict) => {
+                assert_eq!(read_dict.len(), 2);
+                let entries: Vec<_> = read_dict.iter().collect();
+                assert_eq!(entries[0].name, "key1");
+                assert_eq!(entries[0].value.as_deref(), Some("value1"));
+                assert_eq!(entries[1].name, "key2");
+                assert_eq!(entries[1].value.as_deref(), Some("value2"));
+            }
+            _ => panic!("Expected TagData::Dict"),
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn dict_type_roundtrip_with_display() {
+        let mut dict = Dict::new();
+        let mut dn = Mlu::new();
+        dn.set_utf8("en", "US", "Key Display");
+        let mut dv = Mlu::new();
+        dv.set_utf8("ja", "JP", "値の表示");
+        dict.add("mykey", Some("myval"), Some(&dn), Some(&dv));
+
+        let mut io = IoHandler::from_memory_write(4096);
+        write_dict_type(&mut io, &dict).unwrap();
+        let size = io.used_space();
+        io.seek(0);
+        let result = read_dict_type(&mut io, size).unwrap();
+        match result {
+            TagData::Dict(read_dict) => {
+                assert_eq!(read_dict.len(), 1);
+                let entry = read_dict.iter().next().unwrap();
+                assert_eq!(entry.name, "mykey");
+                assert_eq!(entry.value.as_deref(), Some("myval"));
+                assert_eq!(
+                    entry.display_name.as_ref().unwrap().get_utf8("en", "US"),
+                    Some("Key Display".to_string())
+                );
+                assert_eq!(
+                    entry.display_value.as_ref().unwrap().get_utf8("ja", "JP"),
+                    Some("値の表示".to_string())
+                );
+            }
+            _ => panic!("Expected TagData::Dict"),
         }
     }
 }
