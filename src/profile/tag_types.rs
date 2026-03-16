@@ -2055,6 +2055,13 @@ pub fn write_lut8_type(io: &mut IoHandler, pipe: &Pipeline) -> Result<(), CmsErr
         })
         .unwrap_or(0);
 
+    if clut_points > u8::MAX as u32 {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: format!("Lut8: CLUT grid points {} exceeds u8 range", clut_points),
+        });
+    }
+
     io.write_u8(in_ch as u8)?;
     io.write_u8(out_ch as u8)?;
     io.write_u8(clut_points as u8)?;
@@ -2241,6 +2248,22 @@ pub fn write_lut16_type(io: &mut IoHandler, pipe: &Pipeline) -> Result<(), CmsEr
         .and_then(|s| s.curves().map(|c| c[0].table16_len()))
         .unwrap_or(2);
 
+    if clut_points > u8::MAX as u32 {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: format!("Lut16: CLUT grid points {} exceeds u8 range", clut_points),
+        });
+    }
+    if input_entries > u16::MAX as u32 || output_entries > u16::MAX as u32 {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: format!(
+                "Lut16: curve entries ({}/{}) exceed u16 range",
+                input_entries, output_entries
+            ),
+        });
+    }
+
     io.write_u8(in_ch as u8)?;
     io.write_u8(out_ch as u8)?;
     io.write_u8(clut_points as u8)?;
@@ -2416,6 +2439,16 @@ fn read_v4_clut(
     let _pad2 = io.read_u8()?;
     let _pad3 = io.read_u8()?;
 
+    if precision != 1 && precision != 2 {
+        return Err(CmsError {
+            code: ErrorCode::UnknownExtension,
+            message: format!(
+                "V4 CLUT: unsupported precision {} (expected 1 or 2)",
+                precision
+            ),
+        });
+    }
+
     // Compute total entries to read
     let temp_stage = Stage::new_clut_16bit(&grid_points, input_channels, output_channels, None)
         .ok_or_else(|| CmsError {
@@ -2528,7 +2561,10 @@ fn write_v4_matrix(io: &mut IoHandler, stage: &Stage) -> Result<(), CmsError> {
 // C版: Type_LUTA2B_Read / Type_LUTA2B_Write
 
 pub fn read_lut_atob_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    let base_offset = io.tell().saturating_sub(8);
+    // ICC v4 offsets are relative to the tag type start (including 8-byte type base).
+    // Our io starts at the payload (after the 8-byte base), so subtract TAG_BASE_SIZE.
+    const TAG_BASE_SIZE: u32 = 8;
+
     let input_channels = io.read_u8()? as u32;
     let output_channels = io.read_u8()? as u32;
     let _padding = io.read_u16()?;
@@ -2546,36 +2582,64 @@ pub fn read_lut_atob_type(io: &mut IoHandler, _size: u32) -> Result<TagData, Cms
 
     // AtoB order: A → CLUT → M → Matrix → B
     if offset_a != 0 {
-        let stage = read_v4_curve_set(io, base_offset + offset_a, input_channels)?;
-        pipe.insert_stage(StageLoc::AtEnd, stage);
+        let stage = read_v4_curve_set(io, offset_a - TAG_BASE_SIZE, input_channels)?;
+        if !pipe.insert_stage(StageLoc::AtEnd, stage) {
+            return Err(CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to insert A curves stage".to_string(),
+            });
+        }
     }
     if offset_clut != 0 {
         let stage = read_v4_clut(
             io,
-            base_offset + offset_clut,
+            offset_clut - TAG_BASE_SIZE,
             input_channels,
             output_channels,
         )?;
-        pipe.insert_stage(StageLoc::AtEnd, stage);
+        if !pipe.insert_stage(StageLoc::AtEnd, stage) {
+            return Err(CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to insert CLUT stage".to_string(),
+            });
+        }
     }
     if offset_m != 0 {
-        let stage = read_v4_curve_set(io, base_offset + offset_m, output_channels)?;
-        pipe.insert_stage(StageLoc::AtEnd, stage);
+        let stage = read_v4_curve_set(io, offset_m - TAG_BASE_SIZE, output_channels)?;
+        if !pipe.insert_stage(StageLoc::AtEnd, stage) {
+            return Err(CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to insert M curves stage".to_string(),
+            });
+        }
     }
     if offset_mat != 0 {
-        let stage = read_v4_matrix(io, base_offset + offset_mat)?;
-        pipe.insert_stage(StageLoc::AtEnd, stage);
+        let stage = read_v4_matrix(io, offset_mat - TAG_BASE_SIZE)?;
+        if !pipe.insert_stage(StageLoc::AtEnd, stage) {
+            return Err(CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to insert matrix stage".to_string(),
+            });
+        }
     }
     if offset_b != 0 {
-        let stage = read_v4_curve_set(io, base_offset + offset_b, output_channels)?;
-        pipe.insert_stage(StageLoc::AtEnd, stage);
+        let stage = read_v4_curve_set(io, offset_b - TAG_BASE_SIZE, output_channels)?;
+        if !pipe.insert_stage(StageLoc::AtEnd, stage) {
+            return Err(CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to insert B curves stage".to_string(),
+            });
+        }
     }
 
     Ok(TagData::Pipeline(pipe))
 }
 
 pub fn write_lut_atob_type(io: &mut IoHandler, pipe: &Pipeline) -> Result<(), CmsError> {
-    let base_offset = io.tell().saturating_sub(8);
+    // ICC v4 offsets are relative to the tag type start (including 8-byte type base).
+    // Our io starts at the payload (after the 8-byte base), so add TAG_BASE_SIZE.
+    const TAG_BASE_SIZE: u32 = 8;
+
     io.write_u8(pipe.input_channels() as u8)?;
     io.write_u8(pipe.output_channels() as u8)?;
     io.write_u16(0)?;
@@ -2596,7 +2660,7 @@ pub fn write_lut_atob_type(io: &mut IoHandler, pipe: &Pipeline) -> Result<(), Cm
     for stage in pipe.stages() {
         match stage.stage_type() {
             StageSignature::CurveSetElem => {
-                let pos = io.tell() - base_offset;
+                let pos = io.tell() + TAG_BASE_SIZE;
                 let curves = stage.curves().unwrap_or(&[]);
                 match curve_idx {
                     0 => {
@@ -2616,11 +2680,11 @@ pub fn write_lut_atob_type(io: &mut IoHandler, pipe: &Pipeline) -> Result<(), Cm
                 curve_idx += 1;
             }
             StageSignature::CLutElem => {
-                offset_clut = io.tell() - base_offset;
+                offset_clut = io.tell() + TAG_BASE_SIZE;
                 write_v4_clut(io, stage)?;
             }
             StageSignature::MatrixElem => {
-                offset_mat = io.tell() - base_offset;
+                offset_mat = io.tell() + TAG_BASE_SIZE;
                 write_v4_matrix(io, stage)?;
             }
             _ => {}
@@ -2643,7 +2707,8 @@ pub fn write_lut_atob_type(io: &mut IoHandler, pipe: &Pipeline) -> Result<(), Cm
 // C版: Type_LUTB2A_Read / Type_LUTB2A_Write
 
 pub fn read_lut_btoa_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsError> {
-    let base_offset = io.tell().saturating_sub(8);
+    const TAG_BASE_SIZE: u32 = 8;
+
     let input_channels = io.read_u8()? as u32;
     let output_channels = io.read_u8()? as u32;
     let _padding = io.read_u16()?;
@@ -2661,36 +2726,62 @@ pub fn read_lut_btoa_type(io: &mut IoHandler, _size: u32) -> Result<TagData, Cms
 
     // BtoA order: B → Matrix → M → CLUT → A
     if offset_b != 0 {
-        let stage = read_v4_curve_set(io, base_offset + offset_b, input_channels)?;
-        pipe.insert_stage(StageLoc::AtEnd, stage);
+        let stage = read_v4_curve_set(io, offset_b - TAG_BASE_SIZE, input_channels)?;
+        if !pipe.insert_stage(StageLoc::AtEnd, stage) {
+            return Err(CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to insert B curves stage".to_string(),
+            });
+        }
     }
     if offset_mat != 0 {
-        let stage = read_v4_matrix(io, base_offset + offset_mat)?;
-        pipe.insert_stage(StageLoc::AtEnd, stage);
+        let stage = read_v4_matrix(io, offset_mat - TAG_BASE_SIZE)?;
+        if !pipe.insert_stage(StageLoc::AtEnd, stage) {
+            return Err(CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to insert matrix stage".to_string(),
+            });
+        }
     }
     if offset_m != 0 {
-        let stage = read_v4_curve_set(io, base_offset + offset_m, input_channels)?;
-        pipe.insert_stage(StageLoc::AtEnd, stage);
+        let stage = read_v4_curve_set(io, offset_m - TAG_BASE_SIZE, input_channels)?;
+        if !pipe.insert_stage(StageLoc::AtEnd, stage) {
+            return Err(CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to insert M curves stage".to_string(),
+            });
+        }
     }
     if offset_clut != 0 {
         let stage = read_v4_clut(
             io,
-            base_offset + offset_clut,
+            offset_clut - TAG_BASE_SIZE,
             input_channels,
             output_channels,
         )?;
-        pipe.insert_stage(StageLoc::AtEnd, stage);
+        if !pipe.insert_stage(StageLoc::AtEnd, stage) {
+            return Err(CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to insert CLUT stage".to_string(),
+            });
+        }
     }
     if offset_a != 0 {
-        let stage = read_v4_curve_set(io, base_offset + offset_a, output_channels)?;
-        pipe.insert_stage(StageLoc::AtEnd, stage);
+        let stage = read_v4_curve_set(io, offset_a - TAG_BASE_SIZE, output_channels)?;
+        if !pipe.insert_stage(StageLoc::AtEnd, stage) {
+            return Err(CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to insert A curves stage".to_string(),
+            });
+        }
     }
 
     Ok(TagData::Pipeline(pipe))
 }
 
 pub fn write_lut_btoa_type(io: &mut IoHandler, pipe: &Pipeline) -> Result<(), CmsError> {
-    let base_offset = io.tell().saturating_sub(8);
+    const TAG_BASE_SIZE: u32 = 8;
+
     io.write_u8(pipe.input_channels() as u8)?;
     io.write_u8(pipe.output_channels() as u8)?;
     io.write_u16(0)?;
@@ -2711,7 +2802,7 @@ pub fn write_lut_btoa_type(io: &mut IoHandler, pipe: &Pipeline) -> Result<(), Cm
     for stage in pipe.stages() {
         match stage.stage_type() {
             StageSignature::CurveSetElem => {
-                let pos = io.tell() - base_offset;
+                let pos = io.tell() + TAG_BASE_SIZE;
                 let curves = stage.curves().unwrap_or(&[]);
                 match curve_idx {
                     0 => {
@@ -2731,11 +2822,11 @@ pub fn write_lut_btoa_type(io: &mut IoHandler, pipe: &Pipeline) -> Result<(), Cm
                 curve_idx += 1;
             }
             StageSignature::CLutElem => {
-                offset_clut = io.tell() - base_offset;
+                offset_clut = io.tell() + TAG_BASE_SIZE;
                 write_v4_clut(io, stage)?;
             }
             StageSignature::MatrixElem => {
-                offset_mat = io.tell() - base_offset;
+                offset_mat = io.tell() + TAG_BASE_SIZE;
                 write_v4_matrix(io, stage)?;
             }
             _ => {}
