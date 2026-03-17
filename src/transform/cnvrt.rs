@@ -70,7 +70,23 @@ fn insert_matrix_stage(result: &mut Pipeline, m: &Mat3, off: &Vec3) -> Result<()
         code: ErrorCode::Internal,
         message: "Failed to create conversion matrix stage".to_string(),
     })?;
-    result.insert_stage(StageLoc::AtEnd, stage);
+    if !result.insert_stage(StageLoc::AtEnd, stage) {
+        return Err(CmsError {
+            code: ErrorCode::Internal,
+            message: "Failed to insert conversion matrix stage".to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Helper to insert a stage with error checking.
+fn insert_stage_checked(pipe: &mut Pipeline, stage: Stage, desc: &str) -> Result<(), CmsError> {
+    if !pipe.insert_stage(StageLoc::AtEnd, stage) {
+        return Err(CmsError {
+            code: ErrorCode::Internal,
+            message: format!("Failed to insert {desc} stage"),
+        });
+    }
     Ok(())
 }
 
@@ -100,7 +116,7 @@ pub fn add_conversion(
                     code: ErrorCode::Internal,
                     message: "Failed to create XYZ→Lab stage".to_string(),
                 })?;
-                result.insert_stage(StageLoc::AtEnd, stage);
+                insert_stage_checked(result, stage, "XYZ→Lab")?;
             }
             _ => {
                 return Err(CmsError {
@@ -115,7 +131,7 @@ pub fn add_conversion(
                     code: ErrorCode::Internal,
                     message: "Failed to create Lab→XYZ stage".to_string(),
                 })?;
-                result.insert_stage(StageLoc::AtEnd, stage);
+                insert_stage_checked(result, stage, "Lab→XYZ")?;
                 if !empty {
                     insert_matrix_stage(result, m, off)?;
                 }
@@ -126,13 +142,13 @@ pub fn add_conversion(
                         code: ErrorCode::Internal,
                         message: "Failed to create Lab→XYZ stage".to_string(),
                     })?;
-                    result.insert_stage(StageLoc::AtEnd, lab2xyz);
+                    insert_stage_checked(result, lab2xyz, "Lab→XYZ")?;
                     insert_matrix_stage(result, m, off)?;
                     let xyz2lab = Stage::new_xyz_to_lab().ok_or_else(|| CmsError {
                         code: ErrorCode::Internal,
                         message: "Failed to create XYZ→Lab stage".to_string(),
                     })?;
-                    result.insert_stage(StageLoc::AtEnd, xyz2lab);
+                    insert_stage_checked(result, xyz2lab, "XYZ→Lab")?;
                 }
             }
             _ => {
@@ -175,17 +191,28 @@ fn compute_absolute_intent(
 fn compute_bpc(bp_in: &crate::types::CieXyz, bp_out: &crate::types::CieXyz) -> (Mat3, Vec3) {
     use crate::types::{D50_X, D50_Y, D50_Z};
 
+    const NEAR_ZERO: f64 = 1e-10;
+
     let tx = bp_in.x - D50_X;
     let ty = bp_in.y - D50_Y;
     let tz = bp_in.z - D50_Z;
 
-    let ax = (bp_out.x - D50_X) / tx;
-    let ay = (bp_out.y - D50_Y) / ty;
-    let az = (bp_out.z - D50_Z) / tz;
-
-    let bx = -D50_X * (bp_out.x - bp_in.x) / tx;
-    let by = -D50_Y * (bp_out.y - bp_in.y) / ty;
-    let bz = -D50_Z * (bp_out.z - bp_in.z) / tz;
+    // Guard against zero denominators: treat that axis as identity (scale=1, offset=0)
+    let (ax, bx) = if tx.abs() < NEAR_ZERO {
+        (1.0, 0.0)
+    } else {
+        ((bp_out.x - D50_X) / tx, -D50_X * (bp_out.x - bp_in.x) / tx)
+    };
+    let (ay, by) = if ty.abs() < NEAR_ZERO {
+        (1.0, 0.0)
+    } else {
+        ((bp_out.y - D50_Y) / ty, -D50_Y * (bp_out.y - bp_in.y) / ty)
+    };
+    let (az, bz) = if tz.abs() < NEAR_ZERO {
+        (1.0, 0.0)
+    } else {
+        ((bp_out.z - D50_Z) / tz, -D50_Z * (bp_out.z - bp_in.z) / tz)
+    };
 
     let m = Mat3([
         Vec3([ax, 0.0, 0.0]),
@@ -241,6 +268,12 @@ pub fn default_icc_intents(
             message: "No profiles provided".to_string(),
         });
     }
+    if intents.len() != n || bpc.len() != n || adaptation_states.len() != n {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: "Slice lengths must match number of profiles".to_string(),
+        });
+    }
 
     let mut result = Pipeline::new(0, 0).ok_or_else(|| CmsError {
         code: ErrorCode::Internal,
@@ -290,7 +323,12 @@ pub fn default_icc_intents(
             profiles[i].read_output_lut(intent)?
         };
 
-        result.cat(&lut);
+        if !result.cat(&lut) {
+            return Err(CmsError {
+                code: ErrorCode::ColorspaceCheck,
+                message: "Failed to concatenate profile pipeline".to_string(),
+            });
+        }
         current_color_space = color_space_out;
     }
 
@@ -311,6 +349,12 @@ pub fn link_profiles(
         return Err(CmsError {
             code: ErrorCode::Range,
             message: format!("Invalid number of profiles: {n}"),
+        });
+    }
+    if intents.len() != n || bpc.len() != n || adaptation_states.len() != n {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: "Slice lengths must match number of profiles".to_string(),
         });
     }
 

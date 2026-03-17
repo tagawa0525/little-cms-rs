@@ -17,7 +17,6 @@ Phase 4d でプロファイル単体からの pipeline 構築（`read_input_lut`
 | ------------------------ | --------------------------------------- |
 | `src/transform/mod.rs`   | 新規モジュール宣言                      |
 | `src/transform/cnvrt.rs` | パイプライン構築ロジック                |
-| `src/profile/io.rs`      | `read_devicelink_lut` 追加              |
 | `src/types.rs`           | `ColorSpaceSignature::channels()` 追加  |
 | `src/lib.rs`             | `transform` モジュール宣言              |
 
@@ -28,12 +27,6 @@ Phase 4d でプロファイル単体からの pipeline 構築（`read_input_lut`
 | 関数         | C版                        | 内容                          |
 | ------------ | -------------------------- | ----------------------------- |
 | `channels()` | `cmsChannelsOfColorSpace`  | 色空間のチャネル数を返す      |
-
-### Profile I/O 追加（io.rs）
-
-| 関数                  | C版                      | 内容                             |
-| --------------------- | ------------------------ | -------------------------------- |
-| `read_devicelink_lut` | `_cmsReadDevicelinkLUT`  | Devicelink/Abstract LUT 読み取り |
 
 ### cnvrt.rs
 
