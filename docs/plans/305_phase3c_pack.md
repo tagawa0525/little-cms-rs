@@ -1,6 +1,6 @@
 # Phase 3c: pack.rs ピクセルフォーマッタ
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmspack.c`（4,062行）
 **Rust見積**: ~800行（impl）+ ~400行（tests）
 **ブランチ**: `feat/phase3c-pack`
