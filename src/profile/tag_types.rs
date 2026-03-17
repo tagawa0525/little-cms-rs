@@ -1223,30 +1223,39 @@ pub fn write_video_signal_type(io: &mut IoHandler, vs: &VideoSignalType) -> Resu
 // C版: ReadEmbeddedText — reads Text, TextDescription, or MLU based on embedded type marker.
 
 fn read_embedded_text(io: &mut IoHandler, size: u32) -> Result<Mlu, CmsError> {
+    let start = io.tell();
+    let end = start + size;
+
     if size < 8 {
+        // Always advance past the full embedded payload
+        io.seek(end);
         return Ok(Mlu::new());
     }
     let type_sig = io.read_u32()?;
     let _reserved = io.read_u32()?;
     let payload_size = size.saturating_sub(8);
 
-    match TagTypeSignature::try_from(type_sig) {
+    let result = match TagTypeSignature::try_from(type_sig) {
         Ok(TagTypeSignature::Text) => match read_text_type(io, payload_size)? {
-            TagData::Mlu(mlu) => Ok(mlu),
-            _ => Ok(Mlu::new()),
+            TagData::Mlu(mlu) => mlu,
+            _ => Mlu::new(),
         },
         Ok(TagTypeSignature::TextDescription) => {
             match read_text_description_type(io, payload_size)? {
-                TagData::Mlu(mlu) => Ok(mlu),
-                _ => Ok(Mlu::new()),
+                TagData::Mlu(mlu) => mlu,
+                _ => Mlu::new(),
             }
         }
         Ok(TagTypeSignature::MultiLocalizedUnicode) => match read_mlu_type(io, payload_size)? {
-            TagData::Mlu(mlu) => Ok(mlu),
-            _ => Ok(Mlu::new()),
+            TagData::Mlu(mlu) => mlu,
+            _ => Mlu::new(),
         },
-        _ => Ok(Mlu::new()),
-    }
+        _ => Mlu::new(),
+    };
+
+    // Always advance to the end of the embedded payload to keep cursor in sync
+    io.seek(end);
+    Ok(result)
 }
 
 /// Write embedded text as MLU (v4) with type base header.
@@ -1451,9 +1460,27 @@ pub fn read_vcgt_type(io: &mut IoHandler, size: u32) -> Result<TagData, CmsError
                 });
             }
 
+            if n_bytes != 1 && n_bytes != 2 {
+                return Err(CmsError {
+                    code: ErrorCode::Range,
+                    message: format!("vcgt: n_bytes must be 1 or 2, got {n_bytes}"),
+                });
+            }
+
             // Adobe quirk: sometimes nBytes is wrong
             if n_elems == 256 && n_bytes == 1 && size == 1576 {
                 n_bytes = 2;
+            }
+
+            // Validate that table data fits in remaining tag size
+            // Header: 4 (tag_type) + 2 (n_channels) + 2 (n_elems) + 2 (n_bytes) = 10 bytes
+            let data_size = n_channels * n_elems * n_bytes;
+            let header_consumed = 10;
+            if data_size + header_consumed > size as usize {
+                return Err(CmsError {
+                    code: ErrorCode::Range,
+                    message: "vcgt table data exceeds tag size".to_string(),
+                });
             }
 
             let mut built_curves = Vec::with_capacity(3);
@@ -1493,16 +1520,24 @@ pub fn read_vcgt_type(io: &mut IoHandler, size: u32) -> Result<TagData, CmsError
                 let gamma = io.read_s15fixed16()?;
                 let min = io.read_s15fixed16()?;
                 let max = io.read_s15fixed16()?;
+                if gamma <= 0.0 {
+                    return Err(CmsError {
+                        code: ErrorCode::Range,
+                        message: format!("vcgt formula: gamma must be > 0, got {gamma}"),
+                    });
+                }
+                if max < min {
+                    return Err(CmsError {
+                        code: ErrorCode::Range,
+                        message: format!("vcgt formula: max ({max}) < min ({min})"),
+                    });
+                }
                 gammas.push((gamma, min, max));
             }
             let mut built_curves = Vec::with_capacity(3);
             for &(gamma, min, max) in &gammas {
                 // Convert to parametric type 5: Y = (aX+b)^G + e
-                let a = if gamma > 0.0 {
-                    (max - min).powf(1.0 / gamma)
-                } else {
-                    1.0
-                };
+                let a = (max - min).powf(1.0 / gamma);
                 let params = [gamma, a, 0.0, 0.0, 0.0, min, 0.0];
                 built_curves.push(ToneCurve::build_parametric(5, &params).ok_or_else(|| {
                     CmsError {
@@ -1570,8 +1605,14 @@ pub fn read_dict_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsErro
     // 16 = Name + Value offsets only
     // 24 = + DisplayName
     // 32 = + DisplayValue
-    let has_display_name = rec_len > 16;
-    let has_display_value = rec_len > 24;
+    if rec_len != 16 && rec_len != 24 && rec_len != 32 {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: format!("Dict: unsupported record length {rec_len} (expected 16, 24, or 32)"),
+        });
+    }
+    let has_display_name = rec_len >= 24;
+    let has_display_value = rec_len >= 32;
 
     if count > 0x10000 {
         return Err(CmsError {
@@ -1676,6 +1717,12 @@ pub fn read_dict_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsErro
 
 /// Read a UTF-16BE string of the given byte size.
 fn read_utf16_string(io: &mut IoHandler, byte_size: u32) -> Result<String, CmsError> {
+    if !byte_size.is_multiple_of(2) {
+        return Err(CmsError {
+            code: ErrorCode::Read,
+            message: format!("UTF-16 string byte_size must be even, got {byte_size}"),
+        });
+    }
     let n_chars = byte_size as usize / 2;
     let mut chars = Vec::with_capacity(n_chars);
     for _ in 0..n_chars {
