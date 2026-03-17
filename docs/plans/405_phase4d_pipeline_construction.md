@@ -38,11 +38,11 @@ Phase 4c-3（LUT タグ型）がマージ済み。
 
 ### メイン関数（公開API）
 
-| 関数                  | C版                     | 内容                                 | 状態   |
-| --------------------- | ----------------------- | ------------------------------------ | ------ |
-| `read_input_lut`      | `_cmsReadInputLUT`      | Device->PCS (AToB/matrix)            | 実装済 |
-| `read_output_lut`     | `_cmsReadOutputLUT`     | PCS->Device (BToA/matrix)            | 実装済 |
-| `read_devicelink_lut` | `_cmsReadDevicelinkLUT` | Devicelink/Abstract pipeline         | 未実装 |
+| 関数                  | C版                     | 内容                         | 状態   |
+| --------------------- | ----------------------- | ---------------------------- | ------ |
+| `read_input_lut`      | `_cmsReadInputLUT`      | Device->PCS (AToB/matrix)    | 実装済 |
+| `read_output_lut`     | `_cmsReadOutputLUT`     | PCS->Device (BToA/matrix)    | 実装済 |
+| `read_devicelink_lut` | `_cmsReadDevicelinkLUT` | Devicelink/Abstract pipeline | 未実装 |
 
 ### クエリ関数
 
