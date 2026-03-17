@@ -1508,8 +1508,15 @@ impl Profile {
     /// Read an input LUT (device → PCS) pipeline from the profile.
     /// C版: `_cmsReadInputLUT`
     pub fn read_input_lut(&mut self, intent: u32) -> Result<Pipeline, CmsError> {
+        if intent > 3 {
+            return Err(CmsError {
+                code: ErrorCode::Range,
+                message: format!("Invalid rendering intent: {intent}"),
+            });
+        }
+
         // Try LUT-based tags first (skip float DToB for now)
-        if intent <= 3 {
+        {
             let mut tag16 = DEVICE2PCS16[intent as usize];
 
             // Revert to perceptual if tag not found
@@ -1534,15 +1541,26 @@ impl Profile {
         // Fallback to matrix-shaper
         match self.header.color_space {
             ColorSpaceSignature::GrayData => self.build_gray_input_pipeline(),
-            _ => self.build_rgb_input_matrix_shaper(),
+            ColorSpaceSignature::RgbData => self.build_rgb_input_matrix_shaper(),
+            _ => Err(CmsError {
+                code: ErrorCode::ColorspaceCheck,
+                message: "No LUT tags and color space is not Gray or RGB".to_string(),
+            }),
         }
     }
 
     /// Read an output LUT (PCS → device) pipeline from the profile.
     /// C版: `_cmsReadOutputLUT`
     pub fn read_output_lut(&mut self, intent: u32) -> Result<Pipeline, CmsError> {
+        if intent > 3 {
+            return Err(CmsError {
+                code: ErrorCode::Range,
+                message: format!("Invalid rendering intent: {intent}"),
+            });
+        }
+
         // Try LUT-based tags first (skip float BToD for now)
-        if intent <= 3 {
+        {
             let mut tag16 = PCS2DEVICE16[intent as usize];
 
             if !self.has_tag(tag16) {
@@ -1566,7 +1584,11 @@ impl Profile {
         // Fallback to matrix-shaper
         match self.header.color_space {
             ColorSpaceSignature::GrayData => self.build_gray_output_pipeline(),
-            _ => self.build_rgb_output_matrix_shaper(),
+            ColorSpaceSignature::RgbData => self.build_rgb_output_matrix_shaper(),
+            _ => Err(CmsError {
+                code: ErrorCode::ColorspaceCheck,
+                message: "No LUT tags and color space is not Gray or RGB".to_string(),
+            }),
         }
     }
 }
