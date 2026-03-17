@@ -1155,6 +1155,39 @@ fn base_to_base(mut input: u32, base_in: u32, base_out: u32) -> u32 {
     out
 }
 
+// ============================================================================
+// Pipeline construction helpers
+// C版: cmsio1.c
+// ============================================================================
+
+use crate::pipeline::lut::Pipeline;
+
+impl Profile {
+    /// Read the media white point from profile. V2 display profiles return D50.
+    /// C版: `_cmsReadMediaWhitePoint`
+    pub fn read_media_white_point(&mut self) -> Result<CieXyz, CmsError> {
+        todo!("Phase 4d: read_media_white_point")
+    }
+
+    /// Check if the profile is implemented as a matrix-shaper.
+    /// C版: `cmsIsMatrixShaper`
+    pub fn is_matrix_shaper(&self) -> bool {
+        todo!("Phase 4d: is_matrix_shaper")
+    }
+
+    /// Read an input LUT (device → PCS) pipeline from the profile.
+    /// C版: `_cmsReadInputLUT`
+    pub fn read_input_lut(&mut self, _intent: u32) -> Result<Pipeline, CmsError> {
+        todo!("Phase 4d: read_input_lut")
+    }
+
+    /// Read an output LUT (PCS → device) pipeline from the profile.
+    /// C版: `_cmsReadOutputLUT`
+    pub fn read_output_lut(&mut self, _intent: u32) -> Result<Pipeline, CmsError> {
+        todo!("Phase 4d: read_output_lut")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1646,5 +1679,230 @@ mod tests {
             }
             _ => panic!("Expected TagData::Curve"),
         }
+    }
+
+    // ========================================================================
+    // Pipeline construction helper tests (Phase 4d)
+    // ========================================================================
+
+    /// Build a minimal RGB matrix-shaper profile for testing.
+    fn build_rgb_matrix_shaper_profile() -> Profile {
+        use crate::curves::gamma::ToneCurve;
+        use crate::profile::tag_types::TagData;
+
+        let mut p = Profile::new_placeholder();
+        p.header.color_space = ColorSpaceSignature::RgbData;
+        p.header.pcs = ColorSpaceSignature::XyzData;
+        p.header.device_class = ProfileClassSignature::Display;
+        p.header.version = 0x04200000; // V4.2
+
+        // sRGB-like colorants (D50 adapted)
+        p.write_tag(
+            TagSignature::RedMatrixColumn,
+            TagData::Xyz(CieXyz {
+                x: 0.4361,
+                y: 0.2225,
+                z: 0.0139,
+            }),
+        )
+        .unwrap();
+        p.write_tag(
+            TagSignature::GreenMatrixColumn,
+            TagData::Xyz(CieXyz {
+                x: 0.3851,
+                y: 0.7169,
+                z: 0.0971,
+            }),
+        )
+        .unwrap();
+        p.write_tag(
+            TagSignature::BlueMatrixColumn,
+            TagData::Xyz(CieXyz {
+                x: 0.1431,
+                y: 0.0606,
+                z: 0.7141,
+            }),
+        )
+        .unwrap();
+
+        // Gamma 2.2 TRC
+        let gamma = ToneCurve::build_gamma(2.2).unwrap();
+        p.write_tag(TagSignature::RedTRC, TagData::Curve(gamma.clone()))
+            .unwrap();
+        p.write_tag(TagSignature::GreenTRC, TagData::Curve(gamma.clone()))
+            .unwrap();
+        p.write_tag(TagSignature::BlueTRC, TagData::Curve(gamma))
+            .unwrap();
+
+        // MediaWhitePoint (D50)
+        p.write_tag(
+            TagSignature::MediaWhitePoint,
+            TagData::Xyz(CieXyz {
+                x: D50_X,
+                y: D50_Y,
+                z: D50_Z,
+            }),
+        )
+        .unwrap();
+
+        p
+    }
+
+    /// Build a minimal Gray profile for testing.
+    fn build_gray_profile() -> Profile {
+        use crate::curves::gamma::ToneCurve;
+        use crate::profile::tag_types::TagData;
+
+        let mut p = Profile::new_placeholder();
+        p.header.color_space = ColorSpaceSignature::GrayData;
+        p.header.pcs = ColorSpaceSignature::XyzData;
+        p.header.device_class = ProfileClassSignature::Display;
+        p.header.version = 0x04200000;
+
+        let gamma = ToneCurve::build_gamma(2.2).unwrap();
+        p.write_tag(TagSignature::GrayTRC, TagData::Curve(gamma))
+            .unwrap();
+
+        p.write_tag(
+            TagSignature::MediaWhitePoint,
+            TagData::Xyz(CieXyz {
+                x: D50_X,
+                y: D50_Y,
+                z: D50_Z,
+            }),
+        )
+        .unwrap();
+
+        p
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_media_white_point_returns_d50_for_v2_display() {
+        let mut p = build_rgb_matrix_shaper_profile();
+        // Set as V2 display profile
+        p.header.version = 0x02100000;
+        p.header.device_class = ProfileClassSignature::Display;
+
+        // Roundtrip through save/open to populate tag data
+        let data = p.save_to_mem().unwrap();
+        let mut p2 = Profile::open_mem(&data).unwrap();
+
+        let wp = p2.read_media_white_point().unwrap();
+        // V2 display should return D50 regardless of stored value
+        assert!((wp.x - D50_X).abs() < 1e-4);
+        assert!((wp.y - D50_Y).abs() < 1e-4);
+        assert!((wp.z - D50_Z).abs() < 1e-4);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_media_white_point_returns_tag_value_for_v4() {
+        use crate::profile::tag_types::TagData;
+
+        let mut p = Profile::new_placeholder();
+        p.header.version = 0x04200000;
+        p.header.device_class = ProfileClassSignature::Display;
+        let custom_wp = CieXyz {
+            x: 0.95,
+            y: 1.0,
+            z: 1.09,
+        };
+        p.write_tag(TagSignature::MediaWhitePoint, TagData::Xyz(custom_wp))
+            .unwrap();
+
+        let data = p.save_to_mem().unwrap();
+        let mut p2 = Profile::open_mem(&data).unwrap();
+
+        let wp = p2.read_media_white_point().unwrap();
+        assert!((wp.x - 0.95).abs() < 1e-3);
+        assert!((wp.y - 1.0).abs() < 1e-3);
+        assert!((wp.z - 1.09).abs() < 1e-3);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn is_matrix_shaper_rgb_profile() {
+        let mut p = build_rgb_matrix_shaper_profile();
+        let data = p.save_to_mem().unwrap();
+        let p2 = Profile::open_mem(&data).unwrap();
+        assert!(p2.is_matrix_shaper());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn is_matrix_shaper_gray_profile() {
+        let mut p = build_gray_profile();
+        let data = p.save_to_mem().unwrap();
+        let p2 = Profile::open_mem(&data).unwrap();
+        assert!(p2.is_matrix_shaper());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_input_lut_matrix_shaper_rgb() {
+        let mut p = build_rgb_matrix_shaper_profile();
+        let data = p.save_to_mem().unwrap();
+        let mut p2 = Profile::open_mem(&data).unwrap();
+
+        // Should construct a matrix-shaper pipeline (TRC + Matrix)
+        let pipe = p2.read_input_lut(0).unwrap(); // Perceptual
+        assert_eq!(pipe.input_channels(), 3);
+        assert_eq!(pipe.output_channels(), 3);
+
+        // Evaluate white: RGB(1,1,1) should map close to D50 XYZ
+        let input = [1.0f32, 1.0, 1.0];
+        let mut output = [0.0f32; 3];
+        pipe.eval_float(&input, &mut output);
+        // output should be approximately D50 in 0..1 encoded XYZ
+        assert!(output[0] > 0.4 && output[0] < 0.6);
+        assert!(output[1] > 0.4 && output[1] < 0.6);
+        assert!(output[2] > 0.3 && output[2] < 0.5);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_input_lut_gray() {
+        let mut p = build_gray_profile();
+        let data = p.save_to_mem().unwrap();
+        let mut p2 = Profile::open_mem(&data).unwrap();
+
+        let pipe = p2.read_input_lut(0).unwrap();
+        assert_eq!(pipe.input_channels(), 1);
+        assert_eq!(pipe.output_channels(), 3);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_output_lut_matrix_shaper_rgb() {
+        let mut p = build_rgb_matrix_shaper_profile();
+        let data = p.save_to_mem().unwrap();
+        let mut p2 = Profile::open_mem(&data).unwrap();
+
+        let pipe = p2.read_output_lut(0).unwrap();
+        assert_eq!(pipe.input_channels(), 3);
+        assert_eq!(pipe.output_channels(), 3);
+
+        // Evaluate D50 XYZ → should give approximately RGB(1,1,1)
+        // D50 in encoded XYZ (0..1 range): x/2, y/2, z/2 approximately
+        let input = [0.48f32, 0.50, 0.41];
+        let mut output = [0.0f32; 3];
+        pipe.eval_float(&input, &mut output);
+        // Should be close to white
+        assert!(output[0] > 0.8);
+        assert!(output[1] > 0.8);
+        assert!(output[2] > 0.8);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_output_lut_gray() {
+        let mut p = build_gray_profile();
+        let data = p.save_to_mem().unwrap();
+        let mut p2 = Profile::open_mem(&data).unwrap();
+
+        let pipe = p2.read_output_lut(0).unwrap();
+        assert_eq!(pipe.input_channels(), 3);
+        assert_eq!(pipe.output_channels(), 1);
     }
 }
