@@ -746,6 +746,42 @@ icc_enum! {
     }
 }
 
+impl ColorSpaceSignature {
+    /// Return the number of channels for a given color space.
+    /// C版: `cmsChannelsOfColorSpace`
+    pub fn channels(&self) -> u32 {
+        match self {
+            Self::GrayData => 1,
+            Self::XyzData
+            | Self::LabData
+            | Self::LuvData
+            | Self::YCbCrData
+            | Self::YxyData
+            | Self::RgbData
+            | Self::HsvData
+            | Self::HlsData
+            | Self::CmyData
+            | Self::Mch3Data
+            | Self::Color3 => 3,
+            Self::CmykData | Self::Mch4Data | Self::Color4 => 4,
+            Self::Mch5Data | Self::Color5 => 5,
+            Self::Mch6Data | Self::Color6 => 6,
+            Self::Mch7Data | Self::Color7 => 7,
+            Self::Mch8Data | Self::Color8 => 8,
+            Self::Mch9Data | Self::Color9 => 9,
+            Self::MchAData | Self::Color10 => 10,
+            Self::MchBData | Self::Color11 => 11,
+            Self::MchCData | Self::Color12 => 12,
+            Self::MchDData | Self::Color13 => 13,
+            Self::MchEData | Self::Color14 => 14,
+            Self::MchFData | Self::Color15 => 15,
+            Self::Mch1Data | Self::Color1 | Self::NamedData => 1,
+            Self::Mch2Data | Self::Color2 => 2,
+            Self::LuvKData => 4,
+        }
+    }
+}
+
 icc_enum! {
     /// ICC profile class signatures.
     pub enum ProfileClassSignature {
