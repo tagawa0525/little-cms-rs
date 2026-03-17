@@ -813,6 +813,7 @@ impl ColorSpaceSignature {
             PT_MCH13 => Some(Self::MchDData),
             PT_MCH14 => Some(Self::MchEData),
             PT_MCH15 => Some(Self::MchFData),
+            PT_LAB_V2 => Some(Self::LabData),
             _ => None,
         }
     }

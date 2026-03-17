@@ -186,12 +186,16 @@ fn unroll_planar_bytes(
     stride: usize,
 ) -> usize {
     let n_chan = format.channels() as usize;
+    let extra = format.extra() as usize;
     let do_swap = format.doswap() != 0;
+    let swap_first = format.swapfirst() != 0;
     let reverse = format.flavor() != 0;
+    let extra_first = do_swap ^ swap_first;
+    let start_plane = if extra_first { extra } else { 0 };
 
     for i in 0..n_chan {
         let index = if do_swap { n_chan - 1 - i } else { i };
-        let v = buf[i * stride];
+        let v = buf[(i + start_plane) * stride];
         let v = if reverse { 0xFF - v } else { v };
         values[index] = from_8_to_16(v);
     }
@@ -201,14 +205,18 @@ fn unroll_planar_bytes(
 
 fn pack_planar_bytes(format: PixelFormat, values: &[u16], buf: &mut [u8], stride: usize) -> usize {
     let n_chan = format.channels() as usize;
+    let extra = format.extra() as usize;
     let do_swap = format.doswap() != 0;
+    let swap_first = format.swapfirst() != 0;
     let reverse = format.flavor() != 0;
+    let extra_first = do_swap ^ swap_first;
+    let start_plane = if extra_first { extra } else { 0 };
 
     for i in 0..n_chan {
         let index = if do_swap { n_chan - 1 - i } else { i };
         let v = values[index];
         let v = if reverse { 0xFFFF - v } else { v };
-        buf[i * stride] = from_16_to_8(v);
+        buf[(i + start_plane) * stride] = from_16_to_8(v);
     }
 
     1
@@ -221,13 +229,17 @@ fn unroll_planar_words(
     stride: usize,
 ) -> usize {
     let n_chan = format.channels() as usize;
+    let extra = format.extra() as usize;
     let do_swap = format.doswap() != 0;
+    let swap_first = format.swapfirst() != 0;
     let reverse = format.flavor() != 0;
     let endian = format.endian16() != 0;
+    let extra_first = do_swap ^ swap_first;
+    let start_plane = if extra_first { extra } else { 0 };
 
     for i in 0..n_chan {
         let index = if do_swap { n_chan - 1 - i } else { i };
-        let offset = i * stride;
+        let offset = (i + start_plane) * stride;
         let v = u16::from_ne_bytes([buf[offset], buf[offset + 1]]);
         let v = if endian { v.swap_bytes() } else { v };
         let v = if reverse { 0xFFFF - v } else { v };
@@ -239,16 +251,20 @@ fn unroll_planar_words(
 
 fn pack_planar_words(format: PixelFormat, values: &[u16], buf: &mut [u8], stride: usize) -> usize {
     let n_chan = format.channels() as usize;
+    let extra = format.extra() as usize;
     let do_swap = format.doswap() != 0;
+    let swap_first = format.swapfirst() != 0;
     let reverse = format.flavor() != 0;
     let endian = format.endian16() != 0;
+    let extra_first = do_swap ^ swap_first;
+    let start_plane = if extra_first { extra } else { 0 };
 
     for i in 0..n_chan {
         let index = if do_swap { n_chan - 1 - i } else { i };
         let v = values[index];
         let v = if reverse { 0xFFFF - v } else { v };
         let v = if endian { v.swap_bytes() } else { v };
-        let offset = i * stride;
+        let offset = (i + start_plane) * stride;
         buf[offset..offset + 2].copy_from_slice(&v.to_ne_bytes());
     }
 
@@ -259,35 +275,51 @@ fn pack_planar_words(format: PixelFormat, values: &[u16], buf: &mut [u8], stride
 // Lab V2 formatters
 // ============================================================================
 
-fn unroll_lab_v2_8(_format: PixelFormat, values: &mut [u16], buf: &[u8], _stride: usize) -> usize {
-    values[0] = lab_v2_to_v4(from_8_to_16(buf[0]));
-    values[1] = lab_v2_to_v4(from_8_to_16(buf[1]));
-    values[2] = lab_v2_to_v4(from_8_to_16(buf[2]));
-    3
+fn unroll_lab_v2_8(format: PixelFormat, values: &mut [u16], buf: &[u8], _stride: usize) -> usize {
+    let extra = format.extra() as usize;
+    let extra_first = (format.doswap() != 0) ^ (format.swapfirst() != 0);
+    let start = if extra_first { extra } else { 0 };
+    values[0] = lab_v2_to_v4(from_8_to_16(buf[start]));
+    values[1] = lab_v2_to_v4(from_8_to_16(buf[start + 1]));
+    values[2] = lab_v2_to_v4(from_8_to_16(buf[start + 2]));
+    3 + extra
 }
 
-fn pack_lab_v2_8(_format: PixelFormat, values: &[u16], buf: &mut [u8], _stride: usize) -> usize {
-    buf[0] = from_16_to_8(lab_v4_to_v2(values[0]));
-    buf[1] = from_16_to_8(lab_v4_to_v2(values[1]));
-    buf[2] = from_16_to_8(lab_v4_to_v2(values[2]));
-    3
+fn pack_lab_v2_8(format: PixelFormat, values: &[u16], buf: &mut [u8], _stride: usize) -> usize {
+    let extra = format.extra() as usize;
+    let extra_first = (format.doswap() != 0) ^ (format.swapfirst() != 0);
+    let start = if extra_first { extra } else { 0 };
+    buf[start] = from_16_to_8(lab_v4_to_v2(values[0]));
+    buf[start + 1] = from_16_to_8(lab_v4_to_v2(values[1]));
+    buf[start + 2] = from_16_to_8(lab_v4_to_v2(values[2]));
+    3 + extra
 }
 
-fn unroll_lab_v2_16(_format: PixelFormat, values: &mut [u16], buf: &[u8], _stride: usize) -> usize {
+fn unroll_lab_v2_16(format: PixelFormat, values: &mut [u16], buf: &[u8], _stride: usize) -> usize {
+    let extra = format.extra() as usize;
+    let extra_first = (format.doswap() != 0) ^ (format.swapfirst() != 0);
+    let endian = format.endian16() != 0;
+    let start = if extra_first { extra } else { 0 };
     for (i, val) in values.iter_mut().enumerate().take(3) {
-        let offset = i * 2;
+        let offset = (i + start) * 2;
         let v = u16::from_ne_bytes([buf[offset], buf[offset + 1]]);
-        *val = lab_v2_to_v4(v);
+        *val = lab_v2_to_v4(if endian { v.swap_bytes() } else { v });
     }
-    6
+    (3 + extra) * 2
 }
 
-fn pack_lab_v2_16(_format: PixelFormat, values: &[u16], buf: &mut [u8], _stride: usize) -> usize {
+fn pack_lab_v2_16(format: PixelFormat, values: &[u16], buf: &mut [u8], _stride: usize) -> usize {
+    let extra = format.extra() as usize;
+    let extra_first = (format.doswap() != 0) ^ (format.swapfirst() != 0);
+    let endian = format.endian16() != 0;
+    let start = if extra_first { extra } else { 0 };
     for (i, &val) in values.iter().enumerate().take(3) {
-        let offset = i * 2;
-        buf[offset..offset + 2].copy_from_slice(&lab_v4_to_v2(val).to_ne_bytes());
+        let offset = (i + start) * 2;
+        let v = lab_v4_to_v2(val);
+        let v = if endian { v.swap_bytes() } else { v };
+        buf[offset..offset + 2].copy_from_slice(&v.to_ne_bytes());
     }
-    6
+    (3 + extra) * 2
 }
 
 // ============================================================================
@@ -1051,6 +1083,27 @@ mod tests {
         assert_eq!(values[0], 0x1234);
         assert_eq!(values[1], 0x5678);
         assert_eq!(values[2], 0x9ABC);
+    }
+
+    // ================================================================
+    // Lab V2 with extra-first (ALABV2_8)
+    // ================================================================
+
+    #[test]
+    fn test_alabv2_8_extra_first() {
+        let format = TYPE_ALABV2_8; // swapfirst + extra(1) = extra-first
+        let input: [u8; 4] = [0xFF, 0x80, 0x80, 0x80]; // Alpha, L, a, b
+        let mut values = [0u16; 16];
+
+        let FormatterIn::U16(unroll) = find_formatter_in(format, CMS_PACK_FLAGS_16BITS).unwrap()
+        else {
+            panic!()
+        };
+        let consumed = unroll(format, &mut values, &input, 0);
+        assert_eq!(consumed, 4);
+        // L=0x80 through V2→V4 conversion
+        let expected = lab_v2_to_v4(from_8_to_16(0x80));
+        assert_eq!(values[0], expected); // L (not Alpha)
     }
 
     // ================================================================

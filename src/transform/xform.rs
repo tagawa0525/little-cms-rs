@@ -10,7 +10,7 @@ use crate::pipeline::pack::{
 };
 use crate::profile::io::Profile;
 use crate::transform::cnvrt;
-use crate::types::{ColorSpaceSignature, MAX_CHANNELS, PixelFormat};
+use crate::types::{MAX_CHANNELS, PixelFormat};
 
 // ============================================================================
 // Transform flags
@@ -41,20 +41,17 @@ impl Transform {
         self.output_format
     }
 
-    /// Create a transform from two profiles.
+    /// Create a transform from two profiles (consumed).
     pub fn new(
-        input_profile: &mut Profile,
+        input_profile: Profile,
         input_format: PixelFormat,
-        output_profile: &mut Profile,
+        output_profile: Profile,
         output_format: PixelFormat,
         intent: u32,
         flags: u32,
     ) -> Result<Self, CmsError> {
         Self::new_multiprofile(
-            &mut [
-                std::mem::replace(input_profile, Profile::new_placeholder()),
-                std::mem::replace(output_profile, Profile::new_placeholder()),
-            ],
+            &mut [input_profile, output_profile],
             input_format,
             output_format,
             intent,
@@ -77,36 +74,11 @@ impl Transform {
             });
         }
 
-        // Determine entry/exit color spaces
-        let entry_cs = profiles[0].header.color_space;
-        let last = profiles.len() - 1;
-        let exit_cs = profiles[last].header.color_space;
-
-        // Validate input format matches entry color space
-        if let Some(expected_cs) = ColorSpaceSignature::from_pixel_type(input_format.colorspace())
-            && expected_cs.channels() != entry_cs.channels()
-        {
+        // Reject mixed float/integer formats
+        if input_format.is_float() != output_format.is_float() {
             return Err(CmsError {
-                code: ErrorCode::ColorspaceCheck,
-                message: format!(
-                    "input format channels ({}) != entry color space channels ({})",
-                    expected_cs.channels(),
-                    entry_cs.channels()
-                ),
-            });
-        }
-
-        // Validate output format matches exit color space
-        if let Some(expected_cs) = ColorSpaceSignature::from_pixel_type(output_format.colorspace())
-            && expected_cs.channels() != exit_cs.channels()
-        {
-            return Err(CmsError {
-                code: ErrorCode::ColorspaceCheck,
-                message: format!(
-                    "output format channels ({}) != exit color space channels ({})",
-                    expected_cs.channels(),
-                    exit_cs.channels()
-                ),
+                code: ErrorCode::NotSuitable,
+                message: "mixed float/integer formats are not supported".into(),
             });
         }
 
@@ -118,9 +90,30 @@ impl Transform {
         let adaptation = vec![1.0f64; n];
         let pipeline = cnvrt::link_profiles(profiles, &intents, &mut bpc, &adaptation)?;
 
+        // Validate format channels against linked pipeline
+        if input_format.channels() != pipeline.input_channels() {
+            return Err(CmsError {
+                code: ErrorCode::ColorspaceCheck,
+                message: format!(
+                    "input format channels ({}) != pipeline input channels ({})",
+                    input_format.channels(),
+                    pipeline.input_channels()
+                ),
+            });
+        }
+        if output_format.channels() != pipeline.output_channels() {
+            return Err(CmsError {
+                code: ErrorCode::ColorspaceCheck,
+                message: format!(
+                    "output format channels ({}) != pipeline output channels ({})",
+                    output_format.channels(),
+                    pipeline.output_channels()
+                ),
+            });
+        }
+
         // Select formatters
-        let is_float = input_format.is_float() || output_format.is_float();
-        let pack_flags = if is_float {
+        let pack_flags = if input_format.is_float() {
             CMS_PACK_FLAGS_FLOAT
         } else {
             CMS_PACK_FLAGS_16BITS
@@ -154,9 +147,7 @@ impl Transform {
             (FormatterIn::Float(unroll), FormatterOut::Float(pack)) => {
                 self.do_transform_float(*unroll, *pack, input, output, pixel_count);
             }
-            _ => {
-                // Mixed float/u16 — not supported yet
-            }
+            _ => unreachable!("mixed float/u16 formatters rejected at creation"),
         }
     }
 
@@ -170,15 +161,24 @@ impl Transform {
     ) {
         let in_stride = pixel_size(self.input_format);
         let out_stride = pixel_size(self.output_format);
+        // Clamp to buffer capacity
+        let max_in = if in_stride > 0 {
+            input.len() / in_stride
+        } else {
+            0
+        };
+        let max_out = if out_stride > 0 {
+            output.len() / out_stride
+        } else {
+            0
+        };
+        let count = pixel_count.min(max_in).min(max_out);
         let mut w_in = [0u16; MAX_CHANNELS];
         let mut w_out = [0u16; MAX_CHANNELS];
 
-        for i in 0..pixel_count {
+        for i in 0..count {
             let in_offset = i * in_stride;
             let out_offset = i * out_stride;
-            if in_offset + in_stride > input.len() || out_offset + out_stride > output.len() {
-                break;
-            }
             unroll(self.input_format, &mut w_in, &input[in_offset..], 0);
             self.pipeline.eval_16(&w_in, &mut w_out);
             pack(self.output_format, &w_out, &mut output[out_offset..], 0);
@@ -195,15 +195,23 @@ impl Transform {
     ) {
         let in_stride = pixel_size(self.input_format);
         let out_stride = pixel_size(self.output_format);
+        let max_in = if in_stride > 0 {
+            input.len() / in_stride
+        } else {
+            0
+        };
+        let max_out = if out_stride > 0 {
+            output.len() / out_stride
+        } else {
+            0
+        };
+        let count = pixel_count.min(max_in).min(max_out);
         let mut w_in = [0.0f32; MAX_CHANNELS];
         let mut w_out = [0.0f32; MAX_CHANNELS];
 
-        for i in 0..pixel_count {
+        for i in 0..count {
             let in_offset = i * in_stride;
             let out_offset = i * out_stride;
-            if in_offset + in_stride > input.len() || out_offset + out_stride > output.len() {
-                break;
-            }
             unroll(self.input_format, &mut w_in, &input[in_offset..], 0);
             self.pipeline.eval_float(&w_in, &mut w_out);
             pack(self.output_format, &w_out, &mut output[out_offset..], 0);
@@ -304,6 +312,10 @@ mod tests {
             ColorSpaceSignature::from_pixel_type(PT_CMYK),
             Some(ColorSpaceSignature::CmykData)
         );
+        assert_eq!(
+            ColorSpaceSignature::from_pixel_type(PT_LAB_V2),
+            Some(ColorSpaceSignature::LabData)
+        );
         assert_eq!(ColorSpaceSignature::from_pixel_type(0), None); // PT_ANY
     }
 
@@ -313,10 +325,10 @@ mod tests {
 
     #[test]
     fn test_create_rgb_to_rgb_transform() {
-        let mut src = roundtrip(&mut build_rgb_profile());
-        let mut dst = roundtrip(&mut build_rgb_profile());
+        let src = roundtrip(&mut build_rgb_profile());
+        let dst = roundtrip(&mut build_rgb_profile());
         let xform = Transform::new(
-            &mut src, TYPE_RGB_8, &mut dst, TYPE_RGB_8, 0, // perceptual
+            src, TYPE_RGB_8, dst, TYPE_RGB_8, 0, // perceptual
             0,
         );
         assert!(xform.is_ok());
@@ -324,19 +336,19 @@ mod tests {
 
     #[test]
     fn test_format_query() {
-        let mut src = roundtrip(&mut build_rgb_profile());
-        let mut dst = roundtrip(&mut build_rgb_profile());
-        let xform = Transform::new(&mut src, TYPE_RGB_8, &mut dst, TYPE_RGB_16, 0, 0).unwrap();
+        let src = roundtrip(&mut build_rgb_profile());
+        let dst = roundtrip(&mut build_rgb_profile());
+        let xform = Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_16, 0, 0).unwrap();
         assert_eq!(xform.input_format(), TYPE_RGB_8);
         assert_eq!(xform.output_format(), TYPE_RGB_16);
     }
 
     #[test]
     fn test_format_mismatch_error() {
-        let mut src = roundtrip(&mut build_rgb_profile());
-        let mut dst = roundtrip(&mut build_rgb_profile());
+        let src = roundtrip(&mut build_rgb_profile());
+        let dst = roundtrip(&mut build_rgb_profile());
         // CMYK format for RGB profile should fail
-        let result = Transform::new(&mut src, TYPE_CMYK_8, &mut dst, TYPE_RGB_8, 0, 0);
+        let result = Transform::new(src, TYPE_CMYK_8, dst, TYPE_RGB_8, 0, 0);
         assert!(result.is_err());
     }
 
@@ -347,9 +359,9 @@ mod tests {
     #[test]
     fn test_do_transform_rgb8_identity() {
         // Same profile for input and output — should be approximately identity
-        let mut src = roundtrip(&mut build_rgb_profile());
-        let mut dst = roundtrip(&mut build_rgb_profile());
-        let xform = Transform::new(&mut src, TYPE_RGB_8, &mut dst, TYPE_RGB_8, 1, 0).unwrap();
+        let src = roundtrip(&mut build_rgb_profile());
+        let dst = roundtrip(&mut build_rgb_profile());
+        let xform = Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_8, 1, 0).unwrap();
 
         let input: [u8; 6] = [255, 0, 0, 0, 128, 255]; // 2 pixels: red, cyan-ish
         let mut output = [0u8; 6];
@@ -368,9 +380,9 @@ mod tests {
 
     #[test]
     fn test_do_transform_rgb8_to_rgb16() {
-        let mut src = roundtrip(&mut build_rgb_profile());
-        let mut dst = roundtrip(&mut build_rgb_profile());
-        let xform = Transform::new(&mut src, TYPE_RGB_8, &mut dst, TYPE_RGB_16, 1, 0).unwrap();
+        let src = roundtrip(&mut build_rgb_profile());
+        let dst = roundtrip(&mut build_rgb_profile());
+        let xform = Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_16, 1, 0).unwrap();
 
         let input: [u8; 3] = [128, 128, 128]; // mid-gray
         let mut output = [0u8; 6]; // RGB_16 = 3 channels * 2 bytes
