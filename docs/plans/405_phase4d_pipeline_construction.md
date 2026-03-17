@@ -1,6 +1,6 @@
 # Phase 4d: cmsio1.c パイプライン構築ヘルパー
 
-**Status**: IMPLEMENTED
+**Status**: IMPLEMENTED (partial — see Scope below)
 **C版ファイル**: `cmsio1.c`（パイプライン構築部分）
 **Rust見積**: ~500行（impl）+ ~300行（tests）
 **ブランチ**: `feat/phase4d-pipeline-construction`
@@ -38,19 +38,30 @@ Phase 4c-3（LUT タグ型）がマージ済み。
 
 ### メイン関数（公開API）
 
-| 関数                  | C版                     | 内容                                            |
-| --------------------- | ----------------------- | ----------------------------------------------- |
-| `read_input_lut`      | `_cmsReadInputLUT`      | Device→PCS パイプライン構築（AToB/DToB/matrix） |
-| `read_output_lut`     | `_cmsReadOutputLUT`     | PCS→Device パイプライン構築（BToA/BToD/matrix） |
-| `read_devicelink_lut` | `_cmsReadDevicelinkLUT` | Devicelink/Abstract パイプライン構築            |
+| 関数                  | C版                     | 内容                                 | 状態   |
+| --------------------- | ----------------------- | ------------------------------------ | ------ |
+| `read_input_lut`      | `_cmsReadInputLUT`      | Device->PCS (AToB/matrix)            | 実装済 |
+| `read_output_lut`     | `_cmsReadOutputLUT`     | PCS->Device (BToA/matrix)            | 実装済 |
+| `read_devicelink_lut` | `_cmsReadDevicelinkLUT` | Devicelink/Abstract pipeline         | 未実装 |
 
 ### クエリ関数
 
-| 関数                  | C版                    | 内容                           |
-| --------------------- | ---------------------- | ------------------------------ |
-| `is_matrix_shaper`    | `cmsIsMatrixShaper`    | Matrix-shaper プロファイル判定 |
-| `is_clut`             | `cmsIsCLUT`            | CLUT ベースプロファイル判定    |
-| `is_intent_supported` | `cmsIsIntentSupported` | レンダリングインテント対応判定 |
+| 関数                  | C版                    | 内容                           | 状態   |
+| --------------------- | ---------------------- | ------------------------------ | ------ |
+| `is_matrix_shaper`    | `cmsIsMatrixShaper`    | Matrix-shaper profile check    | 実装済 |
+| `is_clut`             | `cmsIsCLUT`            | CLUT-based profile check       | 未実装 |
+| `is_intent_supported` | `cmsIsIntentSupported` | Rendering intent support check | 未実装 |
+
+## Scope（本PRでの実装範囲）
+
+本PRでは matrix-shaper ベースの基本パイプライン構築を実装。
+以下は今後の Phase で追加予定:
+
+- Float タグ（DToB/BToD）のサポート
+- `read_devicelink_lut`
+- `is_clut`, `is_intent_supported`
+- Lab V2↔V4 変換ステージの自動挿入
+- Named Color プロファイルのサポート
 
 ## インテント→タグ対応テーブル
 
