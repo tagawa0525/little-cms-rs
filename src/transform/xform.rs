@@ -2,11 +2,15 @@
 // Transform engine (C版: cmsxform.c)
 // ============================================================================
 
-use crate::context::CmsError;
+use crate::context::{CmsError, ErrorCode};
 use crate::pipeline::lut::Pipeline;
-use crate::pipeline::pack::{FormatterIn, FormatterOut};
+use crate::pipeline::pack::{
+    CMS_PACK_FLAGS_16BITS, CMS_PACK_FLAGS_FLOAT, FormatterIn, FormatterOut, find_formatter_in,
+    find_formatter_out, pixel_size,
+};
 use crate::profile::io::Profile;
-use crate::types::{ColorSpaceSignature, PixelFormat};
+use crate::transform::cnvrt;
+use crate::types::{ColorSpaceSignature, MAX_CHANNELS, PixelFormat};
 
 // ============================================================================
 // Transform flags
@@ -20,54 +24,190 @@ pub const FLAGS_SOFTPROOFING: u32 = 0x4000;
 pub const FLAGS_BLACKPOINTCOMPENSATION: u32 = 0x2000;
 
 /// Color transform: converts pixel data between ICC profiles.
-#[allow(dead_code)] // Fields used in GREEN commit
 pub struct Transform {
     pipeline: Pipeline,
     input_format: PixelFormat,
     output_format: PixelFormat,
     from_input: FormatterIn,
     to_output: FormatterOut,
-    entry_color_space: ColorSpaceSignature,
-    exit_color_space: ColorSpaceSignature,
-    rendering_intent: u32,
-    flags: u32,
 }
 
 impl Transform {
     pub fn input_format(&self) -> PixelFormat {
-        todo!()
+        self.input_format
     }
 
     pub fn output_format(&self) -> PixelFormat {
-        todo!()
+        self.output_format
     }
 
     /// Create a transform from two profiles.
     pub fn new(
-        _input_profile: &mut Profile,
-        _input_format: PixelFormat,
-        _output_profile: &mut Profile,
-        _output_format: PixelFormat,
-        _intent: u32,
-        _flags: u32,
+        input_profile: &mut Profile,
+        input_format: PixelFormat,
+        output_profile: &mut Profile,
+        output_format: PixelFormat,
+        intent: u32,
+        flags: u32,
     ) -> Result<Self, CmsError> {
-        todo!()
+        Self::new_multiprofile(
+            &mut [
+                std::mem::replace(input_profile, Profile::new_placeholder()),
+                std::mem::replace(output_profile, Profile::new_placeholder()),
+            ],
+            input_format,
+            output_format,
+            intent,
+            flags,
+        )
     }
 
     /// Create a transform from multiple profiles.
     pub fn new_multiprofile(
-        _profiles: &mut [Profile],
-        _input_format: PixelFormat,
-        _output_format: PixelFormat,
-        _intent: u32,
-        _flags: u32,
+        profiles: &mut [Profile],
+        input_format: PixelFormat,
+        output_format: PixelFormat,
+        intent: u32,
+        flags: u32,
     ) -> Result<Self, CmsError> {
-        todo!()
+        if profiles.is_empty() {
+            return Err(CmsError {
+                code: ErrorCode::Range,
+                message: "at least one profile required".into(),
+            });
+        }
+
+        // Determine entry/exit color spaces
+        let entry_cs = profiles[0].header.color_space;
+        let last = profiles.len() - 1;
+        let exit_cs = profiles[last].header.color_space;
+
+        // Validate input format matches entry color space
+        if let Some(expected_cs) = ColorSpaceSignature::from_pixel_type(input_format.colorspace())
+            && expected_cs.channels() != entry_cs.channels()
+        {
+            return Err(CmsError {
+                code: ErrorCode::ColorspaceCheck,
+                message: format!(
+                    "input format channels ({}) != entry color space channels ({})",
+                    expected_cs.channels(),
+                    entry_cs.channels()
+                ),
+            });
+        }
+
+        // Validate output format matches exit color space
+        if let Some(expected_cs) = ColorSpaceSignature::from_pixel_type(output_format.colorspace())
+            && expected_cs.channels() != exit_cs.channels()
+        {
+            return Err(CmsError {
+                code: ErrorCode::ColorspaceCheck,
+                message: format!(
+                    "output format channels ({}) != exit color space channels ({})",
+                    expected_cs.channels(),
+                    exit_cs.channels()
+                ),
+            });
+        }
+
+        // Build pipeline from profiles
+        let n = profiles.len();
+        let intents = vec![intent; n];
+        let bpc_flag = (flags & FLAGS_BLACKPOINTCOMPENSATION) != 0;
+        let mut bpc = vec![bpc_flag; n];
+        let adaptation = vec![1.0f64; n];
+        let pipeline = cnvrt::link_profiles(profiles, &intents, &mut bpc, &adaptation)?;
+
+        // Select formatters
+        let is_float = input_format.is_float() || output_format.is_float();
+        let pack_flags = if is_float {
+            CMS_PACK_FLAGS_FLOAT
+        } else {
+            CMS_PACK_FLAGS_16BITS
+        };
+
+        let from_input = find_formatter_in(input_format, pack_flags).ok_or_else(|| CmsError {
+            code: ErrorCode::NotSuitable,
+            message: format!("no input formatter for format {:#010X}", input_format.0),
+        })?;
+
+        let to_output = find_formatter_out(output_format, pack_flags).ok_or_else(|| CmsError {
+            code: ErrorCode::NotSuitable,
+            message: format!("no output formatter for format {:#010X}", output_format.0),
+        })?;
+
+        Ok(Transform {
+            pipeline,
+            input_format,
+            output_format,
+            from_input,
+            to_output,
+        })
     }
 
     /// Transform a buffer of pixels.
-    pub fn do_transform(&self, _input: &[u8], _output: &mut [u8], _pixel_count: usize) {
-        todo!()
+    pub fn do_transform(&self, input: &[u8], output: &mut [u8], pixel_count: usize) {
+        match (&self.from_input, &self.to_output) {
+            (FormatterIn::U16(unroll), FormatterOut::U16(pack)) => {
+                self.do_transform_16(*unroll, *pack, input, output, pixel_count);
+            }
+            (FormatterIn::Float(unroll), FormatterOut::Float(pack)) => {
+                self.do_transform_float(*unroll, *pack, input, output, pixel_count);
+            }
+            _ => {
+                // Mixed float/u16 — not supported yet
+            }
+        }
+    }
+
+    fn do_transform_16(
+        &self,
+        unroll: crate::pipeline::pack::Formatter16In,
+        pack: crate::pipeline::pack::Formatter16Out,
+        input: &[u8],
+        output: &mut [u8],
+        pixel_count: usize,
+    ) {
+        let in_stride = pixel_size(self.input_format);
+        let out_stride = pixel_size(self.output_format);
+        let mut w_in = [0u16; MAX_CHANNELS];
+        let mut w_out = [0u16; MAX_CHANNELS];
+
+        for i in 0..pixel_count {
+            let in_offset = i * in_stride;
+            let out_offset = i * out_stride;
+            if in_offset + in_stride > input.len() || out_offset + out_stride > output.len() {
+                break;
+            }
+            unroll(self.input_format, &mut w_in, &input[in_offset..], 0);
+            self.pipeline.eval_16(&w_in, &mut w_out);
+            pack(self.output_format, &w_out, &mut output[out_offset..], 0);
+        }
+    }
+
+    fn do_transform_float(
+        &self,
+        unroll: crate::pipeline::pack::FormatterFloatIn,
+        pack: crate::pipeline::pack::FormatterFloatOut,
+        input: &[u8],
+        output: &mut [u8],
+        pixel_count: usize,
+    ) {
+        let in_stride = pixel_size(self.input_format);
+        let out_stride = pixel_size(self.output_format);
+        let mut w_in = [0.0f32; MAX_CHANNELS];
+        let mut w_out = [0.0f32; MAX_CHANNELS];
+
+        for i in 0..pixel_count {
+            let in_offset = i * in_stride;
+            let out_offset = i * out_stride;
+            if in_offset + in_stride > input.len() || out_offset + out_stride > output.len() {
+                break;
+            }
+            unroll(self.input_format, &mut w_in, &input[in_offset..], 0);
+            self.pipeline.eval_float(&w_in, &mut w_out);
+            pack(self.output_format, &w_out, &mut output[out_offset..], 0);
+        }
     }
 }
 
@@ -75,8 +215,6 @@ impl Transform {
 mod tests {
     use super::*;
     use crate::curves::gamma::ToneCurve;
-    #[allow(unused_imports)]
-    use crate::pipeline::pack::{from_8_to_16, from_16_to_8};
     use crate::profile::io::Profile;
     use crate::profile::tag_types::TagData;
     use crate::types::*;
@@ -148,7 +286,6 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn test_to_pixel_type() {
         assert_eq!(ColorSpaceSignature::RgbData.to_pixel_type(), PT_RGB);
         assert_eq!(ColorSpaceSignature::CmykData.to_pixel_type(), PT_CMYK);
@@ -158,7 +295,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn test_from_pixel_type() {
         assert_eq!(
             ColorSpaceSignature::from_pixel_type(PT_RGB),
@@ -176,7 +312,6 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn test_create_rgb_to_rgb_transform() {
         let mut src = roundtrip(&mut build_rgb_profile());
         let mut dst = roundtrip(&mut build_rgb_profile());
@@ -188,7 +323,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn test_format_query() {
         let mut src = roundtrip(&mut build_rgb_profile());
         let mut dst = roundtrip(&mut build_rgb_profile());
@@ -198,7 +332,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn test_format_mismatch_error() {
         let mut src = roundtrip(&mut build_rgb_profile());
         let mut dst = roundtrip(&mut build_rgb_profile());
@@ -212,7 +345,6 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn test_do_transform_rgb8_identity() {
         // Same profile for input and output — should be approximately identity
         let mut src = roundtrip(&mut build_rgb_profile());
@@ -235,7 +367,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn test_do_transform_rgb8_to_rgb16() {
         let mut src = roundtrip(&mut build_rgb_profile());
         let mut dst = roundtrip(&mut build_rgb_profile());
@@ -256,7 +387,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn test_do_transform_multiprofile() {
         let p1 = roundtrip(&mut build_rgb_profile());
         let p2 = roundtrip(&mut build_rgb_profile());
