@@ -1,6 +1,6 @@
 # Phase 4d: cmsio1.c パイプライン構築ヘルパー
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmsio1.c`（パイプライン構築部分）
 **Rust見積**: ~500行（impl）+ ~300行（tests）
 **ブランチ**: `feat/phase4d-pipeline-construction`
