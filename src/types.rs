@@ -747,6 +747,18 @@ icc_enum! {
 }
 
 impl ColorSpaceSignature {
+    /// Convert ICC color space signature to PixelFormat colorspace index (PT_*).
+    /// C版: `_cmsLCMScolorSpace`
+    pub fn to_pixel_type(&self) -> u32 {
+        todo!()
+    }
+
+    /// Convert PixelFormat colorspace index (PT_*) to ICC color space signature.
+    /// C版: `_cmsICCcolorSpace`
+    pub fn from_pixel_type(_pt: u32) -> Option<Self> {
+        todo!()
+    }
+
     /// Return the number of channels for a given color space.
     /// C版: `cmsChannelsOfColorSpace`
     pub fn channels(&self) -> u32 {
