@@ -4,6 +4,11 @@
 #![allow(dead_code)]
 
 use crate::context::{CmsError, ErrorCode};
+use crate::curves::gamma::ToneCurve;
+use crate::curves::wtpnt;
+use crate::math::mtrx::Mat3;
+use crate::pipeline::lut::{Pipeline, Stage, StageLoc};
+use crate::profile::tag_types::TagData;
 use crate::types::{
     CieXyz, ColorSpaceSignature, D50_X, D50_Y, D50_Z, DateTimeNumber, EncodedXyzNumber,
     ICC_MAGIC_NUMBER, IccHeader, LCMS_SIGNATURE, PlatformSignature, ProfileClassSignature,
@@ -1159,12 +1164,6 @@ fn base_to_base(mut input: u32, base_in: u32, base_out: u32) -> u32 {
 // Pipeline construction helpers
 // C版: cmsio1.c
 // ============================================================================
-
-use crate::curves::gamma::ToneCurve;
-use crate::curves::wtpnt;
-use crate::math::mtrx::Mat3;
-use crate::pipeline::lut::{Pipeline, Stage, StageLoc};
-use crate::profile::tag_types::TagData;
 
 /// XYZ encoding factor: 1.15 fixed point maximum = 1 + 32767/32768
 const MAX_ENCODEABLE_XYZ: f64 = 1.0 + 32767.0 / 32768.0;
