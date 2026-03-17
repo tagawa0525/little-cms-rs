@@ -1,6 +1,6 @@
 # Phase 5a: cmscnvrt.c マルチプロファイルリンク
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmscnvrt.c`（1,226行）
 **Rust見積**: ~400行（impl）+ ~200行（tests）
 **ブランチ**: `feat/phase5a-cnvrt`
