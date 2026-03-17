@@ -1086,6 +1086,27 @@ mod tests {
     }
 
     // ================================================================
+    // Lab V2 with extra-first (ALABV2_8)
+    // ================================================================
+
+    #[test]
+    fn test_alabv2_8_extra_first() {
+        let format = TYPE_ALABV2_8; // swapfirst + extra(1) = extra-first
+        let input: [u8; 4] = [0xFF, 0x80, 0x80, 0x80]; // Alpha, L, a, b
+        let mut values = [0u16; 16];
+
+        let FormatterIn::U16(unroll) = find_formatter_in(format, CMS_PACK_FLAGS_16BITS).unwrap()
+        else {
+            panic!()
+        };
+        let consumed = unroll(format, &mut values, &input, 0);
+        assert_eq!(consumed, 4);
+        // L=0x80 through V2→V4 conversion
+        let expected = lab_v2_to_v4(from_8_to_16(0x80));
+        assert_eq!(values[0], expected); // L (not Alpha)
+    }
+
+    // ================================================================
     // Lookup
     // ================================================================
 

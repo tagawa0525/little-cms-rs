@@ -312,6 +312,10 @@ mod tests {
             ColorSpaceSignature::from_pixel_type(PT_CMYK),
             Some(ColorSpaceSignature::CmykData)
         );
+        assert_eq!(
+            ColorSpaceSignature::from_pixel_type(PT_LAB_V2),
+            Some(ColorSpaceSignature::LabData)
+        );
         assert_eq!(ColorSpaceSignature::from_pixel_type(0), None); // PT_ANY
     }
 
