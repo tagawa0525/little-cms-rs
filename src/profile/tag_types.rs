@@ -1224,7 +1224,7 @@ pub fn write_video_signal_type(io: &mut IoHandler, vs: &VideoSignalType) -> Resu
 
 fn read_embedded_text(io: &mut IoHandler, size: u32) -> Result<Mlu, CmsError> {
     let start = io.tell();
-    let end = start + size;
+    let end = start.saturating_add(size);
 
     if size < 8 {
         // Always advance past the full embedded payload
@@ -1474,7 +1474,13 @@ pub fn read_vcgt_type(io: &mut IoHandler, size: u32) -> Result<TagData, CmsError
 
             // Validate that table data fits in remaining tag size
             // Header: 4 (tag_type) + 2 (n_channels) + 2 (n_elems) + 2 (n_bytes) = 10 bytes
-            let data_size = n_channels * n_elems * n_bytes;
+            let data_size = n_channels
+                .checked_mul(n_elems)
+                .and_then(|v| v.checked_mul(n_bytes))
+                .ok_or_else(|| CmsError {
+                    code: ErrorCode::Range,
+                    message: "vcgt table size overflow".to_string(),
+                })?;
             let header_consumed = 10;
             if data_size + header_consumed > size as usize {
                 return Err(CmsError {
@@ -1719,7 +1725,7 @@ pub fn read_dict_type(io: &mut IoHandler, _size: u32) -> Result<TagData, CmsErro
 fn read_utf16_string(io: &mut IoHandler, byte_size: u32) -> Result<String, CmsError> {
     if !byte_size.is_multiple_of(2) {
         return Err(CmsError {
-            code: ErrorCode::Read,
+            code: ErrorCode::Range,
             message: format!("UTF-16 string byte_size must be even, got {byte_size}"),
         });
     }
