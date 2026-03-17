@@ -4,6 +4,11 @@
 #![allow(dead_code)]
 
 use crate::context::{CmsError, ErrorCode};
+use crate::curves::gamma::ToneCurve;
+use crate::curves::wtpnt;
+use crate::math::mtrx::Mat3;
+use crate::pipeline::lut::{Pipeline, Stage, StageLoc};
+use crate::profile::tag_types::TagData;
 use crate::types::{
     CieXyz, ColorSpaceSignature, D50_X, D50_Y, D50_Z, DateTimeNumber, EncodedXyzNumber,
     ICC_MAGIC_NUMBER, IccHeader, LCMS_SIGNATURE, PlatformSignature, ProfileClassSignature,
@@ -1155,6 +1160,458 @@ fn base_to_base(mut input: u32, base_in: u32, base_out: u32) -> u32 {
     out
 }
 
+// ============================================================================
+// Pipeline construction helpers
+// C版: cmsio1.c
+// ============================================================================
+
+/// XYZ encoding factor: 1.15 fixed point maximum = 1 + 32767/32768
+const MAX_ENCODEABLE_XYZ: f64 = 1.0 + 32767.0 / 32768.0;
+/// Factor to convert from 0..0xFFFF pipeline range to 1.15 fixed point
+const INP_ADJ: f64 = 1.0 / MAX_ENCODEABLE_XYZ;
+/// Factor to convert from 1.15 fixed point to 0..0xFFFF pipeline range
+const OUTP_ADJ: f64 = MAX_ENCODEABLE_XYZ;
+
+/// Intent → tag signature lookup tables
+const DEVICE2PCS16: [TagSignature; 4] = [
+    TagSignature::AToB0,
+    TagSignature::AToB1,
+    TagSignature::AToB2,
+    TagSignature::AToB1,
+];
+const PCS2DEVICE16: [TagSignature; 4] = [
+    TagSignature::BToA0,
+    TagSignature::BToA1,
+    TagSignature::BToA2,
+    TagSignature::BToA1,
+];
+
+impl Profile {
+    /// Read the media white point from profile. V2 display profiles return D50.
+    /// C版: `_cmsReadMediaWhitePoint`
+    pub fn read_media_white_point(&mut self) -> Result<CieXyz, CmsError> {
+        let d50 = CieXyz {
+            x: D50_X,
+            y: D50_Y,
+            z: D50_Z,
+        };
+
+        let tag = match self.read_tag(TagSignature::MediaWhitePoint) {
+            Ok(TagData::Xyz(xyz)) => xyz,
+            _ => return Ok(d50),
+        };
+
+        // V2 display profiles should give D50
+        if self.header.version < 0x4000000
+            && self.header.device_class == ProfileClassSignature::Display
+        {
+            return Ok(d50);
+        }
+
+        Ok(tag)
+    }
+
+    /// Read the chromatic adaptation matrix. V2 display profiles compute it from WP.
+    /// C版: `_cmsReadCHAD`
+    pub fn read_chad(&mut self) -> Result<Mat3, CmsError> {
+        if let Ok(TagData::S15Fixed16Array(vals)) = self.read_tag(TagSignature::ChromaticAdaptation)
+            && vals.len() >= 9
+        {
+            use crate::math::mtrx::Vec3;
+            return Ok(Mat3([
+                Vec3([vals[0], vals[1], vals[2]]),
+                Vec3([vals[3], vals[4], vals[5]]),
+                Vec3([vals[6], vals[7], vals[8]]),
+            ]));
+        }
+
+        // No CHAD: identity by default
+        let mut result = Mat3::identity();
+
+        // V2 display profiles: compute adaptation from stored WP to D50
+        if self.header.version < 0x4000000
+            && self.header.device_class == ProfileClassSignature::Display
+            && let Ok(TagData::Xyz(white)) = self.read_tag(TagSignature::MediaWhitePoint)
+        {
+            let d50 = CieXyz {
+                x: D50_X,
+                y: D50_Y,
+                z: D50_Z,
+            };
+            if let Some(m) = wtpnt::adaptation_matrix(None, &white, &d50) {
+                result = m;
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Read RGB colorant tags as a 3×3 matrix (RGB → XYZ).
+    /// C版: `ReadICCMatrixRGB2XYZ`
+    fn read_icc_matrix_rgb2xyz(&mut self) -> Result<Mat3, CmsError> {
+        let red = match self.read_tag(TagSignature::RedMatrixColumn)? {
+            TagData::Xyz(xyz) => xyz,
+            _ => {
+                return Err(CmsError {
+                    code: ErrorCode::Internal,
+                    message: "RedMatrixColumn not found".to_string(),
+                });
+            }
+        };
+        let green = match self.read_tag(TagSignature::GreenMatrixColumn)? {
+            TagData::Xyz(xyz) => xyz,
+            _ => {
+                return Err(CmsError {
+                    code: ErrorCode::Internal,
+                    message: "GreenMatrixColumn not found".to_string(),
+                });
+            }
+        };
+        let blue = match self.read_tag(TagSignature::BlueMatrixColumn)? {
+            TagData::Xyz(xyz) => xyz,
+            _ => {
+                return Err(CmsError {
+                    code: ErrorCode::Internal,
+                    message: "BlueMatrixColumn not found".to_string(),
+                });
+            }
+        };
+
+        use crate::math::mtrx::Vec3;
+        Ok(Mat3([
+            Vec3([red.x, green.x, blue.x]),
+            Vec3([red.y, green.y, blue.y]),
+            Vec3([red.z, green.z, blue.z]),
+        ]))
+    }
+
+    /// Read a ToneCurve tag.
+    fn read_curve_tag(&mut self, sig: TagSignature) -> Result<ToneCurve, CmsError> {
+        match self.read_tag(sig)? {
+            TagData::Curve(c) => Ok(c),
+            _ => Err(CmsError {
+                code: ErrorCode::Internal,
+                message: format!("Expected curve for tag {:?}", sig),
+            }),
+        }
+    }
+
+    /// Build gray input pipeline: Gray → PCS (XYZ or Lab).
+    /// C版: `BuildGrayInputMatrixPipeline`
+    fn build_gray_input_pipeline(&mut self) -> Result<Pipeline, CmsError> {
+        let gray_trc = self.read_curve_tag(TagSignature::GrayTRC)?;
+
+        let mut pipe = Pipeline::new(1, 3).ok_or_else(|| CmsError {
+            code: ErrorCode::Internal,
+            message: "Failed to create gray input pipeline".to_string(),
+        })?;
+
+        if self.header.pcs == ColorSpaceSignature::LabData {
+            // OneToThreeInputMatrix (1→3): {1, 1, 1}
+            let one_to_three = [1.0, 1.0, 1.0];
+            let matrix_stage =
+                Stage::new_matrix(3, 1, &one_to_three, None).ok_or_else(|| CmsError {
+                    code: ErrorCode::Internal,
+                    message: "Failed to create 1→3 matrix".to_string(),
+                })?;
+            pipe.insert_stage(StageLoc::AtEnd, matrix_stage);
+
+            // 3 curves: gray_trc for L*, empty (0x8080) for a*, b*
+            let empty_tab =
+                ToneCurve::build_tabulated_16(&[0x8080, 0x8080]).ok_or_else(|| CmsError {
+                    code: ErrorCode::Internal,
+                    message: "Failed to create empty tabulated curve".to_string(),
+                })?;
+            let curves = [gray_trc, empty_tab.clone(), empty_tab];
+            let curve_stage = Stage::new_tone_curves(Some(&curves), 3).ok_or_else(|| CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to create Lab curves".to_string(),
+            })?;
+            pipe.insert_stage(StageLoc::AtEnd, curve_stage);
+        } else {
+            // XYZ PCS: curve → matrix (1→3 scaling to D50)
+            let curve_stage =
+                Stage::new_tone_curves(Some(&[gray_trc]), 1).ok_or_else(|| CmsError {
+                    code: ErrorCode::Internal,
+                    message: "Failed to create gray curve stage".to_string(),
+                })?;
+            pipe.insert_stage(StageLoc::AtEnd, curve_stage);
+
+            let gray_input_matrix = [INP_ADJ * D50_X, INP_ADJ * D50_Y, INP_ADJ * D50_Z];
+            let matrix_stage =
+                Stage::new_matrix(3, 1, &gray_input_matrix, None).ok_or_else(|| CmsError {
+                    code: ErrorCode::Internal,
+                    message: "Failed to create gray input matrix".to_string(),
+                })?;
+            pipe.insert_stage(StageLoc::AtEnd, matrix_stage);
+        }
+
+        Ok(pipe)
+    }
+
+    /// Build RGB input matrix-shaper: RGB → XYZ (+ optional Lab).
+    /// C版: `BuildRGBInputMatrixShaper`
+    fn build_rgb_input_matrix_shaper(&mut self) -> Result<Pipeline, CmsError> {
+        let mut mat = self.read_icc_matrix_rgb2xyz()?;
+
+        // Scale by InpAdj for 1.15 fixed point encoding
+        for row in &mut mat.0 {
+            for v in row.0.iter_mut() {
+                *v *= INP_ADJ;
+            }
+        }
+
+        let shapes = [
+            self.read_curve_tag(TagSignature::RedTRC)?,
+            self.read_curve_tag(TagSignature::GreenTRC)?,
+            self.read_curve_tag(TagSignature::BlueTRC)?,
+        ];
+
+        let mut pipe = Pipeline::new(3, 3).ok_or_else(|| CmsError {
+            code: ErrorCode::Internal,
+            message: "Failed to create RGB input pipeline".to_string(),
+        })?;
+
+        let curve_stage = Stage::new_tone_curves(Some(&shapes), 3).ok_or_else(|| CmsError {
+            code: ErrorCode::Internal,
+            message: "Failed to create RGB TRC stage".to_string(),
+        })?;
+        pipe.insert_stage(StageLoc::AtEnd, curve_stage);
+
+        let flat = [
+            mat.0[0].0[0],
+            mat.0[0].0[1],
+            mat.0[0].0[2],
+            mat.0[1].0[0],
+            mat.0[1].0[1],
+            mat.0[1].0[2],
+            mat.0[2].0[0],
+            mat.0[2].0[1],
+            mat.0[2].0[2],
+        ];
+        let matrix_stage = Stage::new_matrix(3, 3, &flat, None).ok_or_else(|| CmsError {
+            code: ErrorCode::Internal,
+            message: "Failed to create RGB→XYZ matrix".to_string(),
+        })?;
+        pipe.insert_stage(StageLoc::AtEnd, matrix_stage);
+
+        if self.header.pcs == ColorSpaceSignature::LabData {
+            let lab_stage = Stage::new_xyz_to_lab().ok_or_else(|| CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to create XYZ→Lab stage".to_string(),
+            })?;
+            pipe.insert_stage(StageLoc::AtEnd, lab_stage);
+        }
+
+        Ok(pipe)
+    }
+
+    /// Build gray output pipeline: PCS → Gray.
+    /// C版: `BuildGrayOutputPipeline`
+    fn build_gray_output_pipeline(&mut self) -> Result<Pipeline, CmsError> {
+        let gray_trc = self.read_curve_tag(TagSignature::GrayTRC)?;
+        let rev_trc = gray_trc.reverse();
+
+        let mut pipe = Pipeline::new(3, 1).ok_or_else(|| CmsError {
+            code: ErrorCode::Internal,
+            message: "Failed to create gray output pipeline".to_string(),
+        })?;
+
+        if self.header.pcs == ColorSpaceSignature::LabData {
+            // PickLstarMatrix: take L* from Lab → [1, 0, 0]
+            let pick_lstar = [1.0, 0.0, 0.0];
+            let matrix_stage =
+                Stage::new_matrix(1, 3, &pick_lstar, None).ok_or_else(|| CmsError {
+                    code: ErrorCode::Internal,
+                    message: "Failed to create PickLstar matrix".to_string(),
+                })?;
+            pipe.insert_stage(StageLoc::AtEnd, matrix_stage);
+        } else {
+            // PickYMatrix: take Y from XYZ → [0, OutpAdj*D50_Y, 0]
+            let pick_y = [0.0, OUTP_ADJ * D50_Y, 0.0];
+            let matrix_stage = Stage::new_matrix(1, 3, &pick_y, None).ok_or_else(|| CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to create PickY matrix".to_string(),
+            })?;
+            pipe.insert_stage(StageLoc::AtEnd, matrix_stage);
+        }
+
+        let curve_stage = Stage::new_tone_curves(Some(&[rev_trc]), 1).ok_or_else(|| CmsError {
+            code: ErrorCode::Internal,
+            message: "Failed to create reverse gray curve".to_string(),
+        })?;
+        pipe.insert_stage(StageLoc::AtEnd, curve_stage);
+
+        Ok(pipe)
+    }
+
+    /// Build RGB output matrix-shaper: XYZ → RGB (+ optional Lab→XYZ).
+    /// C版: `BuildRGBOutputMatrixShaper`
+    fn build_rgb_output_matrix_shaper(&mut self) -> Result<Pipeline, CmsError> {
+        let mat = self.read_icc_matrix_rgb2xyz()?;
+        let mut inv = mat.inverse().ok_or_else(|| CmsError {
+            code: ErrorCode::Internal,
+            message: "RGB→XYZ matrix is singular".to_string(),
+        })?;
+
+        // Scale by OutpAdj
+        for row in &mut inv.0 {
+            for v in row.0.iter_mut() {
+                *v *= OUTP_ADJ;
+            }
+        }
+
+        let shapes = [
+            self.read_curve_tag(TagSignature::RedTRC)?,
+            self.read_curve_tag(TagSignature::GreenTRC)?,
+            self.read_curve_tag(TagSignature::BlueTRC)?,
+        ];
+        let inv_shapes: Vec<ToneCurve> = shapes.iter().map(|s| s.reverse()).collect();
+
+        let mut pipe = Pipeline::new(3, 3).ok_or_else(|| CmsError {
+            code: ErrorCode::Internal,
+            message: "Failed to create RGB output pipeline".to_string(),
+        })?;
+
+        if self.header.pcs == ColorSpaceSignature::LabData {
+            let lab_stage = Stage::new_lab_to_xyz().ok_or_else(|| CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to create Lab→XYZ stage".to_string(),
+            })?;
+            pipe.insert_stage(StageLoc::AtEnd, lab_stage);
+        }
+
+        let flat = [
+            inv.0[0].0[0],
+            inv.0[0].0[1],
+            inv.0[0].0[2],
+            inv.0[1].0[0],
+            inv.0[1].0[1],
+            inv.0[1].0[2],
+            inv.0[2].0[0],
+            inv.0[2].0[1],
+            inv.0[2].0[2],
+        ];
+        let matrix_stage = Stage::new_matrix(3, 3, &flat, None).ok_or_else(|| CmsError {
+            code: ErrorCode::Internal,
+            message: "Failed to create XYZ→RGB matrix".to_string(),
+        })?;
+        pipe.insert_stage(StageLoc::AtEnd, matrix_stage);
+
+        let curve_stage = Stage::new_tone_curves(Some(&inv_shapes), 3).ok_or_else(|| CmsError {
+            code: ErrorCode::Internal,
+            message: "Failed to create reverse RGB curves".to_string(),
+        })?;
+        pipe.insert_stage(StageLoc::AtEnd, curve_stage);
+
+        Ok(pipe)
+    }
+
+    /// Check if the profile is implemented as a matrix-shaper.
+    /// C版: `cmsIsMatrixShaper`
+    pub fn is_matrix_shaper(&self) -> bool {
+        match self.header.color_space {
+            ColorSpaceSignature::GrayData => self.has_tag(TagSignature::GrayTRC),
+            ColorSpaceSignature::RgbData => {
+                self.has_tag(TagSignature::RedMatrixColumn)
+                    && self.has_tag(TagSignature::GreenMatrixColumn)
+                    && self.has_tag(TagSignature::BlueMatrixColumn)
+                    && self.has_tag(TagSignature::RedTRC)
+                    && self.has_tag(TagSignature::GreenTRC)
+                    && self.has_tag(TagSignature::BlueTRC)
+            }
+            _ => false,
+        }
+    }
+
+    /// Read an input LUT (device → PCS) pipeline from the profile.
+    /// C版: `_cmsReadInputLUT`
+    pub fn read_input_lut(&mut self, intent: u32) -> Result<Pipeline, CmsError> {
+        if intent > 3 {
+            return Err(CmsError {
+                code: ErrorCode::Range,
+                message: format!("Invalid rendering intent: {intent}"),
+            });
+        }
+
+        // Try LUT-based tags first (skip float DToB for now)
+        {
+            let mut tag16 = DEVICE2PCS16[intent as usize];
+
+            // Revert to perceptual if tag not found
+            if !self.has_tag(tag16) {
+                tag16 = DEVICE2PCS16[0];
+            }
+
+            if self.has_tag(tag16) {
+                let pipe = match self.read_tag(tag16)? {
+                    TagData::Pipeline(p) => p,
+                    _ => {
+                        return Err(CmsError {
+                            code: ErrorCode::Internal,
+                            message: "Expected Pipeline from LUT tag".to_string(),
+                        });
+                    }
+                };
+                return Ok(pipe);
+            }
+        }
+
+        // Fallback to matrix-shaper
+        match self.header.color_space {
+            ColorSpaceSignature::GrayData => self.build_gray_input_pipeline(),
+            ColorSpaceSignature::RgbData => self.build_rgb_input_matrix_shaper(),
+            _ => Err(CmsError {
+                code: ErrorCode::ColorspaceCheck,
+                message: "No LUT tags and color space is not Gray or RGB".to_string(),
+            }),
+        }
+    }
+
+    /// Read an output LUT (PCS → device) pipeline from the profile.
+    /// C版: `_cmsReadOutputLUT`
+    pub fn read_output_lut(&mut self, intent: u32) -> Result<Pipeline, CmsError> {
+        if intent > 3 {
+            return Err(CmsError {
+                code: ErrorCode::Range,
+                message: format!("Invalid rendering intent: {intent}"),
+            });
+        }
+
+        // Try LUT-based tags first (skip float BToD for now)
+        {
+            let mut tag16 = PCS2DEVICE16[intent as usize];
+
+            if !self.has_tag(tag16) {
+                tag16 = PCS2DEVICE16[0];
+            }
+
+            if self.has_tag(tag16) {
+                let pipe = match self.read_tag(tag16)? {
+                    TagData::Pipeline(p) => p,
+                    _ => {
+                        return Err(CmsError {
+                            code: ErrorCode::Internal,
+                            message: "Expected Pipeline from LUT tag".to_string(),
+                        });
+                    }
+                };
+                return Ok(pipe);
+            }
+        }
+
+        // Fallback to matrix-shaper
+        match self.header.color_space {
+            ColorSpaceSignature::GrayData => self.build_gray_output_pipeline(),
+            ColorSpaceSignature::RgbData => self.build_rgb_output_matrix_shaper(),
+            _ => Err(CmsError {
+                code: ErrorCode::ColorspaceCheck,
+                message: "No LUT tags and color space is not Gray or RGB".to_string(),
+            }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1646,5 +2103,222 @@ mod tests {
             }
             _ => panic!("Expected TagData::Curve"),
         }
+    }
+
+    // ========================================================================
+    // Pipeline construction helper tests (Phase 4d)
+    // ========================================================================
+
+    /// Build a minimal RGB matrix-shaper profile for testing.
+    fn build_rgb_matrix_shaper_profile() -> Profile {
+        use crate::curves::gamma::ToneCurve;
+        use crate::profile::tag_types::TagData;
+
+        let mut p = Profile::new_placeholder();
+        p.header.color_space = ColorSpaceSignature::RgbData;
+        p.header.pcs = ColorSpaceSignature::XyzData;
+        p.header.device_class = ProfileClassSignature::Display;
+        p.header.version = 0x04200000; // V4.2
+
+        // sRGB-like colorants (D50 adapted)
+        p.write_tag(
+            TagSignature::RedMatrixColumn,
+            TagData::Xyz(CieXyz {
+                x: 0.4361,
+                y: 0.2225,
+                z: 0.0139,
+            }),
+        )
+        .unwrap();
+        p.write_tag(
+            TagSignature::GreenMatrixColumn,
+            TagData::Xyz(CieXyz {
+                x: 0.3851,
+                y: 0.7169,
+                z: 0.0971,
+            }),
+        )
+        .unwrap();
+        p.write_tag(
+            TagSignature::BlueMatrixColumn,
+            TagData::Xyz(CieXyz {
+                x: 0.1431,
+                y: 0.0606,
+                z: 0.7141,
+            }),
+        )
+        .unwrap();
+
+        // Gamma 2.2 TRC
+        let gamma = ToneCurve::build_gamma(2.2).unwrap();
+        p.write_tag(TagSignature::RedTRC, TagData::Curve(gamma.clone()))
+            .unwrap();
+        p.write_tag(TagSignature::GreenTRC, TagData::Curve(gamma.clone()))
+            .unwrap();
+        p.write_tag(TagSignature::BlueTRC, TagData::Curve(gamma))
+            .unwrap();
+
+        // MediaWhitePoint (D50)
+        p.write_tag(
+            TagSignature::MediaWhitePoint,
+            TagData::Xyz(CieXyz {
+                x: D50_X,
+                y: D50_Y,
+                z: D50_Z,
+            }),
+        )
+        .unwrap();
+
+        p
+    }
+
+    /// Build a minimal Gray profile for testing.
+    fn build_gray_profile() -> Profile {
+        use crate::curves::gamma::ToneCurve;
+        use crate::profile::tag_types::TagData;
+
+        let mut p = Profile::new_placeholder();
+        p.header.color_space = ColorSpaceSignature::GrayData;
+        p.header.pcs = ColorSpaceSignature::XyzData;
+        p.header.device_class = ProfileClassSignature::Display;
+        p.header.version = 0x04200000;
+
+        let gamma = ToneCurve::build_gamma(2.2).unwrap();
+        p.write_tag(TagSignature::GrayTRC, TagData::Curve(gamma))
+            .unwrap();
+
+        p.write_tag(
+            TagSignature::MediaWhitePoint,
+            TagData::Xyz(CieXyz {
+                x: D50_X,
+                y: D50_Y,
+                z: D50_Z,
+            }),
+        )
+        .unwrap();
+
+        p
+    }
+
+    #[test]
+    fn read_media_white_point_returns_d50_for_v2_display() {
+        let mut p = build_rgb_matrix_shaper_profile();
+        // Set as V2 display profile
+        p.header.version = 0x02100000;
+        p.header.device_class = ProfileClassSignature::Display;
+
+        // Roundtrip through save/open to populate tag data
+        let data = p.save_to_mem().unwrap();
+        let mut p2 = Profile::open_mem(&data).unwrap();
+
+        let wp = p2.read_media_white_point().unwrap();
+        // V2 display should return D50 regardless of stored value
+        assert!((wp.x - D50_X).abs() < 1e-4);
+        assert!((wp.y - D50_Y).abs() < 1e-4);
+        assert!((wp.z - D50_Z).abs() < 1e-4);
+    }
+
+    #[test]
+    fn read_media_white_point_returns_tag_value_for_v4() {
+        use crate::profile::tag_types::TagData;
+
+        let mut p = Profile::new_placeholder();
+        p.header.version = 0x04200000;
+        p.header.device_class = ProfileClassSignature::Display;
+        let custom_wp = CieXyz {
+            x: 0.95,
+            y: 1.0,
+            z: 1.09,
+        };
+        p.write_tag(TagSignature::MediaWhitePoint, TagData::Xyz(custom_wp))
+            .unwrap();
+
+        let data = p.save_to_mem().unwrap();
+        let mut p2 = Profile::open_mem(&data).unwrap();
+
+        let wp = p2.read_media_white_point().unwrap();
+        assert!((wp.x - 0.95).abs() < 1e-3);
+        assert!((wp.y - 1.0).abs() < 1e-3);
+        assert!((wp.z - 1.09).abs() < 1e-3);
+    }
+
+    #[test]
+    fn is_matrix_shaper_rgb_profile() {
+        let mut p = build_rgb_matrix_shaper_profile();
+        let data = p.save_to_mem().unwrap();
+        let p2 = Profile::open_mem(&data).unwrap();
+        assert!(p2.is_matrix_shaper());
+    }
+
+    #[test]
+    fn is_matrix_shaper_gray_profile() {
+        let mut p = build_gray_profile();
+        let data = p.save_to_mem().unwrap();
+        let p2 = Profile::open_mem(&data).unwrap();
+        assert!(p2.is_matrix_shaper());
+    }
+
+    #[test]
+    fn read_input_lut_matrix_shaper_rgb() {
+        let mut p = build_rgb_matrix_shaper_profile();
+        let data = p.save_to_mem().unwrap();
+        let mut p2 = Profile::open_mem(&data).unwrap();
+
+        // Should construct a matrix-shaper pipeline (TRC + Matrix)
+        let pipe = p2.read_input_lut(0).unwrap(); // Perceptual
+        assert_eq!(pipe.input_channels(), 3);
+        assert_eq!(pipe.output_channels(), 3);
+
+        // Evaluate white: RGB(1,1,1) should map close to D50 XYZ
+        let input = [1.0f32, 1.0, 1.0];
+        let mut output = [0.0f32; 3];
+        pipe.eval_float(&input, &mut output);
+        // output should be approximately D50 in 0..1 encoded XYZ
+        assert!(output[0] > 0.4 && output[0] < 0.6);
+        assert!(output[1] > 0.4 && output[1] < 0.6);
+        assert!(output[2] > 0.3 && output[2] < 0.5);
+    }
+
+    #[test]
+    fn read_input_lut_gray() {
+        let mut p = build_gray_profile();
+        let data = p.save_to_mem().unwrap();
+        let mut p2 = Profile::open_mem(&data).unwrap();
+
+        let pipe = p2.read_input_lut(0).unwrap();
+        assert_eq!(pipe.input_channels(), 1);
+        assert_eq!(pipe.output_channels(), 3);
+    }
+
+    #[test]
+    fn read_output_lut_matrix_shaper_rgb() {
+        let mut p = build_rgb_matrix_shaper_profile();
+        let data = p.save_to_mem().unwrap();
+        let mut p2 = Profile::open_mem(&data).unwrap();
+
+        let pipe = p2.read_output_lut(0).unwrap();
+        assert_eq!(pipe.input_channels(), 3);
+        assert_eq!(pipe.output_channels(), 3);
+
+        // Evaluate D50 XYZ → should give approximately RGB(1,1,1)
+        // D50 in encoded XYZ (0..1 range): x/2, y/2, z/2 approximately
+        let input = [0.48f32, 0.50, 0.41];
+        let mut output = [0.0f32; 3];
+        pipe.eval_float(&input, &mut output);
+        // Should be close to white
+        assert!(output[0] > 0.8);
+        assert!(output[1] > 0.8);
+        assert!(output[2] > 0.8);
+    }
+
+    #[test]
+    fn read_output_lut_gray() {
+        let mut p = build_gray_profile();
+        let data = p.save_to_mem().unwrap();
+        let mut p2 = Profile::open_mem(&data).unwrap();
+
+        let pipe = p2.read_output_lut(0).unwrap();
+        assert_eq!(pipe.input_channels(), 3);
+        assert_eq!(pipe.output_channels(), 1);
     }
 }
