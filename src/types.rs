@@ -747,6 +747,76 @@ icc_enum! {
 }
 
 impl ColorSpaceSignature {
+    /// Convert ICC color space signature to PixelFormat colorspace index (PT_*).
+    /// C版: `_cmsLCMScolorSpace`
+    pub fn to_pixel_type(&self) -> u32 {
+        match self {
+            Self::GrayData => PT_GRAY,
+            Self::RgbData => PT_RGB,
+            Self::CmyData => PT_CMY,
+            Self::CmykData => PT_CMYK,
+            Self::YCbCrData => PT_YCBCR,
+            Self::YxyData => PT_YXY,
+            Self::XyzData => PT_XYZ,
+            Self::LabData => PT_LAB,
+            Self::LuvKData => PT_YUVK,
+            Self::HsvData => PT_HSV,
+            Self::HlsData => PT_HLS,
+            Self::LuvData => PT_YUV,
+            Self::Mch1Data | Self::Color1 => PT_MCH1,
+            Self::Mch2Data | Self::Color2 => PT_MCH2,
+            Self::Mch3Data | Self::Color3 => PT_MCH3,
+            Self::Mch4Data | Self::Color4 => PT_MCH4,
+            Self::Mch5Data | Self::Color5 => PT_MCH5,
+            Self::Mch6Data | Self::Color6 => PT_MCH6,
+            Self::Mch7Data | Self::Color7 => PT_MCH7,
+            Self::Mch8Data | Self::Color8 => PT_MCH8,
+            Self::Mch9Data | Self::Color9 => PT_MCH9,
+            Self::MchAData | Self::Color10 => PT_MCH10,
+            Self::MchBData | Self::Color11 => PT_MCH11,
+            Self::MchCData | Self::Color12 => PT_MCH12,
+            Self::MchDData | Self::Color13 => PT_MCH13,
+            Self::MchEData | Self::Color14 => PT_MCH14,
+            Self::MchFData | Self::Color15 => PT_MCH15,
+            Self::NamedData => PT_ANY,
+        }
+    }
+
+    /// Convert PixelFormat colorspace index (PT_*) to ICC color space signature.
+    /// C版: `_cmsICCcolorSpace`
+    pub fn from_pixel_type(pt: u32) -> Option<Self> {
+        match pt {
+            PT_GRAY => Some(Self::GrayData),
+            PT_RGB => Some(Self::RgbData),
+            PT_CMY => Some(Self::CmyData),
+            PT_CMYK => Some(Self::CmykData),
+            PT_YCBCR => Some(Self::YCbCrData),
+            PT_YUV => Some(Self::LuvData),
+            PT_XYZ => Some(Self::XyzData),
+            PT_LAB => Some(Self::LabData),
+            PT_YUVK => Some(Self::LuvKData),
+            PT_HSV => Some(Self::HsvData),
+            PT_HLS => Some(Self::HlsData),
+            PT_YXY => Some(Self::YxyData),
+            PT_MCH1 => Some(Self::Mch1Data),
+            PT_MCH2 => Some(Self::Mch2Data),
+            PT_MCH3 => Some(Self::Mch3Data),
+            PT_MCH4 => Some(Self::Mch4Data),
+            PT_MCH5 => Some(Self::Mch5Data),
+            PT_MCH6 => Some(Self::Mch6Data),
+            PT_MCH7 => Some(Self::Mch7Data),
+            PT_MCH8 => Some(Self::Mch8Data),
+            PT_MCH9 => Some(Self::Mch9Data),
+            PT_MCH10 => Some(Self::MchAData),
+            PT_MCH11 => Some(Self::MchBData),
+            PT_MCH12 => Some(Self::MchCData),
+            PT_MCH13 => Some(Self::MchDData),
+            PT_MCH14 => Some(Self::MchEData),
+            PT_MCH15 => Some(Self::MchFData),
+            _ => None,
+        }
+    }
+
     /// Return the number of channels for a given color space.
     /// C版: `cmsChannelsOfColorSpace`
     pub fn channels(&self) -> u32 {
