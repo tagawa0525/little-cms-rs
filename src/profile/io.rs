@@ -1379,7 +1379,17 @@ impl Profile {
         })?;
         pipe.insert_stage(StageLoc::AtEnd, curve_stage);
 
-        let flat: Vec<f64> = mat.0.iter().flat_map(|row| row.0.iter().copied()).collect();
+        let flat = [
+            mat.0[0].0[0],
+            mat.0[0].0[1],
+            mat.0[0].0[2],
+            mat.0[1].0[0],
+            mat.0[1].0[1],
+            mat.0[1].0[2],
+            mat.0[2].0[0],
+            mat.0[2].0[1],
+            mat.0[2].0[2],
+        ];
         let matrix_stage = Stage::new_matrix(3, 3, &flat, None).ok_or_else(|| CmsError {
             code: ErrorCode::Internal,
             message: "Failed to create RGB→XYZ matrix".to_string(),
@@ -1472,7 +1482,17 @@ impl Profile {
             pipe.insert_stage(StageLoc::AtEnd, lab_stage);
         }
 
-        let flat: Vec<f64> = inv.0.iter().flat_map(|row| row.0.iter().copied()).collect();
+        let flat = [
+            inv.0[0].0[0],
+            inv.0[0].0[1],
+            inv.0[0].0[2],
+            inv.0[1].0[0],
+            inv.0[1].0[1],
+            inv.0[1].0[2],
+            inv.0[2].0[0],
+            inv.0[2].0[1],
+            inv.0[2].0[2],
+        ];
         let matrix_stage = Stage::new_matrix(3, 3, &flat, None).ok_or_else(|| CmsError {
             code: ErrorCode::Internal,
             message: "Failed to create XYZ→RGB matrix".to_string(),
