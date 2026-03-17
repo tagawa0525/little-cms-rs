@@ -13,33 +13,33 @@ Phase 4d でプロファイル単体からの pipeline 構築（`read_input_lut`
 
 ## 変更対象ファイル
 
-| ファイル                 | 操作                                    |
-| ------------------------ | --------------------------------------- |
-| `src/transform/mod.rs`   | 新規モジュール宣言                      |
-| `src/transform/cnvrt.rs` | パイプライン構築ロジック                |
-| `src/types.rs`           | `ColorSpaceSignature::channels()` 追加  |
-| `src/lib.rs`             | `transform` モジュール宣言              |
+| ファイル                 | 操作                                   |
+| ------------------------ | -------------------------------------- |
+| `src/transform/mod.rs`   | 新規モジュール宣言                     |
+| `src/transform/cnvrt.rs` | パイプライン構築ロジック               |
+| `src/types.rs`           | `ColorSpaceSignature::channels()` 追加 |
+| `src/lib.rs`             | `transform` モジュール宣言             |
 
 ## 実装する関数
 
 ### ColorSpaceSignature ユーティリティ（types.rs）
 
-| 関数         | C版                        | 内容                          |
-| ------------ | -------------------------- | ----------------------------- |
-| `channels()` | `cmsChannelsOfColorSpace`  | 色空間のチャネル数を返す      |
+| 関数         | C版                       | 内容                     |
+| ------------ | ------------------------- | ------------------------ |
+| `channels()` | `cmsChannelsOfColorSpace` | 色空間のチャネル数を返す |
 
 ### cnvrt.rs
 
-| 関数                        | C版                        | 内容                                  |
-| --------------------------- | -------------------------- | ------------------------------------- |
-| `compute_absolute_intent`   | `ComputeAbsoluteIntent`    | Abs. colorimetric の行列計算          |
-| `compute_bpc`               | `ComputeBlackPointComp..`  | BPC 行列+オフセット計算               |
-| `is_empty_layer`            | `IsEmptyLayer`             | 行列+オフセットが恒等写像か判定       |
-| `compute_conversion`        | `ComputeConversion`        | プロファイル間変換レイヤ計算          |
-| `add_conversion`            | `AddConversion`            | PCS 不一致ハンドリング（Lab<->XYZ）   |
-| `color_space_is_compatible` | `ColorSpaceIsCompatible`   | PCS 互換性チェック                    |
-| `default_icc_intents`       | `DefaultICCintents`        | 標準 ICC インテントによるリンク       |
-| `link_profiles`             | `_cmsLinkProfiles`         | エントリポイント（BPC 調整+dispatch） |
+| 関数                        | C版                       | 内容                                  |
+| --------------------------- | ------------------------- | ------------------------------------- |
+| `compute_absolute_intent`   | `ComputeAbsoluteIntent`   | Abs. colorimetric の行列計算          |
+| `compute_bpc`               | `ComputeBlackPointComp..` | BPC 行列+オフセット計算               |
+| `is_empty_layer`            | `IsEmptyLayer`            | 行列+オフセットが恒等写像か判定       |
+| `compute_conversion`        | `ComputeConversion`       | プロファイル間変換レイヤ計算          |
+| `add_conversion`            | `AddConversion`           | PCS 不一致ハンドリング（Lab<->XYZ）   |
+| `color_space_is_compatible` | `ColorSpaceIsCompatible`  | PCS 互換性チェック                    |
+| `default_icc_intents`       | `DefaultICCintents`       | 標準 ICC インテントによるリンク       |
+| `link_profiles`             | `_cmsLinkProfiles`        | エントリポイント（BPC 調整+dispatch） |
 
 ## Scope（本PRでの実装範囲）
 
