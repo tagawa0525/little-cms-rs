@@ -746,6 +746,14 @@ icc_enum! {
     }
 }
 
+impl ColorSpaceSignature {
+    /// Return the number of channels for a given color space.
+    /// C版: `cmsChannelsOfColorSpace`
+    pub fn channels(&self) -> u32 {
+        todo!("Phase 5a: ColorSpaceSignature::channels")
+    }
+}
+
 icc_enum! {
     /// ICC profile class signatures.
     pub enum ProfileClassSignature {
