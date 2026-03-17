@@ -1,6 +1,6 @@
 # Phase 5b: xform.rs Transform構造体
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmsxform.c`（1,475行）
 **Rust見積**: ~350行（impl）+ ~200行（tests）
 **ブランチ**: `feat/phase5b-xform`
