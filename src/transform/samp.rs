@@ -13,13 +13,8 @@ use super::xform::{FLAGS_NOCACHE, FLAGS_NOOPTIMIZE};
 // Constants
 // ============================================================================
 
-/// ICC v4 perceptual black point (D50-relative XYZ).
-pub const PERCEPTUAL_BLACK_X: f64 = 0.00336;
-pub const PERCEPTUAL_BLACK_Y: f64 = 0.0034731;
-pub const PERCEPTUAL_BLACK_Z: f64 = 0.00287;
-
-/// Perceptual black as CieXyz.
-pub const PERCEPTUAL_BLACK: CieXyz = CieXyz {
+/// Perceptual black as CieXyz (re-export from types for convenience).
+const PERCEPTUAL_BLACK: CieXyz = CieXyz {
     x: PERCEPTUAL_BLACK_X,
     y: PERCEPTUAL_BLACK_Y,
     z: PERCEPTUAL_BLACK_Z,
