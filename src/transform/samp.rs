@@ -132,12 +132,13 @@ fn black_point_as_darker_colorant(profile: &mut Profile, intent: u32) -> Option<
     )
     .ok()?;
 
-    // Prepare input: darkest colorant (big-endian 16-bit)
+    // Prepare input: darkest colorant (native-endian 16-bit)
     let mut input = vec![0u8; device_stride];
     for (i, &val) in black[..n_chan as usize].iter().enumerate() {
+        let bytes = val.to_ne_bytes();
         let offset = i * 2;
-        input[offset] = (val >> 8) as u8;
-        input[offset + 1] = (val & 0xFF) as u8;
+        input[offset] = bytes[0];
+        input[offset + 1] = bytes[1];
     }
 
     let mut output = [0u8; 6]; // Lab16 = 3 channels × 2 bytes
@@ -190,20 +191,16 @@ fn black_point_using_perceptual(profile: &mut Profile) -> Option<CieXyz> {
     )
     .ok()?;
 
-    // Transform black Lab (L=0, a=0, b=0)
+    // Transform black Lab (L=0, a=0, b=0) — native-endian 16-bit
     let black_lab = pcs::float_to_pcs_encoded_lab(&CieLab {
         l: 0.0,
         a: 0.0,
         b: 0.0,
     });
-    let input = [
-        (black_lab[0] >> 8) as u8,
-        (black_lab[0] & 0xFF) as u8,
-        (black_lab[1] >> 8) as u8,
-        (black_lab[1] & 0xFF) as u8,
-        (black_lab[2] >> 8) as u8,
-        (black_lab[2] & 0xFF) as u8,
-    ];
+    let b0 = black_lab[0].to_ne_bytes();
+    let b1 = black_lab[1].to_ne_bytes();
+    let b2 = black_lab[2].to_ne_bytes();
+    let input = [b0[0], b0[1], b1[0], b1[1], b2[0], b2[1]];
     let mut output = [0u8; 6];
     xform.do_transform(&input, &mut output, 1);
 
