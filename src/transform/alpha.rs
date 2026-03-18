@@ -156,7 +156,7 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn alpha_copy_rgba8_to_rgba8() {
         // RGBA 8-bit: alpha should be copied as-is
         let input: [u8; 8] = [255, 0, 0, 128, 0, 255, 0, 200]; // 2 pixels
@@ -179,7 +179,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn alpha_no_copy_when_extra_mismatch() {
         // RGBA_8 → RGB_8: different extra count, no copy
         let input: [u8; 4] = [255, 0, 0, 128];
@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn alpha_no_copy_when_no_extra() {
         let input: [u8; 3] = [255, 128, 64];
         let mut output = [0u8; 3];
@@ -204,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn alpha_copy_16bit_to_8bit() {
         // RGBA_16 → RGBA_8: 16-bit alpha converted to 8-bit
         let alpha_16: u16 = 0x8000; // ~50%
@@ -234,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn alpha_copy_8bit_to_16bit() {
         // RGBA_8 → RGBA_16: 8-bit alpha expanded to 16-bit
         let input: [u8; 4] = [255, 0, 0, 200]; // RGBA_8
@@ -257,7 +257,7 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn transform_copies_alpha_with_flag() {
         use super::super::xform::{FLAGS_COPY_ALPHA, Transform};
 
@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn transform_no_alpha_without_flag() {
         use super::super::xform::Transform;
 
