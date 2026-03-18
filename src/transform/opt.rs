@@ -66,8 +66,8 @@ fn remove_inverse_pairs(pipeline: &mut Pipeline) {
         let stages = pipeline.stages();
         let mut found = None;
         for i in 0..stages.len().saturating_sub(1) {
-            let a = stages[i].stage_type();
-            let b = stages[i + 1].stage_type();
+            let a = stages[i].implements();
+            let b = stages[i + 1].implements();
             if INVERSE_PAIRS.iter().any(|&(x, y)| x == a && y == b) {
                 found = Some(i);
                 break;
