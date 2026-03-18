@@ -50,11 +50,15 @@ pub const REC709_PRIMARIES: CieXyYTriple = CieXyYTriple {
 fn set_text_tags(profile: &mut Profile, description: &str) {
     let mut desc_mlu = Mlu::new();
     desc_mlu.set_ascii("en", "US", description);
-    let _ = profile.write_tag(TagSignature::ProfileDescription, TagData::Mlu(desc_mlu));
+    profile
+        .write_tag(TagSignature::ProfileDescription, TagData::Mlu(desc_mlu))
+        .expect("ProfileDescription tag write should not fail");
 
     let mut copy_mlu = Mlu::new();
     copy_mlu.set_ascii("en", "US", "No copyright, use freely");
-    let _ = profile.write_tag(TagSignature::Copyright, TagData::Mlu(copy_mlu));
+    profile
+        .write_tag(TagSignature::Copyright, TagData::Mlu(copy_mlu))
+        .expect("Copyright tag write should not fail");
 }
 
 /// Build sRGB parametric gamma curve (type 4).
