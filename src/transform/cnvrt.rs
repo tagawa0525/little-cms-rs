@@ -243,20 +243,21 @@ fn compute_conversion(
         m = compute_absolute_intent(adaptation_state, &wp_in, &wp_out);
     }
 
-    // Black Point Compensation
+    // Black Point Compensation: only apply when both sides are detected
     if bpc {
-        let bp_in =
-            super::samp::detect_black_point(&mut profiles[i - 1], intent).unwrap_or_default();
-        let bp_out =
-            super::samp::detect_dest_black_point(&mut profiles[i], intent).unwrap_or_default();
-        let (bpc_m, bpc_off) = compute_bpc(&bp_in, &bp_out);
-        // Combine: M_result = M_bpc * M_existing, off_result = M_bpc * off + off_bpc
-        m = bpc_m * m;
-        off = Vec3([
-            bpc_m.0[0].0[0] * off.0[0] + bpc_off.0[0],
-            bpc_m.0[1].0[1] * off.0[1] + bpc_off.0[1],
-            bpc_m.0[2].0[2] * off.0[2] + bpc_off.0[2],
-        ]);
+        if let (Some(bp_in), Some(bp_out)) = (
+            super::samp::detect_black_point(&mut profiles[i - 1], intent),
+            super::samp::detect_dest_black_point(&mut profiles[i], intent),
+        ) {
+            let (bpc_m, bpc_off) = compute_bpc(&bp_in, &bp_out);
+            // Combine: M_result = M_bpc * M_existing, off_result = M_bpc * off + off_bpc
+            m = bpc_m * m;
+            off = Vec3([
+                bpc_m.0[0].0[0] * off.0[0] + bpc_off.0[0],
+                bpc_m.0[1].0[1] * off.0[1] + bpc_off.0[1],
+                bpc_m.0[2].0[2] * off.0[2] + bpc_off.0[2],
+            ]);
+        }
     }
 
     // Offset adjustment for 1.15 fixed point encoding
