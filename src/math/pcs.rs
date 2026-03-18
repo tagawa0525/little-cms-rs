@@ -201,6 +201,48 @@ pub fn endpoints_by_space(space: ColorSpaceSignature) -> Option<([u16; 16], [u16
     }
 }
 
+/// Return a reasonable number of grid points for a CLUT, given the number
+/// of input channels and transform flags.
+///
+/// C版: `_cmsReasonableGridpointsByColorspace`
+pub fn reasonable_gridpoints(n_channels: u32, flags: u32) -> u32 {
+    // Grid points explicitly specified in flags bits 16..23?
+    if flags & 0x00FF_0000 != 0 {
+        return ((flags >> 16) & 0xFF).max(2);
+    }
+
+    // High-resolution precalc
+    if flags & 0x0400 != 0 {
+        if n_channels > 4 {
+            return 7;
+        }
+        if n_channels == 4 {
+            return 23;
+        }
+        return 49;
+    }
+
+    // Low-resolution precalc
+    if flags & 0x0800 != 0 {
+        if n_channels > 4 {
+            return 6;
+        }
+        if n_channels == 1 {
+            return 33;
+        }
+        return 17;
+    }
+
+    // Defaults
+    if n_channels > 4 {
+        return 7;
+    }
+    if n_channels == 4 {
+        return 17;
+    }
+    33
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
