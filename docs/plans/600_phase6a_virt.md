@@ -63,8 +63,7 @@ Phase 5b（xform.rs: Transform構造体）まで完了し、end-to-end の色変
    b) 行列の列をRed/Green/Blue MatrixColumnタグに分解・書き込み
    c) Chromaticityタグ書き込み
 6. TransferFunction指定時:
-   a) Red/Green/Blue TRCタグ書き込み
-   b) 同一カーブの場合は link_tag でリンク
+   a) Red/Green/Blue TRCタグ書き込み（個別に書き込み）
 ```
 
 ### Profile::new_srgb()
