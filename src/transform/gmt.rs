@@ -215,11 +215,12 @@ pub fn detect_rgb_profile_gamma(profile: &mut Profile, threshold: f64) -> f64 {
         }
     };
 
+    // Use 16-bit XYZ output (mixed float/int formats not supported)
     let xform = match super::xform::Transform::new(
         profile_copy,
         TYPE_RGB_16,
         xyz_profile,
-        TYPE_XYZ_DBL,
+        TYPE_XYZ_16,
         1, // relative colorimetric
         FLAGS_NOOPTIMIZE,
     ) {
@@ -227,16 +228,13 @@ pub fn detect_rgb_profile_gamma(profile: &mut Profile, threshold: f64) -> f64 {
         Err(_) => return -1.0,
     };
 
-    let in_stride = crate::pipeline::pack::pixel_size(TYPE_RGB_16);
-    let out_stride = crate::pipeline::pack::pixel_size(TYPE_XYZ_DBL);
-
     // Sample 256 gray levels
     let mut y_values = [0.0f32; 256];
     for i in 0..256u16 {
         let val16 = ((i as u32 * 65535 + 128) / 255) as u16; // FROM_8_TO_16
         let bytes = val16.to_ne_bytes();
 
-        let mut in_buf = vec![0u8; in_stride];
+        let mut in_buf = [0u8; 6]; // RGB_16 = 3 × 2 bytes
         // R = G = B = val16
         in_buf[0] = bytes[0];
         in_buf[1] = bytes[1];
@@ -245,21 +243,13 @@ pub fn detect_rgb_profile_gamma(profile: &mut Profile, threshold: f64) -> f64 {
         in_buf[4] = bytes[0];
         in_buf[5] = bytes[1];
 
-        let mut out_buf = vec![0u8; out_stride];
+        let mut out_buf = [0u8; 6]; // XYZ_16 = 3 × 2 bytes
         xform.do_transform(&in_buf, &mut out_buf, 1);
 
-        // Extract Y from XYZ_DBL (second f64, offset = 8 bytes)
-        let y = f64::from_ne_bytes([
-            out_buf[8],
-            out_buf[9],
-            out_buf[10],
-            out_buf[11],
-            out_buf[12],
-            out_buf[13],
-            out_buf[14],
-            out_buf[15],
-        ]);
-        y_values[i as usize] = y as f32;
+        // Extract Y from XYZ_16 (second u16) and decode to float
+        // ICC PCS XYZ: u1Fixed15Number, Y = encoded / 32768.0
+        let y_encoded = u16::from_ne_bytes([out_buf[2], out_buf[3]]);
+        y_values[i as usize] = (y_encoded as f64 / 32768.0) as f32;
     }
 
     // Build tone curve from Y values and estimate gamma
@@ -289,7 +279,7 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn desaturate_in_gamut() {
         let mut lab = CieLab {
             l: 50.0,
@@ -303,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn desaturate_negative_l() {
         let mut lab = CieLab {
             l: -5.0,
@@ -318,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn desaturate_clips_l_above_100() {
         let mut lab = CieLab {
             l: 120.0,
@@ -331,7 +321,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn desaturate_clips_out_of_gamut_a() {
         let mut lab = CieLab {
             l: 50.0,
@@ -345,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn desaturate_zero_a_clips_b() {
         let mut lab = CieLab {
             l: 50.0,
@@ -362,7 +352,7 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn detect_tac_non_output_returns_zero() {
         // sRGB is Display class, not Output
         let mut p = roundtrip(&mut Profile::new_srgb());
@@ -375,7 +365,7 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn detect_gamma_srgb() {
         let mut p = roundtrip(&mut Profile::new_srgb());
         let gamma = detect_rgb_profile_gamma(&mut p, 0.1);
@@ -384,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn detect_gamma_linear() {
         let gamma_curve = crate::curves::gamma::ToneCurve::build_gamma(1.0).unwrap();
         let trc = [gamma_curve.clone(), gamma_curve.clone(), gamma_curve];
@@ -417,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn detect_gamma_non_rgb_returns_minus1() {
         // Lab profile is not RGB
         let mut p = roundtrip(&mut Profile::new_lab4(None));
