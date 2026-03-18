@@ -1,6 +1,6 @@
 # Phase 5d: opt.rs パイプライン最適化
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmsopt.c`（1,992行）
 **Rust見積**: ~600行（impl）+ ~200行（tests）
 **ブランチ**: `feat/phase5d-opt`
