@@ -1,6 +1,6 @@
 # Phase 5c: samp.rs 黒点検出
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmssamp.c`（599行）
 **Rust見積**: ~250行（impl）+ ~150行（tests）
 **ブランチ**: `feat/phase5c-samp`
