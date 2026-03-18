@@ -244,20 +244,20 @@ fn compute_conversion(
     }
 
     // Black Point Compensation: only apply when both sides are detected
-    if bpc {
-        if let (Some(bp_in), Some(bp_out)) = (
+    if bpc
+        && let (Some(bp_in), Some(bp_out)) = (
             super::samp::detect_black_point(&mut profiles[i - 1], intent),
             super::samp::detect_dest_black_point(&mut profiles[i], intent),
-        ) {
-            let (bpc_m, bpc_off) = compute_bpc(&bp_in, &bp_out);
-            // Combine: M_result = M_bpc * M_existing, off_result = M_bpc * off + off_bpc
-            m = bpc_m * m;
-            off = Vec3([
-                bpc_m.0[0].0[0] * off.0[0] + bpc_off.0[0],
-                bpc_m.0[1].0[1] * off.0[1] + bpc_off.0[1],
-                bpc_m.0[2].0[2] * off.0[2] + bpc_off.0[2],
-            ]);
-        }
+        )
+    {
+        let (bpc_m, bpc_off) = compute_bpc(&bp_in, &bp_out);
+        // Combine: M_result = M_bpc * M_existing, off_result = M_bpc * off + off_bpc
+        m = bpc_m * m;
+        off = Vec3([
+            bpc_m.0[0].0[0] * off.0[0] + bpc_off.0[0],
+            bpc_m.0[1].0[1] * off.0[1] + bpc_off.0[1],
+            bpc_m.0[2].0[2] * off.0[2] + bpc_off.0[2],
+        ]);
     }
 
     // Offset adjustment for 1.15 fixed point encoding
