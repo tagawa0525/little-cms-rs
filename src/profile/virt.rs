@@ -159,8 +159,22 @@ impl Profile {
 
         set_text_tags(&mut p, "gray built-in");
 
+        // Media white point is always D50 in the profile (same as new_rgb)
+        let d50 = wtpnt::d50_xyz();
+        let _ = p.write_tag(TagSignature::MediaWhitePoint, TagData::Xyz(d50));
+
+        // Chromatic adaptation matrix (white_point → D50)
         let wp_xyz = pcs::xyy_to_xyz(white_point);
-        let _ = p.write_tag(TagSignature::MediaWhitePoint, TagData::Xyz(wp_xyz));
+        if let Some(chad) = wtpnt::adaptation_matrix(None, &wp_xyz, &d50) {
+            let arr: Vec<f64> = (0..3)
+                .flat_map(|r| (0..3).map(move |c| chad.0[r].0[c]))
+                .collect();
+            let _ = p.write_tag(
+                TagSignature::ChromaticAdaptation,
+                TagData::S15Fixed16Array(arr),
+            );
+        }
+
         let _ = p.write_tag(
             TagSignature::GrayTRC,
             TagData::Curve(transfer_function.clone()),
