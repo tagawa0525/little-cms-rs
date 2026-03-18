@@ -208,7 +208,7 @@ pub fn endpoints_by_space(space: ColorSpaceSignature) -> Option<([u16; 16], [u16
 pub fn reasonable_gridpoints(n_channels: u32, flags: u32) -> u32 {
     // Grid points explicitly specified in flags bits 16..23?
     if flags & 0x00FF_0000 != 0 {
-        return (flags >> 16) & 0xFF;
+        return ((flags >> 16) & 0xFF).max(2);
     }
 
     // High-resolution precalc
