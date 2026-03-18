@@ -278,14 +278,8 @@ impl Profile {
         // Uses a 3→1 CLUT that extracts L* (first component).
         // ICC LutBtoA format requires CLUT for channel reduction.
         if let Some(mut lut) = Pipeline::new(3, 1) {
-            let zero_curve =
-                ToneCurve::build_tabulated_16(&[0, 0]).expect("2-point zero curve should succeed");
-
-            // B curves (3-channel, input side)
-            if let Some(stage) = Stage::new_tone_curves(
-                Some(&[zero_curve.clone(), zero_curve.clone(), zero_curve.clone()]),
-                3,
-            ) {
+            // B curves (3-channel identity, input side)
+            if let Some(stage) = Stage::new_identity_curves(3) {
                 lut.insert_stage(StageLoc::AtEnd, stage);
             }
 
@@ -302,8 +296,8 @@ impl Profile {
                 lut.insert_stage(StageLoc::AtEnd, clut);
             }
 
-            // A curves (1-channel, output side)
-            if let Some(stage) = Stage::new_tone_curves(Some(&[zero_curve]), 1) {
+            // A curves (1-channel identity, output side)
+            if let Some(stage) = Stage::new_identity_curves(1) {
                 lut.insert_stage(StageLoc::AtEnd, stage);
             }
 
