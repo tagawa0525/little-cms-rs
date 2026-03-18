@@ -39,9 +39,25 @@ pub fn handle_extra_channels(
         return;
     }
 
+    // Determine if extra channels come before color channels
+    // (matches pack.rs: extra_first = doswap ^ swapfirst)
+    let in_extra_first = (input_format.doswap() != 0) ^ (input_format.swapfirst() != 0);
+    let out_extra_first = (output_format.doswap() != 0) ^ (output_format.swapfirst() != 0);
+
     // Offset to first extra channel within each pixel
-    let in_extra_offset = in_channels * in_bytes;
-    let out_extra_offset = out_channels * out_bytes;
+    let in_extra_offset = if in_extra_first {
+        0 // extra channels at the beginning
+    } else {
+        in_channels * in_bytes // extra channels after color
+    };
+    let out_extra_offset = if out_extra_first {
+        0
+    } else {
+        out_channels * out_bytes
+    };
+
+    let in_swap = input_format.endian16() != 0 && in_bytes == 2;
+    let out_swap = output_format.endian16() != 0 && out_bytes == 2;
 
     let max_pixels = (input.len() / in_pixel_size)
         .min(output.len() / out_pixel_size)
@@ -58,18 +74,42 @@ pub fn handle_extra_channels(
             copy_channel(
                 &input[in_off..],
                 in_bytes,
+                in_swap,
                 &mut output[out_off..],
                 out_bytes,
+                out_swap,
             );
         }
     }
 }
 
-/// Copy a single channel value with byte-width conversion.
-fn copy_channel(src: &[u8], src_bytes: usize, dst: &mut [u8], dst_bytes: usize) {
+/// Copy a single channel value with byte-width and endian conversion.
+fn copy_channel(
+    src: &[u8],
+    src_bytes: usize,
+    src_swap: bool,
+    dst: &mut [u8],
+    dst_bytes: usize,
+    dst_swap: bool,
+) {
+    // Read the source value (handling endian swap for 16-bit)
+    let read_u16 = |buf: &[u8], swap: bool| -> u16 {
+        let v = u16::from_ne_bytes([buf[0], buf[1]]);
+        if swap { v.swap_bytes() } else { v }
+    };
+
     if src_bytes == dst_bytes {
-        // Same width: direct copy
-        dst[..src_bytes].copy_from_slice(&src[..src_bytes]);
+        if src_bytes == 2 && (src_swap || dst_swap) {
+            // 16-bit with potential endian difference: read→swap→write
+            let v = read_u16(src, src_swap);
+            let out = if dst_swap { v.swap_bytes() } else { v };
+            let b = out.to_ne_bytes();
+            dst[0] = b[0];
+            dst[1] = b[1];
+        } else {
+            // Same width, no endian issues: direct copy
+            dst[..src_bytes].copy_from_slice(&src[..src_bytes]);
+        }
         return;
     }
 
@@ -78,55 +118,22 @@ fn copy_channel(src: &[u8], src_bytes: usize, dst: &mut [u8], dst_bytes: usize) 
         (1, 2) => {
             let v = src[0] as u16;
             let v16 = v | (v << 8); // equivalent to v * 257
-            let bytes = v16.to_ne_bytes();
+            let out = if dst_swap { v16.swap_bytes() } else { v16 };
+            let bytes = out.to_ne_bytes();
             dst[0] = bytes[0];
             dst[1] = bytes[1];
         }
         // 16-bit → 8-bit: (v + 128) / 257
         (2, 1) => {
-            let v = u16::from_ne_bytes([src[0], src[1]]);
+            let v = read_u16(src, src_swap);
             dst[0] = ((v as u32 + 128) / 257) as u8;
         }
-        // Other conversions: read as normalized f64, write back
+        // Other conversions: not supported for extra channels
         _ => {
-            let normalized = read_normalized(src, src_bytes);
-            write_normalized(dst, dst_bytes, normalized);
+            // Direct byte copy as fallback (same-width only reliable)
+            let n = src_bytes.min(dst_bytes);
+            dst[..n].copy_from_slice(&src[..n]);
         }
-    }
-}
-
-/// Read a channel value as a normalized f64 in [0, 1].
-fn read_normalized(src: &[u8], bytes: usize) -> f64 {
-    match bytes {
-        1 => src[0] as f64 / 255.0,
-        2 => u16::from_ne_bytes([src[0], src[1]]) as f64 / 65535.0,
-        4 => f32::from_ne_bytes([src[0], src[1], src[2], src[3]]) as f64,
-        8 => f64::from_ne_bytes([
-            src[0], src[1], src[2], src[3], src[4], src[5], src[6], src[7],
-        ]),
-        _ => 0.0,
-    }
-}
-
-/// Write a normalized f64 [0, 1] as a channel value.
-fn write_normalized(dst: &mut [u8], bytes: usize, val: f64) {
-    match bytes {
-        1 => dst[0] = (val * 255.0 + 0.5).clamp(0.0, 255.0) as u8,
-        2 => {
-            let v = (val * 65535.0 + 0.5).clamp(0.0, 65535.0) as u16;
-            let b = v.to_ne_bytes();
-            dst[0] = b[0];
-            dst[1] = b[1];
-        }
-        4 => {
-            let b = (val as f32).to_ne_bytes();
-            dst[..4].copy_from_slice(&b);
-        }
-        8 => {
-            let b = val.to_ne_bytes();
-            dst[..8].copy_from_slice(&b);
-        }
-        _ => {}
     }
 }
 
