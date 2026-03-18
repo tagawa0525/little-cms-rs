@@ -311,7 +311,13 @@ pub fn default_icc_intents(
         }
 
         let lut = if is_device_link {
-            // Devicelink: read the AToB tag directly
+            // Abstract profiles after the first need PCS conversion.
+            // C版: cmscnvrt.c DefaultICCintents special case for Abstract at i > 0
+            if class_sig == ProfileClassSignature::Abstract && i > 0 {
+                let (m, off) =
+                    compute_conversion(profiles, i, intent, bpc[i], adaptation_states[i])?;
+                add_conversion(&mut result, current_color_space, color_space_in, &m, &off)?;
+            }
             profiles[i].read_input_lut(intent)?
         } else if is_input {
             profiles[i].read_input_lut(intent)?
