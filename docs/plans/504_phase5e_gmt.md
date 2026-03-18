@@ -1,6 +1,6 @@
 # Phase 5e: gmt.rs ガマットマッピング
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmsgmt.c`（662行）
 **Rust見積**: ~350行（impl）+ ~150行（tests）
 **ブランチ**: `feat/phase5e-gmt`
