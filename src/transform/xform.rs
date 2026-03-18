@@ -16,9 +16,15 @@ use crate::types::{MAX_CHANNELS, PixelFormat};
 // Transform flags
 // ============================================================================
 
+pub const FLAGS_CLUT_POST_LINEARIZATION: u32 = 0x0001;
+pub const FLAGS_FORCE_CLUT: u32 = 0x0002;
+pub const FLAGS_NOWHITEONWHITEFIXUP: u32 = 0x0004;
+pub const FLAGS_CLUT_PRE_LINEARIZATION: u32 = 0x0010;
 pub const FLAGS_NOCACHE: u32 = 0x0040;
 pub const FLAGS_NOOPTIMIZE: u32 = 0x0100;
 pub const FLAGS_NULLTRANSFORM: u32 = 0x0200;
+pub const FLAGS_HIGHRESPRECALC: u32 = 0x0400;
+pub const FLAGS_LOWRESPRECALC: u32 = 0x0800;
 pub const FLAGS_GAMUTCHECK: u32 = 0x1000;
 pub const FLAGS_SOFTPROOFING: u32 = 0x4000;
 pub const FLAGS_BLACKPOINTCOMPENSATION: u32 = 0x2000;
