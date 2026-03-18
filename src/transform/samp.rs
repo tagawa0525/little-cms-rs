@@ -110,8 +110,12 @@ fn black_point_as_darker_colorant(profile: &mut Profile, intent: u32) -> Option<
     let device_fmt = formatter_for_colorspace(profile, 2)?;
     let device_stride = pixel_size(device_fmt);
 
-    // Create Lab v2 output profile for transform
-    let mut lab_profile = {
+    // Create copies of profiles for the transform (avoids consuming the original)
+    let profile_copy = {
+        let data = profile.save_to_mem().ok()?;
+        Profile::open_mem(&data).ok()?
+    };
+    let lab_profile = {
         let mut p = Profile::new_lab2(None);
         let data = p.save_to_mem().ok()?;
         Profile::open_mem(&data).ok()?
@@ -119,20 +123,14 @@ fn black_point_as_darker_colorant(profile: &mut Profile, intent: u32) -> Option<
 
     // Create transform: device → Lab16
     let xform = super::xform::Transform::new(
-        std::mem::replace(profile, Profile::new_placeholder()),
+        profile_copy,
         device_fmt,
-        std::mem::replace(&mut lab_profile, Profile::new_placeholder()),
+        lab_profile,
         TYPE_LAB_16,
         intent,
         FLAGS_NOCACHE | FLAGS_NOOPTIMIZE,
-    );
-
-    // Restore profile (swap back)
-    // We can't do this cleanly with owned profiles, so rebuild from the transform result
-    let xform = match xform {
-        Ok(x) => x,
-        Err(_) => return None,
-    };
+    )
+    .ok()?;
 
     // Prepare input: darkest colorant (big-endian 16-bit)
     let mut input = vec![0u8; device_stride];
@@ -166,26 +164,25 @@ fn black_point_as_darker_colorant(profile: &mut Profile, intent: u32) -> Option<
 /// Detect black point by perceptual roundtrip of black.
 /// C版: `BlackPointUsingPerceptualBlack`
 fn black_point_using_perceptual(profile: &mut Profile) -> Option<CieXyz> {
-    // Create roundtrip: Lab → profile → Lab (perceptual intent)
-    let mut lab_in = {
+    // Create copies for the transform
+    let lab_in = {
         let mut p = Profile::new_lab4(None);
         let data = p.save_to_mem().ok()?;
         Profile::open_mem(&data).ok()?
     };
-    let mut lab_out = {
+    let profile_copy = {
+        let data = profile.save_to_mem().ok()?;
+        Profile::open_mem(&data).ok()?
+    };
+    let lab_out = {
         let mut p = Profile::new_lab4(None);
         let data = p.save_to_mem().ok()?;
         Profile::open_mem(&data).ok()?
     };
 
-    // 4-profile roundtrip: Lab → [rel col] → profile → [perceptual] → profile → [rel col] → Lab
-    // Simplified: Lab → profile → Lab with perceptual intent
+    // Lab → profile → Lab with perceptual intent
     let xform = super::xform::Transform::new_multiprofile(
-        &mut [
-            std::mem::replace(&mut lab_in, Profile::new_placeholder()),
-            std::mem::replace(profile, Profile::new_placeholder()),
-            std::mem::replace(&mut lab_out, Profile::new_placeholder()),
-        ],
+        &mut [lab_in, profile_copy, lab_out],
         TYPE_LAB_16,
         TYPE_LAB_16,
         0, // perceptual

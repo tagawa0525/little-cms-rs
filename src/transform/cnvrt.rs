@@ -229,7 +229,7 @@ fn compute_conversion(
     profiles: &mut [Profile],
     i: usize,
     intent: u32,
-    _bpc: bool,
+    bpc: bool,
     adaptation_state: f64,
 ) -> Result<(Mat3, Vec3), CmsError> {
     let mut m = Mat3::identity();
@@ -242,8 +242,22 @@ fn compute_conversion(
 
         m = compute_absolute_intent(adaptation_state, &wp_in, &wp_out);
     }
-    // BPC detection is deferred: cmsDetectBlackPoint not yet implemented.
-    // When implemented, BPC would compute black point scaling here.
+
+    // Black Point Compensation
+    if bpc {
+        let bp_in =
+            super::samp::detect_black_point(&mut profiles[i - 1], intent).unwrap_or_default();
+        let bp_out =
+            super::samp::detect_dest_black_point(&mut profiles[i], intent).unwrap_or_default();
+        let (bpc_m, bpc_off) = compute_bpc(&bp_in, &bp_out);
+        // Combine: M_result = M_bpc * M_existing, off_result = M_bpc * off + off_bpc
+        m = bpc_m * m;
+        off = Vec3([
+            bpc_m.0[0].0[0] * off.0[0] + bpc_off.0[0],
+            bpc_m.0[1].0[1] * off.0[1] + bpc_off.0[1],
+            bpc_m.0[2].0[2] * off.0[2] + bpc_off.0[2],
+        ]);
+    }
 
     // Offset adjustment for 1.15 fixed point encoding
     for k in 0..3 {
