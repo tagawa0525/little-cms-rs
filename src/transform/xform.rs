@@ -28,6 +28,7 @@ pub const FLAGS_LOWRESPRECALC: u32 = 0x0800;
 pub const FLAGS_GAMUTCHECK: u32 = 0x1000;
 pub const FLAGS_SOFTPROOFING: u32 = 0x4000;
 pub const FLAGS_BLACKPOINTCOMPENSATION: u32 = 0x2000;
+pub const FLAGS_COPY_ALPHA: u32 = 0x04000000;
 
 /// Color transform: converts pixel data between ICC profiles.
 pub struct Transform {
@@ -36,6 +37,7 @@ pub struct Transform {
     output_format: PixelFormat,
     from_input: FormatterIn,
     to_output: FormatterOut,
+    flags: u32,
 }
 
 impl Transform {
@@ -145,11 +147,23 @@ impl Transform {
             output_format,
             from_input,
             to_output,
+            flags,
         })
     }
 
     /// Transform a buffer of pixels.
     pub fn do_transform(&self, input: &[u8], output: &mut [u8], pixel_count: usize) {
+        // Copy extra (alpha) channels if requested
+        if self.flags & FLAGS_COPY_ALPHA != 0 {
+            super::alpha::handle_extra_channels(
+                self.input_format,
+                self.output_format,
+                input,
+                output,
+                pixel_count,
+            );
+        }
+
         match (&self.from_input, &self.to_output) {
             (FormatterIn::U16(unroll), FormatterOut::U16(pack)) => {
                 self.do_transform_16(*unroll, *pack, input, output, pixel_count);

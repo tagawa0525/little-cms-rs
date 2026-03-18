@@ -13,35 +13,35 @@ TAC検出、RGBガンマ検出、Lab desaturation を実装する。
 
 ## 変更対象ファイル
 
-| ファイル | 操作 |
-| --- | --- |
+| ファイル               | 操作                                   |
+| ---------------------- | -------------------------------------- |
 | `src/transform/gmt.rs` | 新規: ガマットマッピングユーティリティ |
-| `src/transform/mod.rs` | `pub mod gmt;` 追加 |
+| `src/transform/mod.rs` | `pub mod gmt;` 追加                    |
 
 ## 実装する関数
 
 ### gmt.rs — 公開API
 
-| 関数 | C版 | 内容 |
-| --- | --- | --- |
-| `detect_tac()` | `cmsDetectTAC` | 出力プロファイルの Total Area Coverage 推定 |
-| `detect_rgb_profile_gamma()` | `cmsDetectRGBProfileGamma` | RGBプロファイルのガンマ値推定 |
-| `desaturate_lab()` | `cmsDesaturateLab` | Lab値のガマットプリズムクリッピング |
+| 関数                         | C版                        | 内容                                        |
+| ---------------------------- | -------------------------- | ------------------------------------------- |
+| `detect_tac()`               | `cmsDetectTAC`             | 出力プロファイルの Total Area Coverage 推定 |
+| `detect_rgb_profile_gamma()` | `cmsDetectRGBProfileGamma` | RGBプロファイルのガンマ値推定               |
+| `desaturate_lab()`           | `cmsDesaturateLab`         | Lab値のガマットプリズムクリッピング         |
 
 ### gmt.rs — 内部関数
 
-| 関数 | C版 | 内容 |
-| --- | --- | --- |
+| 関数                   | C版                   | 内容                       |
+| ---------------------- | --------------------- | -------------------------- |
 | `build_k_tone_curve()` | `_cmsBuildKToneCurve` | CMYK K曲線構築（黒保持用） |
-| `compute_k_to_lstar()` | `ComputeKToLstar` | K値→L*対応曲線計算 |
-| `chain_to_lab()` | `_cmsChain2Lab` | プロファイル列→Lab変換作成 |
+| `compute_k_to_lstar()` | `ComputeKToLstar`     | K値→L*対応曲線計算         |
+| `chain_to_lab()`       | `_cmsChain2Lab`       | プロファイル列→Lab変換作成 |
 
 ### Deferred
 
-| 関数 | C版 | 理由 |
-| --- | --- | --- |
+| 関数                            | C版                            | 理由                                                            |
+| ------------------------------- | ------------------------------ | --------------------------------------------------------------- |
 | `create_gamut_check_pipeline()` | `_cmsCreateGamutCheckPipeline` | FLAGS_GAMUTCHECK の Transform 統合が必要。xform.rs の拡張が前提 |
-| `GamutSampler` | `GamutSampler` | 同上 |
+| `GamutSampler`                  | `GamutSampler`                 | 同上                                                            |
 
 ## 処理フロー
 
@@ -87,15 +87,15 @@ TAC検出、RGBガンマ検出、Lab desaturation を実装する。
 
 ## 既存モジュール依存
 
-| 依存先 | 利用する関数 |
-| --- | --- |
+| 依存先               | 利用する関数                                                    |
+| -------------------- | --------------------------------------------------------------- |
 | `transform/xform.rs` | `Transform::new`, `Transform::new_multiprofile`, `do_transform` |
-| `profile/io.rs` | `Profile::new_lab4`, `save_to_mem`, `open_mem` |
-| `profile/virt.rs` | `Profile::new_lab4` |
-| `curves/gamma.rs` | `ToneCurve::build_tabulated_float`, `join`, `is_monotonic` |
-| `math/pcs.rs` | `lab_to_lch`, `xyz_to_lab` |
-| `pipeline/lut.rs` | `slice_space_16` |
-| `transform/samp.rs` | `formatter_for_colorspace` |
+| `profile/io.rs`      | `Profile::new_lab4`, `save_to_mem`, `open_mem`                  |
+| `profile/virt.rs`    | `Profile::new_lab4`                                             |
+| `curves/gamma.rs`    | `ToneCurve::build_tabulated_float`, `join`, `is_monotonic`      |
+| `math/pcs.rs`        | `lab_to_lch`, `xyz_to_lab`                                      |
+| `pipeline/lut.rs`    | `slice_space_16`                                                |
+| `transform/samp.rs`  | `formatter_for_colorspace`                                      |
 
 ## コミット構成（TDD）
 
