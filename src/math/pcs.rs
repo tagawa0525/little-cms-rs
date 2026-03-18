@@ -150,6 +150,19 @@ pub fn pcs_encoded_lab_to_float(encoded: &[u16; 3]) -> CieLab {
     }
 }
 
+// ============================================================================
+// Color space endpoints
+// ============================================================================
+
+use crate::types::ColorSpaceSignature;
+
+/// Return the white and black endpoints for a color space as 16-bit values.
+/// Returns `(white, black, n_channels)` or `None` if unsupported.
+/// C版: `_cmsEndPointsBySpace`
+pub fn endpoints_by_space(_space: ColorSpaceSignature) -> Option<([u16; 16], [u16; 16], u32)> {
+    todo!("Phase 5c GREEN")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
