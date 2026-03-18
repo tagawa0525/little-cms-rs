@@ -1,6 +1,6 @@
 # Phase 6a: virt.rs 仮想プロファイル生成（コア）
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmsvirt.c`（1,353行）
 **Rust見積**: ~250行（impl）+ ~200行（tests）
 **ブランチ**: `feat/phase6a-virt`
