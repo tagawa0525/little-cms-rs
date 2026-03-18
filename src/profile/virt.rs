@@ -212,6 +212,10 @@ impl Profile {
 
     /// Create a Lab v2 identity profile.
     /// C版: `cmsCreateLab2ProfileTHR`
+    ///
+    /// Note: text tags are written as mluc (v4 type) for simplicity,
+    /// matching the C version's behavior. Strict ICC v2 conformance
+    /// would require textDescriptionType, deferred to a future phase.
     pub fn new_lab2(white_point: Option<&CieXyY>) -> Self {
         let wp = white_point.copied().unwrap_or_else(wtpnt::d50_xyy);
         let wp_xyz = pcs::xyy_to_xyz(&wp);
