@@ -42,7 +42,7 @@ pub fn desaturate_lab(lab: &mut CieLab, amax: f64, amin: f64, bmax: f64, bmin: f
 
     // Falls outside — transport to LCh and clip by hue zone
     if lab.a == 0.0 {
-        // Hue is exactly 90° — atan won't work
+        // Hue is on the b* axis (90° or 270°) — slope b/a is undefined
         lab.b = if lab.b < 0.0 { bmin } else { bmax };
         return true;
     }
@@ -89,15 +89,15 @@ pub fn detect_tac(profile: &mut Profile) -> f64 {
 
     let cs = profile.header.color_space;
     let n_channels = cs.channels();
-    if n_channels == 0 || n_channels as usize >= MAX_CHANNELS {
+    if n_channels == 0 || n_channels as usize > MAX_CHANNELS {
         return 0.0;
     }
 
-    // Build a float formatter for the profile's output space (4 bytes = float)
+    // Build a 16-bit formatter for the profile's output space
     let cs_bits = cs.to_pixel_type();
-    let output_fmt = PixelFormat::build(cs_bits, n_channels, 4).with_float();
+    let output_fmt = PixelFormat::build(cs_bits, n_channels, 2);
 
-    // Create Lab → Profile transform (perceptual intent)
+    // Create Lab → Profile transform (perceptual intent, both 16-bit)
     let lab_profile = {
         let mut p = Profile::new_lab4(None);
         match p.save_to_mem() {
@@ -131,35 +131,31 @@ pub fn detect_tac(profile: &mut Profile) -> f64 {
     // Sample Lab space: 6 L* × 74 a* × 74 b*
     let grid_points = [6u32, 74, 74];
     let mut max_tac: f32 = 0.0;
+    let n_ch = n_channels as usize;
 
+    // Pre-allocate buffers outside the loop
     let in_stride = crate::pipeline::pack::pixel_size(TYPE_LAB_16);
     let out_stride = crate::pipeline::pack::pixel_size(output_fmt);
+    let mut in_buf = vec![0u8; in_stride];
+    let mut out_buf = vec![0u8; out_stride];
 
     let _ = slice_space_16(3, &grid_points, |input, _cargo| {
-        // Pack Lab16 input
-        let mut in_buf = vec![0u8; in_stride];
+        // Pack Lab16 input (native endian)
         for (i, &v) in input.iter().take(3).enumerate() {
             let bytes = v.to_ne_bytes();
             in_buf[i * 2] = bytes[0];
             in_buf[i * 2 + 1] = bytes[1];
         }
 
-        let mut out_buf = vec![0u8; out_stride];
         xform.do_transform(&in_buf, &mut out_buf, 1);
 
-        // Sum output channels (float values)
+        // Sum output channels (16-bit values normalized to 0..100 range)
         let mut sum: f32 = 0.0;
-        for ch in 0..n_channels as usize {
-            let offset = ch * 4;
-            if offset + 4 <= out_buf.len() {
-                let val = f32::from_ne_bytes([
-                    out_buf[offset],
-                    out_buf[offset + 1],
-                    out_buf[offset + 2],
-                    out_buf[offset + 3],
-                ]);
-                sum += val;
-            }
+        for ch in 0..n_ch {
+            let offset = ch * 2;
+            let val = u16::from_ne_bytes([out_buf[offset], out_buf[offset + 1]]);
+            // Normalize: 0xFFFF → 100%
+            sum += val as f32 / 655.35;
         }
 
         if sum > max_tac {
@@ -174,11 +170,13 @@ pub fn detect_tac(profile: &mut Profile) -> f64 {
 
 /// Detect the gamma of an RGB profile by sampling gray ramps.
 ///
+/// `precision` controls the standard deviation threshold for the gamma
+/// estimation fit (passed to `ToneCurve::estimate_gamma`).
 /// Returns the estimated gamma value, or -1.0 if the profile is not
 /// suitable (non-RGB, unsupported class).
 ///
 /// C版: `cmsDetectRGBProfileGamma`
-pub fn detect_rgb_profile_gamma(profile: &mut Profile, threshold: f64) -> f64 {
+pub fn detect_rgb_profile_gamma(profile: &mut Profile, precision: f64) -> f64 {
     // Must be RGB
     if profile.header.color_space != ColorSpaceSignature::RgbData {
         return -1.0;
@@ -258,7 +256,7 @@ pub fn detect_rgb_profile_gamma(profile: &mut Profile, threshold: f64) -> f64 {
         None => return -1.0,
     };
 
-    y_curve.estimate_gamma(threshold)
+    y_curve.estimate_gamma(precision)
 }
 
 // ============================================================================
