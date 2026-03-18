@@ -150,6 +150,57 @@ pub fn pcs_encoded_lab_to_float(encoded: &[u16; 3]) -> CieLab {
     }
 }
 
+// ============================================================================
+// Color space endpoints
+// ============================================================================
+
+use crate::types::ColorSpaceSignature;
+
+/// Return the white and black endpoints for a color space as 16-bit values.
+/// Returns `(white, black, n_channels)` or `None` if unsupported.
+/// C版: `_cmsEndPointsBySpace`
+pub fn endpoints_by_space(space: ColorSpaceSignature) -> Option<([u16; 16], [u16; 16], u32)> {
+    let mut white = [0u16; 16];
+    let mut black = [0u16; 16];
+
+    match space {
+        ColorSpaceSignature::GrayData => {
+            white[0] = 0xFFFF;
+            Some((white, black, 1))
+        }
+        ColorSpaceSignature::RgbData => {
+            white[0] = 0xFFFF;
+            white[1] = 0xFFFF;
+            white[2] = 0xFFFF;
+            Some((white, black, 3))
+        }
+        ColorSpaceSignature::CmykData => {
+            // CMYK: white = no ink (0), black = max ink (0xFFFF)
+            black[0] = 0xFFFF;
+            black[1] = 0xFFFF;
+            black[2] = 0xFFFF;
+            black[3] = 0xFFFF;
+            Some((white, black, 4))
+        }
+        ColorSpaceSignature::CmyData => {
+            black[0] = 0xFFFF;
+            black[1] = 0xFFFF;
+            black[2] = 0xFFFF;
+            Some((white, black, 3))
+        }
+        ColorSpaceSignature::LabData => {
+            // V4 Lab encoding: L*=100 → 0xFFFF, a*=0 → 0x8080, b*=0 → 0x8080
+            white[0] = 0xFFFF;
+            white[1] = 0x8080;
+            white[2] = 0x8080;
+            black[1] = 0x8080;
+            black[2] = 0x8080;
+            Some((white, black, 3))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
