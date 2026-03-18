@@ -368,7 +368,9 @@ fn rebuild_pipeline_with_indices(pipeline: &mut Pipeline, keep: &[usize]) {
         return;
     };
     for stage in stages {
-        new_pipeline.insert_stage(StageLoc::AtEnd, stage);
+        if !new_pipeline.insert_stage(StageLoc::AtEnd, stage) {
+            return; // channel mismatch — leave original pipeline unchanged
+        }
     }
     *pipeline = new_pipeline;
 }
@@ -396,7 +398,9 @@ fn rebuild_pipeline_replacing(
         return;
     };
     for stage in stages {
-        new_pipeline.insert_stage(StageLoc::AtEnd, stage);
+        if !new_pipeline.insert_stage(StageLoc::AtEnd, stage) {
+            return; // channel mismatch — leave original pipeline unchanged
+        }
     }
     *pipeline = new_pipeline;
 }
