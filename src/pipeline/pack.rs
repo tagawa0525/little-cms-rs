@@ -343,6 +343,27 @@ fn unroll_float(format: PixelFormat, values: &mut [f32], buf: &[u8], _stride: us
     (n_chan + extra) * 4
 }
 
+/// Unroll Lab float values with normalization: L/100, (a+128)/255, (b+128)/255.
+/// C版: `UnrollLabFloat`
+fn unroll_lab_float(format: PixelFormat, values: &mut [f32], buf: &[u8], stride: usize) -> usize {
+    let stride = unroll_float(format, values, buf, stride);
+    values[0] /= 100.0;
+    values[1] = (values[1] + 128.0) / 255.0;
+    values[2] = (values[2] + 128.0) / 255.0;
+    stride
+}
+
+/// Unroll XYZ float values with normalization: each / MAX_ENCODEABLE_XYZ.
+/// C版: `UnrollXYZFloat`
+fn unroll_xyz_float(format: PixelFormat, values: &mut [f32], buf: &[u8], stride: usize) -> usize {
+    let stride = unroll_float(format, values, buf, stride);
+    let adj = (1.0 + 32767.0 / 32768.0) as f32;
+    values[0] /= adj;
+    values[1] /= adj;
+    values[2] /= adj;
+    stride
+}
+
 fn pack_float(format: PixelFormat, values: &[f32], buf: &mut [u8], _stride: usize) -> usize {
     let n_chan = format.channels() as usize;
     let extra = format.extra() as usize;
@@ -358,6 +379,31 @@ fn pack_float(format: PixelFormat, values: &[f32], buf: &mut [u8], _stride: usiz
     }
 
     (n_chan + extra) * 4
+}
+
+/// Pack Lab float values with denormalization: L*100, a*255-128, b*255-128.
+/// C版: `PackLabFloat`
+fn pack_lab_float(format: PixelFormat, values: &[f32], buf: &mut [u8], stride: usize) -> usize {
+    let mut denorm = [0f32; 16]; // MAX_CHANNELS
+    let n = format.channels() as usize;
+    denorm[..n.min(16)].copy_from_slice(&values[..n.min(16)]);
+    denorm[0] = values[0] * 100.0;
+    denorm[1] = values[1] * 255.0 - 128.0;
+    denorm[2] = values[2] * 255.0 - 128.0;
+    pack_float(format, &denorm, buf, stride)
+}
+
+/// Pack XYZ float values with denormalization: each * MAX_ENCODEABLE_XYZ.
+/// C版: `PackXYZFloat`
+fn pack_xyz_float(format: PixelFormat, values: &[f32], buf: &mut [u8], stride: usize) -> usize {
+    let adj = (1.0 + 32767.0 / 32768.0) as f32;
+    let mut denorm = [0f32; 16]; // MAX_CHANNELS
+    let n = format.channels() as usize;
+    denorm[..n.min(16)].copy_from_slice(&values[..n.min(16)]);
+    denorm[0] = values[0] * adj;
+    denorm[1] = values[1] * adj;
+    denorm[2] = values[2] * adj;
+    pack_float(format, &denorm, buf, stride)
 }
 
 // ============================================================================
@@ -541,7 +587,15 @@ pub fn find_formatter_in(format: PixelFormat, flags: u32) -> Option<FormatterIn>
             } else if format.bytes() == 2 && format.is_float() {
                 Some(FormatterIn::Float(unroll_half_to_float))
             } else if format.bytes() == 4 && format.is_float() {
-                Some(FormatterIn::Float(unroll_float))
+                // Lab/XYZ float need normalization
+                let cs = format.colorspace();
+                if cs == PT_LAB {
+                    Some(FormatterIn::Float(unroll_lab_float))
+                } else if cs == PT_XYZ {
+                    Some(FormatterIn::Float(unroll_xyz_float))
+                } else {
+                    Some(FormatterIn::Float(unroll_float))
+                }
             } else {
                 None
             }
@@ -588,7 +642,14 @@ pub fn find_formatter_out(format: PixelFormat, flags: u32) -> Option<FormatterOu
             } else if format.bytes() == 2 && format.is_float() {
                 Some(FormatterOut::Float(pack_half_from_float))
             } else if format.bytes() == 4 && format.is_float() {
-                Some(FormatterOut::Float(pack_float))
+                let cs = format.colorspace();
+                if cs == PT_LAB {
+                    Some(FormatterOut::Float(pack_lab_float))
+                } else if cs == PT_XYZ {
+                    Some(FormatterOut::Float(pack_xyz_float))
+                } else {
+                    Some(FormatterOut::Float(pack_float))
+                }
             } else {
                 None
             }

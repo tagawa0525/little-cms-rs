@@ -111,7 +111,8 @@ pub fn read_tag_type(
 pub fn write_tag_type(
     io: &mut IoHandler,
     data: &TagData,
-    _icc_version: u32,
+    icc_version: u32,
+    tag_sig: TagSignature,
 ) -> Result<TagTypeSignature, CmsError> {
     let sig = match data {
         TagData::Xyz(xyz) => {
@@ -196,7 +197,7 @@ pub fn write_tag_type(
             TagTypeSignature::Cicp
         }
         TagData::ProfileSequenceDesc(seq) => {
-            write_profile_sequence_desc_type(io, seq, _icc_version)?;
+            write_profile_sequence_desc_type(io, seq, icc_version)?;
             TagTypeSignature::ProfileSequenceDesc
         }
         TagData::Vcgt(curves) => {
@@ -208,8 +209,25 @@ pub fn write_tag_type(
             TagTypeSignature::Dict
         }
         TagData::Pipeline(pipe) => {
-            // Choose format based on save_as_8bits flag
-            if pipe.save_as_8bits() {
+            // V4 AToB/BToA tags use LutAtoB/LutBtoA format.
+            // V2 and other tags use Lut8/Lut16.
+            let is_v4 = icc_version >= 0x04000000;
+            let is_atob = matches!(
+                tag_sig,
+                TagSignature::AToB0 | TagSignature::AToB1 | TagSignature::AToB2
+            );
+            let is_btoa = matches!(
+                tag_sig,
+                TagSignature::BToA0 | TagSignature::BToA1 | TagSignature::BToA2
+            );
+
+            if is_v4 && is_atob {
+                write_lut_atob_type(io, pipe)?;
+                TagTypeSignature::LutAtoB
+            } else if is_v4 && is_btoa {
+                write_lut_btoa_type(io, pipe)?;
+                TagTypeSignature::LutBtoA
+            } else if pipe.save_as_8bits() {
                 write_lut8_type(io, pipe)?;
                 TagTypeSignature::Lut8
             } else {
@@ -2709,28 +2727,16 @@ pub fn write_lut_atob_type(io: &mut IoHandler, pipe: &Pipeline) -> Result<(), Cm
     let mut offset_a = 0u32;
 
     // AtoB = A curves → CLUT → M curves → Matrix → B curves
-    let mut curve_idx = 0;
+    // Collect curve positions: mapping depends on total count.
+    // 1 curve → B; 2 curves → A + B; 3 curves → A + M + B
+    let mut curve_positions = Vec::new();
     for stage in pipe.stages() {
         match stage.stage_type() {
             StageSignature::CurveSetElem => {
                 let pos = io.tell() + TAG_BASE_SIZE;
                 let curves = stage.curves().unwrap_or(&[]);
-                match curve_idx {
-                    0 => {
-                        offset_a = pos;
-                        write_v4_curve_set(io, curves)?;
-                    }
-                    1 => {
-                        offset_m = pos;
-                        write_v4_curve_set(io, curves)?;
-                    }
-                    2 => {
-                        offset_b = pos;
-                        write_v4_curve_set(io, curves)?;
-                    }
-                    _ => {}
-                }
-                curve_idx += 1;
+                write_v4_curve_set(io, curves)?;
+                curve_positions.push(pos);
             }
             StageSignature::CLutElem => {
                 offset_clut = io.tell() + TAG_BASE_SIZE;
@@ -2742,6 +2748,21 @@ pub fn write_lut_atob_type(io: &mut IoHandler, pipe: &Pipeline) -> Result<(), Cm
             }
             _ => {}
         }
+    }
+    match curve_positions.len() {
+        1 => {
+            offset_b = curve_positions[0];
+        }
+        2 => {
+            offset_a = curve_positions[0];
+            offset_b = curve_positions[1];
+        }
+        3 => {
+            offset_a = curve_positions[0];
+            offset_m = curve_positions[1];
+            offset_b = curve_positions[2];
+        }
+        _ => {}
     }
 
     let end_pos = io.tell();
@@ -2851,28 +2872,16 @@ pub fn write_lut_btoa_type(io: &mut IoHandler, pipe: &Pipeline) -> Result<(), Cm
     let mut offset_a = 0u32;
 
     // BtoA = B curves → Matrix → M curves → CLUT → A curves
-    let mut curve_idx = 0;
+    // Collect curve positions: mapping depends on total count.
+    // 1 curve → A; 2 curves → B + A; 3 curves → B + M + A
+    let mut curve_positions = Vec::new();
     for stage in pipe.stages() {
         match stage.stage_type() {
             StageSignature::CurveSetElem => {
                 let pos = io.tell() + TAG_BASE_SIZE;
                 let curves = stage.curves().unwrap_or(&[]);
-                match curve_idx {
-                    0 => {
-                        offset_b = pos;
-                        write_v4_curve_set(io, curves)?;
-                    }
-                    1 => {
-                        offset_m = pos;
-                        write_v4_curve_set(io, curves)?;
-                    }
-                    2 => {
-                        offset_a = pos;
-                        write_v4_curve_set(io, curves)?;
-                    }
-                    _ => {}
-                }
-                curve_idx += 1;
+                write_v4_curve_set(io, curves)?;
+                curve_positions.push(pos);
             }
             StageSignature::CLutElem => {
                 offset_clut = io.tell() + TAG_BASE_SIZE;
@@ -2884,6 +2893,21 @@ pub fn write_lut_btoa_type(io: &mut IoHandler, pipe: &Pipeline) -> Result<(), Cm
             }
             _ => {}
         }
+    }
+    match curve_positions.len() {
+        1 => {
+            offset_a = curve_positions[0];
+        }
+        2 => {
+            offset_b = curve_positions[0];
+            offset_a = curve_positions[1];
+        }
+        3 => {
+            offset_b = curve_positions[0];
+            offset_m = curve_positions[1];
+            offset_a = curve_positions[2];
+        }
+        _ => {}
     }
 
     let end_pos = io.tell();

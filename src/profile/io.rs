@@ -773,13 +773,13 @@ impl Profile {
         // Pass 1: compute payload size using Null handler
         let (type_sig, payload_size) = {
             let mut null_io = IoHandler::new_null();
-            let sig = tag_types::write_tag_type(&mut null_io, &data, self.header.version)?;
-            (sig, null_io.used_space())
+            let s = tag_types::write_tag_type(&mut null_io, &data, self.header.version, sig)?;
+            (s, null_io.used_space())
         };
 
         // Pass 2: write payload to correctly sized buffer
         let mut io = IoHandler::from_memory_write(payload_size as usize);
-        tag_types::write_tag_type(&mut io, &data, self.header.version)?;
+        tag_types::write_tag_type(&mut io, &data, self.header.version, sig)?;
 
         // Build raw: type_base (8 bytes) + payload
         let mut raw = Vec::with_capacity(8 + payload_size as usize);
