@@ -1,6 +1,6 @@
 # Phase 5f: alpha.rs アルファチャネル処理
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmsalpha.c`（650行）
 **Rust見積**: ~200行（impl）+ ~100行（tests）
 **ブランチ**: `feat/phase5f-alpha`
