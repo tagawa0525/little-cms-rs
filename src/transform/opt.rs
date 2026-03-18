@@ -417,7 +417,7 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn pre_opt_removes_identity_stages() {
         let mut p = Pipeline::new(3, 3).unwrap();
         let curves = Stage::new_tone_curves(None, 3).unwrap(); // gamma 1.0 = linear
@@ -438,7 +438,7 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn pre_opt_removes_xyz_lab_inverse_pair() {
         let mut p = Pipeline::new(3, 3).unwrap();
         let xyz2lab = Stage::new_xyz_to_lab().unwrap();
@@ -453,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn pre_opt_removes_lab_v2_v4_inverse_pair() {
         let mut p = Pipeline::new(3, 3).unwrap();
         let v2_to_v4 = Stage::new_lab_v2_to_v4().unwrap();
@@ -475,7 +475,7 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn pre_opt_multiplies_adjacent_matrices() {
         let mut p = Pipeline::new(3, 3).unwrap();
 
@@ -513,7 +513,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn pre_opt_multiplies_matrices_with_offsets() {
         let mut p = Pipeline::new(3, 3).unwrap();
 
@@ -557,7 +557,7 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn join_curves_two_gamma() {
         let mut p = Pipeline::new(3, 3).unwrap();
 
@@ -585,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn join_curves_rejects_mixed_stages() {
         let mut p = Pipeline::new(3, 3).unwrap();
 
@@ -610,7 +610,7 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn resampling_creates_clut() {
         // Build a pipeline: curves → matrix → curves (typical RGB matrix-shaper)
         let mut p = Pipeline::new(3, 3).unwrap();
@@ -666,7 +666,7 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn optimize_pipeline_nooptimize_skips() {
         let mut p = Pipeline::new(3, 3).unwrap();
         let identity = Stage::new_identity(3).unwrap();
@@ -681,7 +681,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn optimize_pipeline_removes_identity() {
         let mut p = Pipeline::new(3, 3).unwrap();
 
@@ -707,21 +707,21 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn gridpoints_rgb_default() {
         use crate::math::pcs::reasonable_gridpoints;
         assert_eq!(reasonable_gridpoints(3, 0), 33);
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn gridpoints_cmyk_default() {
         use crate::math::pcs::reasonable_gridpoints;
         assert_eq!(reasonable_gridpoints(4, 0), 17);
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn gridpoints_highres() {
         use super::super::xform::FLAGS_HIGHRESPRECALC;
         use crate::math::pcs::reasonable_gridpoints;
@@ -729,7 +729,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn gridpoints_lowres() {
         use super::super::xform::FLAGS_LOWRESPRECALC;
         use crate::math::pcs::reasonable_gridpoints;
@@ -737,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn gridpoints_from_flags() {
         use crate::math::pcs::reasonable_gridpoints;
         // Grid points embedded in flags: bits 16..23
@@ -750,7 +750,7 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn transform_optimized_srgb_roundtrip() {
         use crate::profile::io::Profile;
         use crate::types::TYPE_RGB_8;

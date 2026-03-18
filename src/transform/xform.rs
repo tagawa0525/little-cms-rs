@@ -94,7 +94,11 @@ impl Transform {
         let bpc_flag = (flags & FLAGS_BLACKPOINTCOMPENSATION) != 0;
         let mut bpc = vec![bpc_flag; n];
         let adaptation = vec![1.0f64; n];
-        let pipeline = cnvrt::link_profiles(profiles, &intents, &mut bpc, &adaptation)?;
+        let mut pipeline = cnvrt::link_profiles(profiles, &intents, &mut bpc, &adaptation)?;
+
+        // Optimize pipeline (unless FLAGS_NOOPTIMIZE)
+        let mut opt_flags = flags;
+        super::opt::optimize_pipeline(&mut pipeline, intent, &mut opt_flags);
 
         // Validate format channels against linked pipeline
         if input_format.channels() != pipeline.input_channels() {
