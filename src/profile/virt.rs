@@ -531,10 +531,10 @@ mod tests {
 
         // White (1,1,1) should map to L≈100, a≈0, b≈0
         let input: [f32; 3] = [1.0, 1.0, 1.0];
-        let input_bytes: &[u8] = bytemuck_cast(&input);
+        let input_bytes = floats_to_bytes(&input);
         let mut output_buf = [0u8; 12]; // 3 × f32
-        xform.do_transform(input_bytes, &mut output_buf, 1);
-        let output: &[f32; 3] = bytemuck_cast_ref(&output_buf);
+        xform.do_transform(&input_bytes, &mut output_buf, 1);
+        let output = bytes_to_floats(&output_buf);
 
         assert!(
             (output[0] - 100.0).abs() < 1.0,
@@ -557,11 +557,19 @@ mod tests {
     // Helpers for float byte casting
     // ================================================================
 
-    fn bytemuck_cast(floats: &[f32; 3]) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(floats.as_ptr() as *const u8, 12) }
+    fn floats_to_bytes(floats: &[f32; 3]) -> [u8; 12] {
+        let mut buf = [0u8; 12];
+        for (i, &f) in floats.iter().enumerate() {
+            buf[i * 4..(i + 1) * 4].copy_from_slice(&f.to_ne_bytes());
+        }
+        buf
     }
 
-    fn bytemuck_cast_ref(bytes: &[u8; 12]) -> &[f32; 3] {
-        unsafe { &*(bytes.as_ptr() as *const [f32; 3]) }
+    fn bytes_to_floats(bytes: &[u8; 12]) -> [f32; 3] {
+        [
+            f32::from_ne_bytes(bytes[0..4].try_into().unwrap()),
+            f32::from_ne_bytes(bytes[4..8].try_into().unwrap()),
+            f32::from_ne_bytes(bytes[8..12].try_into().unwrap()),
+        ]
     }
 }
