@@ -48,13 +48,14 @@ pub const SAMPLER_INSPECT: u32 = 1;
 
 /// Matrix-shaper 8-bit evaluation using 1.14 fixed-point arithmetic.
 ///
-/// Input is treated as 8-bit (high byte of u16), processed through:
-///   Shaper1 LUT → 1.14 matrix multiply → clip → Shaper2 LUT
+/// Input is assured to come from an 8-bit number (expanded as `a << 8 | a`),
+/// so `In[x] & 0xFF` gives the original 8-bit value.
+/// Processed through: Shaper1 LUT → 1.14 matrix multiply → clip → Shaper2 LUT
 ///
 /// C版: `MatShaperEval16`
 fn mat_shaper_eval16(p: &MatShaper8Data, input: &[u16], output: &mut [u16]) {
-    // Extract 8-bit values (In[x] & 0xFF works because 8-bit input is
-    // expanded as x<<8|x, so low byte == high byte)
+    // In this case (and only in this case!) we can use this simplification since
+    // input is assured to come from an 8-bit number. (a << 8 | a)
     let ri = (input[0] & 0xFF) as usize;
     let gi = (input[1] & 0xFF) as usize;
     let bi = (input[2] & 0xFF) as usize;
