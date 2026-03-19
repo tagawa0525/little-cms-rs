@@ -744,25 +744,27 @@ pub fn optimize_by_computing_linearization(
     let n_out = pipeline.output_channels() as usize;
 
     // Sample the pipeline at PRELINEARIZATION_POINTS gray ramp points
-    // to extract the hidden per-channel transfer function
+    // to extract the hidden per-channel transfer function.
+    // Feed all channels with the same value (true gray ramp), matching C version.
     let n_pts = PRELINEARIZATION_POINTS as usize;
     let mut curve_data = vec![vec![0u16; n_pts]; 3];
 
-    for ch in 0..3 {
-        for (pt, entry) in curve_data[ch].iter_mut().enumerate() {
-            let val = (pt as f64 * 65535.0) / (n_pts - 1) as f64;
-            let v = crate::curves::intrp::quick_saturate_word(val);
+    for pt in 0..n_pts {
+        let val = (pt as f64 * 65535.0) / (n_pts - 1) as f64;
+        let v = crate::curves::intrp::quick_saturate_word(val);
 
-            let mut input = [0u16; crate::types::MAX_CHANNELS];
-            // Set the test channel, others to 0
+        // Feed input with a gray ramp (all channels same value)
+        let mut input = [0u16; crate::types::MAX_CHANNELS];
+        for ch in 0..3 {
             input[ch] = v;
+        }
 
-            let mut output = [0u16; crate::types::MAX_CHANNELS];
-            pipeline.eval_16(&input, &mut output);
+        let mut output = [0u16; crate::types::MAX_CHANNELS];
+        pipeline.eval_16(&input, &mut output);
 
-            // For input curves: track the per-channel response on the diagonal
-            // Use only the corresponding output channel
-            *entry = if ch < n_out { output[ch] } else { 0 };
+        // Store each channel's response
+        for ch in 0..3 {
+            curve_data[ch][pt] = if ch < n_out { output[ch] } else { 0 };
         }
     }
 
