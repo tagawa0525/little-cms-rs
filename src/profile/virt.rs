@@ -182,12 +182,18 @@ const M_OKLAB_LMSPRIME: [f64; 9] = [
     1.000000054672411, -0.089484182094966, -1.291485537864092,
 ];
 
-/// Build BToA0 pipeline: XYZ/D50 → OkLab
+/// Build BToA0 pipeline: PCS XYZ → OkLab
+///
+/// Note: OkLab a/b channels are signed (approximately [-0.5, 0.5]).
+/// This pipeline is designed for float evaluation; 16-bit mode will
+/// clamp negative a/b values. The cube root uses gamma curves that
+/// clamp negative inputs, matching the C version's behavior — LMS
+/// values are always positive for physically realizable colors.
 fn build_oklab_btoa() -> Option<Pipeline> {
     let mut lut = Pipeline::new(3, 3)?;
 
-    // 1. Normalize from XYZ float (PCS encoding → 0-1 range)
-    lut.insert_stage(StageLoc::AtEnd, Stage::new_normalize_from_xyz_float()?);
+    // 1. PCS XYZ → real XYZ (scale up by 65535/32768)
+    lut.insert_stage(StageLoc::AtEnd, Stage::new_normalize_to_xyz_float()?);
 
     // 2. D50→D65 chromatic adaptation
     lut.insert_stage(StageLoc::AtEnd, Stage::new_matrix(3, 3, &M_D50_D65, None)?);
@@ -209,7 +215,9 @@ fn build_oklab_btoa() -> Option<Pipeline> {
     Some(lut)
 }
 
-/// Build AToB0 pipeline: OkLab → XYZ/D50
+/// Build AToB0 pipeline: OkLab → PCS XYZ
+///
+/// See `build_oklab_btoa` for notes on signed channels and float usage.
 fn build_oklab_atob() -> Option<Pipeline> {
     let mut lut = Pipeline::new(3, 3)?;
 
@@ -230,8 +238,8 @@ fn build_oklab_atob() -> Option<Pipeline> {
     // 4. D65→D50 chromatic adaptation
     lut.insert_stage(StageLoc::AtEnd, Stage::new_matrix(3, 3, &M_D65_D50, None)?);
 
-    // 5. Normalize to XYZ float (0-1 range → PCS encoding)
-    lut.insert_stage(StageLoc::AtEnd, Stage::new_normalize_to_xyz_float()?);
+    // 5. Real XYZ → PCS XYZ (scale down by 32768/65535)
+    lut.insert_stage(StageLoc::AtEnd, Stage::new_normalize_from_xyz_float()?);
 
     Some(lut)
 }
