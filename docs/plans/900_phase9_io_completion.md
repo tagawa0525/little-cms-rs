@@ -1,6 +1,6 @@
 # Phase 9: io.rs プロファイルI/O完成（Phase 4d 残り）
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmsio1.c`（未移植部分: ~150行相当）
 **Rust見積**: ~150行（impl）+ ~100行（tests）
 **ブランチ**: `feat/phase9-io-completion`
