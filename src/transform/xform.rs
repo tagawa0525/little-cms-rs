@@ -132,8 +132,6 @@ impl Transform {
 
     /// Convert this transform into a device link profile.
     /// C版: `cmsTransform2DeviceLink`
-    /// Convert this transform into a device link profile.
-    /// C版: `cmsTransform2DeviceLink`
     pub fn to_device_link(&self, version: f64) -> Result<Profile, CmsError> {
         use crate::pipeline::lut::{Stage, StageLoc};
         use crate::profile::tag_types::TagData;
