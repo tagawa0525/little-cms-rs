@@ -88,29 +88,34 @@ fn point_on_line(line: &Line, t: f64) -> Vec3 {
     )
 }
 
-/// Find closest point on line1 to line2. Returns the point on line1.
+/// Find closest point on ray (line1) to edge segment (line2).
+/// line1 is treated as a ray (t >= 0, no upper bound).
+/// line2 is treated as a finite segment (t clamped to [0, 1]).
+/// Returns the point on line1 (the ray).
 /// Based on the algorithm from softSurfer.
-fn closest_line_to_line(line1: &Line, line2: &Line) -> Vec3 {
-    let dp = line1.a - line2.a;
+fn closest_ray_to_segment(ray: &Line, segment: &Line) -> Vec3 {
+    let dp = ray.a - segment.a;
 
-    let a_val = line1.u.dot(&line1.u);
-    let b_val = line1.u.dot(&line2.u);
-    let c_val = line2.u.dot(&line2.u);
-    let d_val = line1.u.dot(&dp);
-    let e_val = line2.u.dot(&dp);
+    let a_val = ray.u.dot(&ray.u);
+    let b_val = ray.u.dot(&segment.u);
+    let c_val = segment.u.dot(&segment.u);
+    let d_val = ray.u.dot(&dp);
+    let e_val = segment.u.dot(&dp);
 
     let denom = a_val * c_val - b_val * b_val;
 
-    let mut sc = if denom.abs() < 1e-12 {
-        0.0
-    } else {
-        (b_val * e_val - c_val * d_val) / denom
-    };
+    if denom.abs() < 1e-12 {
+        // Lines are parallel; return ray origin
+        return ray.a;
+    }
 
-    // Clamp to [0, 1] for finite segments
-    sc = sc.clamp(0.0, 1.0);
+    // Ray parameter: clamp to [0, ∞) (forward direction only)
+    let sc = ((b_val * e_val - c_val * d_val) / denom).max(0.0);
 
-    point_on_line(line1, sc)
+    // Segment parameter: clamp to [0, 1]
+    let _tc = ((a_val * e_val - b_val * d_val) / denom).clamp(0.0, 1.0);
+
+    point_on_line(ray, sc)
 }
 
 // ============================================================================
@@ -287,7 +292,7 @@ impl GamutBoundary {
             let p2 = Vec3::new(lab_j.l - 50.0, lab_j.a, lab_j.b);
 
             let edge = line_of_2_points(&p1, &p2);
-            let closest = closest_line_to_line(&ray, &edge);
+            let closest = closest_ray_to_segment(&ray, &edge);
 
             let r = closest.length();
             if r > best_r {
