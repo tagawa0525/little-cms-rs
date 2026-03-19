@@ -42,7 +42,10 @@ impl Context {
     pub fn new() -> Self {
         Self {
             error_handler: None,
-            alarm_codes: [0u16; 16],
+            // C版デフォルト: [0x7F00, 0x7F00, 0x7F00, 0, 0, ...]
+            alarm_codes: [
+                0x7F00, 0x7F00, 0x7F00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ],
             adaptation_state: 1.0,
         }
     }
@@ -66,15 +69,17 @@ mod tests {
     use super::*;
 
     #[test]
-
     fn context_default_state() {
         let ctx = Context::new();
         assert_eq!(ctx.adaptation_state, 1.0);
-        assert!(ctx.alarm_codes.iter().all(|&c| c == 0));
+        // C版デフォルト: first 3 channels are 0x7F00, rest are 0
+        assert_eq!(ctx.alarm_codes[0], 0x7F00);
+        assert_eq!(ctx.alarm_codes[1], 0x7F00);
+        assert_eq!(ctx.alarm_codes[2], 0x7F00);
+        assert!(ctx.alarm_codes[3..].iter().all(|&c| c == 0));
     }
 
     #[test]
-
     fn signal_error_calls_handler() {
         use std::sync::atomic::{AtomicU32, Ordering};
         static CALLED_CODE: AtomicU32 = AtomicU32::new(999);
@@ -90,14 +95,12 @@ mod tests {
     }
 
     #[test]
-
     fn signal_error_no_handler_no_panic() {
         let ctx = Context::new();
         ctx.signal_error(ErrorCode::Internal, "should not panic");
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn alarm_codes_default_values() {
         // C default: [0x7F00, 0x7F00, 0x7F00, 0, 0, ...]
         let ctx = Context::new();
@@ -110,7 +113,6 @@ mod tests {
     }
 
     #[test]
-
     fn error_code_values() {
         assert_eq!(ErrorCode::Undefined as u32, 0);
         assert_eq!(ErrorCode::File as u32, 1);
