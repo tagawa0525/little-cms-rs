@@ -43,6 +43,129 @@ pub const SAMPLER_WRITE: u32 = 0;
 pub const SAMPLER_INSPECT: u32 = 1;
 
 // ============================================================================
+// Fast evaluators (called from Pipeline::eval_16)
+// ============================================================================
+
+/// Matrix-shaper 8-bit evaluation using 1.14 fixed-point arithmetic.
+///
+/// Input is assured to come from an 8-bit number (expanded as `a << 8 | a`),
+/// so `In[x] & 0xFF` gives the original 8-bit value.
+/// Processed through: Shaper1 LUT → 1.14 matrix multiply → clip → Shaper2 LUT
+///
+/// C版: `MatShaperEval16`
+fn mat_shaper_eval16(p: &MatShaper8Data, input: &[u16], output: &mut [u16]) {
+    // In this case (and only in this case!) we can use this simplification since
+    // input is assured to come from an 8-bit number. (a << 8 | a)
+    let ri = (input[0] & 0xFF) as usize;
+    let gi = (input[1] & 0xFF) as usize;
+    let bi = (input[2] & 0xFF) as usize;
+
+    // First shaper: 8-bit → 1.14 fixed-point
+    let r = p.shaper1_r[ri] as i64;
+    let g = p.shaper1_g[gi] as i64;
+    let b = p.shaper1_b[bi] as i64;
+
+    // Matrix multiply in 1.14 fixed-point
+    let m = &p.mat;
+    let o = &p.off;
+    let l1 = ((m[0][0] as i64 * r + m[0][1] as i64 * g + m[0][2] as i64 * b + o[0] as i64 + 0x2000)
+        >> 14) as i32;
+    let l2 = ((m[1][0] as i64 * r + m[1][1] as i64 * g + m[1][2] as i64 * b + o[1] as i64 + 0x2000)
+        >> 14) as i32;
+    let l3 = ((m[2][0] as i64 * r + m[2][1] as i64 * g + m[2][2] as i64 * b + o[2] as i64 + 0x2000)
+        >> 14) as i32;
+
+    // Clip to [0, 16384]
+    let ri = l1.clamp(0, 16384) as usize;
+    let gi = l2.clamp(0, 16384) as usize;
+    let bi = l3.clamp(0, 16384) as usize;
+
+    // Second shaper
+    output[0] = p.shaper2_r[ri];
+    output[1] = p.shaper2_g[gi];
+    output[2] = p.shaper2_b[bi];
+}
+
+/// Pre-linearized 8-bit tetrahedral CLUT interpolation.
+///
+/// Uses precomputed node indices and fractional offsets for 256 8-bit values.
+///
+/// C版: `PrelinEval8`
+fn prelin_eval8(p: &Prelin8Data, input: &[u16], output: &mut [u16]) {
+    let r = (input[0] >> 8) as usize;
+    let g = (input[1] >> 8) as usize;
+    let b = (input[2] >> 8) as usize;
+
+    let x0 = p.x0[r] as usize;
+    let y0 = p.y0[g] as usize;
+    let z0 = p.z0[b] as usize;
+
+    let rx = p.rx[r] as i32;
+    let ry = p.ry[g] as i32;
+    let rz = p.rz[b] as i32;
+
+    let x1 = x0 + if rx == 0 { 0 } else { p.opta[2] as usize };
+    let y1 = y0 + if ry == 0 { 0 } else { p.opta[1] as usize };
+    let z1 = z0 + if rz == 0 { 0 } else { p.opta[0] as usize };
+
+    let lut = &p.table;
+    let total_out = p.n_outputs as usize;
+
+    macro_rules! dens {
+        ($i:expr, $j:expr, $k:expr, $ch:expr) => {
+            lut[$i + $j + $k + $ch] as i32
+        };
+    }
+
+    for out_ch in 0..total_out {
+        let c0 = dens!(x0, y0, z0, out_ch);
+
+        let (c1, c2, c3) = if rx >= ry && ry >= rz {
+            (
+                dens!(x1, y0, z0, out_ch) - c0,
+                dens!(x1, y1, z0, out_ch) - dens!(x1, y0, z0, out_ch),
+                dens!(x1, y1, z1, out_ch) - dens!(x1, y1, z0, out_ch),
+            )
+        } else if rx >= rz && rz >= ry {
+            (
+                dens!(x1, y0, z0, out_ch) - c0,
+                dens!(x1, y1, z1, out_ch) - dens!(x1, y0, z1, out_ch),
+                dens!(x1, y0, z1, out_ch) - dens!(x1, y0, z0, out_ch),
+            )
+        } else if rz >= rx && rx >= ry {
+            (
+                dens!(x1, y0, z1, out_ch) - dens!(x0, y0, z1, out_ch),
+                dens!(x1, y1, z1, out_ch) - dens!(x1, y0, z1, out_ch),
+                dens!(x0, y0, z1, out_ch) - c0,
+            )
+        } else if ry >= rx && rx >= rz {
+            (
+                dens!(x1, y1, z0, out_ch) - dens!(x0, y1, z0, out_ch),
+                dens!(x0, y1, z0, out_ch) - c0,
+                dens!(x1, y1, z1, out_ch) - dens!(x1, y1, z0, out_ch),
+            )
+        } else if ry >= rz && rz >= rx {
+            (
+                dens!(x1, y1, z1, out_ch) - dens!(x0, y1, z1, out_ch),
+                dens!(x0, y1, z0, out_ch) - c0,
+                dens!(x0, y1, z1, out_ch) - dens!(x0, y1, z0, out_ch),
+            )
+        } else if rz >= ry && ry >= rx {
+            (
+                dens!(x1, y1, z1, out_ch) - dens!(x0, y1, z1, out_ch),
+                dens!(x0, y1, z1, out_ch) - dens!(x0, y0, z1, out_ch),
+                dens!(x0, y0, z1, out_ch) - c0,
+            )
+        } else {
+            (0, 0, 0)
+        };
+
+        let rest = c1 as i64 * rx as i64 + c2 as i64 * ry as i64 + c3 as i64 * rz as i64 + 0x8001;
+        output[out_ch] = (c0 + ((rest + (rest >> 16)) >> 16) as i32) as u16;
+    }
+}
+
+// ============================================================================
 // StageData
 // ============================================================================
 
@@ -729,6 +852,60 @@ pub enum StageLoc {
     AtEnd,
 }
 
+// ============================================================================
+// Fast evaluation paths (set by optimizer)
+// ============================================================================
+
+/// Pre-computed data for matrix-shaper 8-bit fast path.
+///
+/// Uses 1.14 fixed-point arithmetic (i32) for matrix operations.
+/// Input: 256-entry LUT (8-bit → 1.14 fixed-point)
+/// Output: 16385-entry LUT (1.14 clipped → u16)
+///
+/// C版: `MatShaper8Data`
+#[derive(Clone)]
+pub(crate) struct MatShaper8Data {
+    pub shaper1_r: [i32; 256],
+    pub shaper1_g: [i32; 256],
+    pub shaper1_b: [i32; 256],
+    pub mat: [[i32; 3]; 3],
+    pub off: [i32; 3],
+    pub shaper2_r: [u16; 16385],
+    pub shaper2_g: [u16; 16385],
+    pub shaper2_b: [u16; 16385],
+}
+
+/// Pre-computed data for 8-bit pre-linearization + CLUT fast path.
+///
+/// Stores precomputed grid node indices and fractional offsets for 256
+/// possible 8-bit input values per channel, enabling direct tetrahedral
+/// interpolation without runtime curve evaluation.
+///
+/// C版: `Prelin8Data`
+#[derive(Clone)]
+pub(crate) struct Prelin8Data {
+    /// Fractional remainder for tetrahedral interpolation (0..0xFFFF)
+    pub rx: [u16; 256],
+    pub ry: [u16; 256],
+    pub rz: [u16; 256],
+    /// Precomputed CLUT table offsets (node_index * stride)
+    pub x0: [u32; 256],
+    pub y0: [u32; 256],
+    pub z0: [u32; 256],
+    /// Reference to interpolation parameters (strides, output count)
+    pub n_outputs: u32,
+    pub opta: [u32; 3],
+    /// CLUT table data (u16)
+    pub table: Vec<u16>,
+}
+
+/// Optimized 16-bit evaluation path, set by the optimizer.
+#[derive(Clone)]
+pub(crate) enum FastEval16 {
+    MatShaper(Box<MatShaper8Data>),
+    Prelin8(Box<Prelin8Data>),
+}
+
 /// A chain of processing stages that transforms color data.
 ///
 /// C版: `cmsPipeline`
@@ -739,6 +916,7 @@ pub struct Pipeline {
     input_channels: u32,
     output_channels: u32,
     save_as_8bits: bool,
+    pub(crate) fast_eval16: Option<FastEval16>,
 }
 
 impl Pipeline {
@@ -756,6 +934,7 @@ impl Pipeline {
             input_channels,
             output_channels,
             save_as_8bits: false,
+            fast_eval16: None,
         })
     }
 
@@ -918,6 +1097,20 @@ impl Pipeline {
             self.output_channels
         );
 
+        // Use optimized evaluator if available
+        if let Some(ref fast) = self.fast_eval16 {
+            match fast {
+                FastEval16::MatShaper(data) => {
+                    mat_shaper_eval16(data, input, output);
+                    return;
+                }
+                FastEval16::Prelin8(data) => {
+                    prelin_eval8(data, input, output);
+                    return;
+                }
+            }
+        }
+
         let n_in = self.input_channels as usize;
         let n_out = self.output_channels as usize;
 
@@ -937,6 +1130,11 @@ impl Pipeline {
 
     pub fn save_as_8bits(&self) -> bool {
         self.save_as_8bits
+    }
+
+    /// Whether an optimized 16-bit evaluation path is active.
+    pub fn has_fast_eval16(&self) -> bool {
+        self.fast_eval16.is_some()
     }
 
     /// Check if stages match a pattern of types and return their indices.

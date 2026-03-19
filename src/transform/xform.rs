@@ -167,16 +167,17 @@ impl Transform {
         let mut found = find_combination(&lut, is_v4, dest_tag);
 
         // Phase 2: Optimize and retry (mask out NOOPTIMIZE for device link path)
+        // Device link optimization doesn't use format-specific fast paths (pass 0)
         if found.is_none() {
             let mut flags = self.flags & !FLAGS_NOOPTIMIZE;
-            super::opt::optimize_pipeline(&mut lut, self.rendering_intent, &mut flags);
+            super::opt::optimize_pipeline(&mut lut, self.rendering_intent, &mut flags, 0, 0);
             found = find_combination(&lut, is_v4, dest_tag);
         }
 
         // Phase 3: Force CLUT, ensure curve wrappers, retry
         if found.is_none() {
             let mut flags = (self.flags & !FLAGS_NOOPTIMIZE) | FLAGS_FORCE_CLUT;
-            super::opt::optimize_pipeline(&mut lut, self.rendering_intent, &mut flags);
+            super::opt::optimize_pipeline(&mut lut, self.rendering_intent, &mut flags, 0, 0);
 
             // Ensure first stage is curves
             if lut
@@ -285,7 +286,13 @@ impl Transform {
 
         // Optimize pipeline (unless FLAGS_NOOPTIMIZE)
         let mut opt_flags = flags;
-        super::opt::optimize_pipeline(&mut pipeline, intent, &mut opt_flags);
+        super::opt::optimize_pipeline(
+            &mut pipeline,
+            intent,
+            &mut opt_flags,
+            input_format.0,
+            output_format.0,
+        );
 
         // Validate format channels against linked pipeline
         if input_format.channels() != pipeline.input_channels() {
