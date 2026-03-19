@@ -236,6 +236,11 @@ impl ToneCurve {
         &self.table16
     }
 
+    /// Mutable access to the 16-bit lookup table (for optimizer use).
+    pub(crate) fn table16_mut(&mut self) -> &mut [u16] {
+        &mut self.table16
+    }
+
     /// Number of entries in the 16-bit table.
     pub fn table16_len(&self) -> u32 {
         self.n_entries
