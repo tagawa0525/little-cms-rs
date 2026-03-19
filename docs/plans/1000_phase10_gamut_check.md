@@ -1,6 +1,6 @@
 # Phase 10: Gamut Check Pipeline + Proofing Transform
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmsgmt.c`（deferred部分）+ `cmsxform.c`（proofing/gamut統合）
 **Rust見積**: ~250行（impl）+ ~150行（tests）
 **ブランチ**: `feat/phase10-gamut-check`
