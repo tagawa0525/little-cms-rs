@@ -569,6 +569,8 @@ impl Profile {
         temp_src: u32,
         temp_dest: u32,
     ) -> Self {
+        let n_lut_points = n_lut_points.clamp(2, 256);
+
         let mut p = Profile::new_placeholder();
         p.set_version_f64(4.4);
         p.header.device_class = ProfileClassSignature::Abstract;
