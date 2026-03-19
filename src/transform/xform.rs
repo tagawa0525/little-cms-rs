@@ -10,7 +10,7 @@ use crate::pipeline::pack::{
 };
 use crate::profile::io::Profile;
 use crate::transform::cnvrt;
-use crate::types::{MAX_CHANNELS, PixelFormat};
+use crate::types::{ColorSpaceSignature, MAX_CHANNELS, PixelFormat};
 
 // ============================================================================
 // Transform flags
@@ -38,6 +38,9 @@ pub struct Transform {
     from_input: FormatterIn,
     to_output: FormatterOut,
     flags: u32,
+    entry_color_space: ColorSpaceSignature,
+    exit_color_space: ColorSpaceSignature,
+    rendering_intent: u32,
 }
 
 impl Transform {
@@ -47,6 +50,22 @@ impl Transform {
 
     pub fn output_format(&self) -> PixelFormat {
         self.output_format
+    }
+
+    pub fn pipeline(&self) -> &Pipeline {
+        &self.pipeline
+    }
+
+    /// Convert this transform into a device link profile.
+    /// C版: `cmsTransform2DeviceLink`
+    pub fn to_device_link(&self, _version: f64) -> Result<Profile, CmsError> {
+        // Reference fields to avoid dead_code warning during RED phase
+        let _ = (
+            self.entry_color_space,
+            self.exit_color_space,
+            self.rendering_intent,
+        );
+        todo!("Phase 6c: to_device_link")
     }
 
     /// Create a transform from two profiles (consumed).
@@ -89,6 +108,16 @@ impl Transform {
                 message: "mixed float/integer formats are not supported".into(),
             });
         }
+
+        // Capture color spaces from first/last profiles
+        let entry_color_space = profiles[0].header.color_space;
+        let exit_color_space = profiles[profiles.len() - 1].header.pcs;
+        // For output/display profiles, the exit space is the device color space
+        let exit_color_space = if profiles.len() >= 2 {
+            profiles[profiles.len() - 1].header.color_space
+        } else {
+            exit_color_space
+        };
 
         // Build pipeline from profiles
         let n = profiles.len();
@@ -148,6 +177,9 @@ impl Transform {
             from_input,
             to_output,
             flags,
+            entry_color_space,
+            exit_color_space,
+            rendering_intent: intent,
         })
     }
 
@@ -435,5 +467,55 @@ mod tests {
         xform.do_transform(&input, &mut output, 1);
         // Should produce non-zero output
         assert!(output[0] > 0 || output[1] > 0 || output[2] > 0);
+    }
+
+    // ================================================================
+    // to_device_link
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn test_device_link_rgb_to_rgb() {
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let xform = Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_8, 1, 0).unwrap();
+
+        let mut dl = xform.to_device_link(4.4).unwrap();
+        let dl = roundtrip(&mut dl);
+        assert_eq!(dl.header.device_class, ProfileClassSignature::Link);
+        assert_eq!(dl.header.color_space, ColorSpaceSignature::RgbData);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn test_device_link_has_lut_tag() {
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let xform = Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_8, 1, 0).unwrap();
+
+        let mut dl = xform.to_device_link(4.4).unwrap();
+        let mut dl = roundtrip(&mut dl);
+        // Device link should have AToB0 tag
+        assert!(dl.read_tag(TagSignature::AToB0).is_ok());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn test_device_link_pipeline_preserved() {
+        // Verify that device link profile contains a valid pipeline
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let xform = Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_8, 1, 0).unwrap();
+
+        let mut dl = xform.to_device_link(4.4).unwrap();
+        let mut dl = roundtrip(&mut dl);
+
+        // Read the pipeline from AToB0
+        if let Ok(TagData::Pipeline(lut)) = dl.read_tag(TagSignature::AToB0) {
+            assert_eq!(lut.input_channels(), 3);
+            assert_eq!(lut.output_channels(), 3);
+        } else {
+            panic!("device link should have a valid Pipeline in AToB0");
+        }
     }
 }
