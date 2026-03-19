@@ -160,27 +160,24 @@ impl Transform {
         fix_color_spaces(&mut p, self.entry_color_space, self.exit_color_space);
 
         // Determine destination tag
-        let dest_tag = if p.header.device_class == ProfileClassSignature::Output {
-            TagSignature::BToA0
-        } else {
-            TagSignature::AToB0
-        };
+        // Device links always use AToB0 (fix_color_spaces never sets Output class)
+        let dest_tag = TagSignature::AToB0;
 
         let is_v4 = version >= 4.0;
 
         // Phase 1: Try direct match
         let mut found = find_combination(&lut, is_v4, dest_tag);
 
-        // Phase 2: Optimize and retry
+        // Phase 2: Optimize and retry (mask out NOOPTIMIZE for device link path)
         if found.is_none() {
-            let mut flags = self.flags;
+            let mut flags = self.flags & !FLAGS_NOOPTIMIZE;
             super::opt::optimize_pipeline(&mut lut, self.rendering_intent, &mut flags);
             found = find_combination(&lut, is_v4, dest_tag);
         }
 
         // Phase 3: Force CLUT, ensure curve wrappers, retry
         if found.is_none() {
-            let mut flags = self.flags | FLAGS_FORCE_CLUT;
+            let mut flags = (self.flags & !FLAGS_NOOPTIMIZE) | FLAGS_FORCE_CLUT;
             super::opt::optimize_pipeline(&mut lut, self.rendering_intent, &mut flags);
 
             // Ensure first stage is curves
