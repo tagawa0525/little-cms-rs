@@ -2,10 +2,12 @@
 // Virtual (built-in) profile generation (C版: cmsvirt.c)
 // ============================================================================
 
+use crate::context::{CmsError, ErrorCode};
 use crate::curves::gamma::ToneCurve;
+use crate::curves::intrp::quick_saturate_word;
 use crate::curves::wtpnt;
 use crate::math::pcs;
-use crate::pipeline::lut::{Pipeline, Stage, StageLoc};
+use crate::pipeline::lut::{Pipeline, Stage, StageLoc, sample_clut_16bit};
 use crate::pipeline::named::Mlu;
 use crate::profile::io::Profile;
 use crate::profile::tag_types::TagData;
@@ -59,6 +61,179 @@ fn set_text_tags(profile: &mut Profile, description: &str) {
     profile
         .write_tag(TagSignature::Copyright, TagData::Mlu(copy_mlu))
         .expect("Copyright tag write should not fail");
+}
+
+/// Ink-limiting sampler: reduce CMY to stay under total ink limit.
+/// C版: `InkLimitingSampler`
+fn ink_limiting_sampler(inp: &[u16], out: &mut [u16], ink_limit: f64) {
+    let c = inp[0] as f64;
+    let m = inp[1] as f64;
+    let y = inp[2] as f64;
+    let k = inp[3] as f64;
+
+    let sum_cmy = c + m + y;
+    let sum_cmyk = sum_cmy + k;
+
+    let ratio = if sum_cmyk > ink_limit && sum_cmy > 0.0 {
+        (1.0 - ((sum_cmyk - ink_limit) / sum_cmy)).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+
+    out[0] = quick_saturate_word(c * ratio);
+    out[1] = quick_saturate_word(m * ratio);
+    out[2] = quick_saturate_word(y * ratio);
+    out[3] = inp[3]; // K unchanged
+}
+
+/// Parameters for BCHSW adjustment.
+struct BchswParams {
+    bright: f64,
+    contrast: f64,
+    hue: f64,
+    saturation: f64,
+    adjust_wp: bool,
+    wp_src: CieXyz,
+    wp_dest: CieXyz,
+}
+
+/// BCHSW sampler: adjust brightness, contrast, hue, saturation, white point.
+/// C版: `bchswSampler`
+fn bchsw_sampler(inp: &[u16], out: &mut [u16], params: &BchswParams) {
+    let encoded = [inp[0], inp[1], inp[2]];
+    let lab_in = pcs::pcs_encoded_lab_to_float(&encoded);
+    let lch_in = pcs::lab_to_lch(&lab_in);
+
+    let lch_out = CieLCh {
+        l: lch_in.l * params.contrast + params.bright,
+        c: lch_in.c + params.saturation,
+        h: lch_in.h + params.hue,
+    };
+
+    let mut lab_out = pcs::lch_to_lab(&lch_out);
+
+    if params.adjust_wp {
+        let xyz = pcs::lab_to_xyz(&params.wp_src, &lab_out);
+        lab_out = pcs::xyz_to_lab(&params.wp_dest, &xyz);
+    }
+
+    let encoded_out = pcs::float_to_pcs_encoded_lab(&lab_out);
+    out[0] = encoded_out[0];
+    out[1] = encoded_out[1];
+    out[2] = encoded_out[2];
+}
+
+// ============================================================================
+// OkLab pipeline construction
+// ============================================================================
+
+// OkLab transformation matrices (from Björn Ottosson).
+// Precision matches the C version constants exactly.
+
+// D50→D65 chromatic adaptation
+#[rustfmt::skip]
+#[allow(clippy::excessive_precision)]
+const M_D50_D65: [f64; 9] = [
+     0.9554734527042182,  -0.023098536874261423, 0.0632593086610217,
+    -0.028369706963208136, 1.0099954580106629,   0.021041398966943008,
+     0.012314001688319899, -0.020507696433477912, 1.3303659366080753,
+];
+
+// D65→D50 chromatic adaptation
+#[rustfmt::skip]
+#[allow(clippy::excessive_precision)]
+const M_D65_D50: [f64; 9] = [
+    1.0479298208405488,   0.022946793341019088, -0.050182534647531644,
+    0.029627815688159344, 0.990434484573249,    -0.01707382502938514,
+   -0.009243058152591178, 0.015055144896577895,  0.7518742899580008,
+];
+
+// XYZ/D65 → LMS
+#[rustfmt::skip]
+const M_D65_LMS: [f64; 9] = [
+    0.8189330101, 0.3618667424, -0.1288597137,
+    0.0329845436, 0.9293118715,  0.0361456387,
+    0.0482003018, 0.2643662691,  0.6338517070,
+];
+
+// LMS → XYZ/D65
+#[rustfmt::skip]
+#[allow(clippy::excessive_precision)]
+const M_LMS_D65: [f64; 9] = [
+     1.227013851103521,  -0.557799980651822,   0.281256148966468,
+    -0.040580178423281,   1.112256869616830,  -0.071676678665601,
+    -0.076381284505707,  -0.421481978418013,   1.586163220440795,
+];
+
+// LMS' → OkLab
+#[rustfmt::skip]
+const M_LMSPRIME_OKLAB: [f64; 9] = [
+    0.2104542553,  0.7936177850, -0.0040720468,
+    1.9779984951, -2.4285922050,  0.4505937099,
+    0.0259040371,  0.7827717662, -0.8086757660,
+];
+
+// OkLab → LMS'
+#[rustfmt::skip]
+#[allow(clippy::excessive_precision)]
+const M_OKLAB_LMSPRIME: [f64; 9] = [
+    0.999999998450520,  0.396337792173768,  0.215803758060759,
+    1.000000008881761, -0.105561342323656, -0.063854174771706,
+    1.000000054672411, -0.089484182094966, -1.291485537864092,
+];
+
+/// Build BToA0 pipeline: XYZ/D50 → OkLab
+fn build_oklab_btoa() -> Option<Pipeline> {
+    let mut lut = Pipeline::new(3, 3)?;
+
+    // 1. Normalize from XYZ float (PCS encoding → 0-1 range)
+    lut.insert_stage(StageLoc::AtEnd, Stage::new_normalize_from_xyz_float()?);
+
+    // 2. D50→D65 chromatic adaptation
+    lut.insert_stage(StageLoc::AtEnd, Stage::new_matrix(3, 3, &M_D50_D65, None)?);
+
+    // 3. D65→LMS
+    lut.insert_stage(StageLoc::AtEnd, Stage::new_matrix(3, 3, &M_D65_LMS, None)?);
+
+    // 4. Cube root (LMS → LMS')
+    let cube_root = ToneCurve::build_gamma(1.0 / 3.0)?;
+    let curves = [cube_root.clone(), cube_root.clone(), cube_root];
+    lut.insert_stage(StageLoc::AtEnd, Stage::new_tone_curves(Some(&curves), 3)?);
+
+    // 5. LMS' → OkLab
+    lut.insert_stage(
+        StageLoc::AtEnd,
+        Stage::new_matrix(3, 3, &M_LMSPRIME_OKLAB, None)?,
+    );
+
+    Some(lut)
+}
+
+/// Build AToB0 pipeline: OkLab → XYZ/D50
+fn build_oklab_atob() -> Option<Pipeline> {
+    let mut lut = Pipeline::new(3, 3)?;
+
+    // 1. OkLab → LMS'
+    lut.insert_stage(
+        StageLoc::AtEnd,
+        Stage::new_matrix(3, 3, &M_OKLAB_LMSPRIME, None)?,
+    );
+
+    // 2. Cube (LMS' → LMS)
+    let cube = ToneCurve::build_gamma(3.0)?;
+    let curves = [cube.clone(), cube.clone(), cube];
+    lut.insert_stage(StageLoc::AtEnd, Stage::new_tone_curves(Some(&curves), 3)?);
+
+    // 3. LMS → D65
+    lut.insert_stage(StageLoc::AtEnd, Stage::new_matrix(3, 3, &M_LMS_D65, None)?);
+
+    // 4. D65→D50 chromatic adaptation
+    lut.insert_stage(StageLoc::AtEnd, Stage::new_matrix(3, 3, &M_D65_D50, None)?);
+
+    // 5. Normalize to XYZ float (0-1 range → PCS encoding)
+    lut.insert_stage(StageLoc::AtEnd, Stage::new_normalize_to_xyz_float()?);
+
+    Some(lut)
 }
 
 /// Build sRGB parametric gamma curve (type 4).
@@ -283,39 +458,180 @@ impl Profile {
     /// Create a linearization device link profile.
     /// C版: `cmsCreateLinearizationDeviceLinkTHR`
     pub fn new_linearization_device_link(
-        _color_space: ColorSpaceSignature,
-        _transfer_functions: &[ToneCurve],
+        color_space: ColorSpaceSignature,
+        transfer_functions: &[ToneCurve],
     ) -> Self {
-        todo!("Phase 6b: linearization device link")
+        let n_channels = color_space.channels();
+
+        let mut p = Profile::new_placeholder();
+        p.set_version_f64(4.4);
+        p.header.device_class = ProfileClassSignature::Link;
+        p.header.color_space = color_space;
+        p.header.pcs = color_space;
+        p.header.rendering_intent = 0;
+
+        set_text_tags(&mut p, "Linearization built-in");
+
+        if let Some(mut lut) = Pipeline::new(n_channels, n_channels) {
+            if let Some(stage) = Stage::new_tone_curves(Some(transfer_functions), n_channels) {
+                lut.insert_stage(StageLoc::AtBegin, stage);
+            }
+            let _ = p.write_tag(TagSignature::AToB0, TagData::Pipeline(lut));
+        }
+
+        p
     }
 
     /// Create an ink-limiting device link profile (CMYK only).
     /// C版: `cmsCreateInkLimitingDeviceLinkTHR`
     pub fn new_ink_limiting_device_link(
-        _color_space: ColorSpaceSignature,
-        _limit: f64,
-    ) -> Result<Self, crate::context::CmsError> {
-        todo!("Phase 6b: ink limiting device link")
+        color_space: ColorSpaceSignature,
+        limit: f64,
+    ) -> Result<Self, CmsError> {
+        if color_space != ColorSpaceSignature::CmykData {
+            return Err(CmsError {
+                code: ErrorCode::ColorspaceCheck,
+                message: "ink limiting only supports CMYK".into(),
+            });
+        }
+
+        let limit = limit.clamp(1.0, 400.0);
+        let n_channels = 4u32;
+
+        let mut p = Profile::new_placeholder();
+        p.set_version_f64(4.4);
+        p.header.device_class = ProfileClassSignature::Link;
+        p.header.color_space = color_space;
+        p.header.pcs = color_space;
+        p.header.rendering_intent = 0;
+
+        set_text_tags(&mut p, "ink-limiting built-in");
+
+        if let Some(mut lut) = Pipeline::new(n_channels, n_channels) {
+            // Pre-linearization: identity curves
+            if let Some(stage) = Stage::new_identity_curves(n_channels) {
+                lut.insert_stage(StageLoc::AtEnd, stage);
+            }
+
+            // CLUT with ink-limiting sampler
+            if let Some(mut clut) = Stage::new_clut_16bit_uniform(17, n_channels, n_channels, None)
+            {
+                let ink_limit = limit * 655.35;
+                sample_clut_16bit(
+                    &mut clut,
+                    |inp, out, _| {
+                        ink_limiting_sampler(inp, out, ink_limit);
+                        true
+                    },
+                    0,
+                );
+                lut.insert_stage(StageLoc::AtEnd, clut);
+            }
+
+            // Post-linearization: identity curves
+            if let Some(stage) = Stage::new_identity_curves(n_channels) {
+                lut.insert_stage(StageLoc::AtEnd, stage);
+            }
+
+            let _ = p.write_tag(TagSignature::AToB0, TagData::Pipeline(lut));
+        }
+
+        Ok(p)
     }
 
     /// Create a BCHSW (Brightness/Contrast/Hue/Saturation/WhitePoint) abstract profile.
     /// C版: `cmsCreateBCHSWabstractProfileTHR`
     pub fn new_bchsw_abstract(
-        _n_lut_points: u32,
-        _bright: f64,
-        _contrast: f64,
-        _hue: f64,
-        _saturation: f64,
-        _temp_src: u32,
-        _temp_dest: u32,
+        n_lut_points: u32,
+        bright: f64,
+        contrast: f64,
+        hue: f64,
+        saturation: f64,
+        temp_src: u32,
+        temp_dest: u32,
     ) -> Self {
-        todo!("Phase 6b: BCHSW abstract profile")
+        let mut p = Profile::new_placeholder();
+        p.set_version_f64(4.4);
+        p.header.device_class = ProfileClassSignature::Abstract;
+        p.header.color_space = ColorSpaceSignature::LabData;
+        p.header.pcs = ColorSpaceSignature::LabData;
+        p.header.rendering_intent = 0;
+
+        set_text_tags(&mut p, "BCHSW built-in");
+
+        let d50 = wtpnt::d50_xyz();
+        let _ = p.write_tag(TagSignature::MediaWhitePoint, TagData::Xyz(d50));
+
+        // Determine white point adjustment
+        let adjust_wp = temp_src != temp_dest;
+        let wp_src = if adjust_wp {
+            let xy = wtpnt::white_point_from_temp(temp_src as f64).unwrap_or(wtpnt::d50_xyy());
+            pcs::xyy_to_xyz(&xy)
+        } else {
+            d50
+        };
+        let wp_dest = if adjust_wp {
+            let xy = wtpnt::white_point_from_temp(temp_dest as f64).unwrap_or(wtpnt::d50_xyy());
+            pcs::xyy_to_xyz(&xy)
+        } else {
+            d50
+        };
+
+        let params = BchswParams {
+            bright,
+            contrast,
+            hue,
+            saturation,
+            adjust_wp,
+            wp_src,
+            wp_dest,
+        };
+
+        if let Some(mut lut) = Pipeline::new(3, 3) {
+            let dims = [n_lut_points, n_lut_points, n_lut_points];
+            if let Some(mut clut) = Stage::new_clut_16bit(&dims, 3, 3, None) {
+                sample_clut_16bit(
+                    &mut clut,
+                    |inp, out, _| {
+                        bchsw_sampler(inp, out, &params);
+                        true
+                    },
+                    0,
+                );
+                lut.insert_stage(StageLoc::AtEnd, clut);
+            }
+            let _ = p.write_tag(TagSignature::AToB0, TagData::Pipeline(lut));
+        }
+
+        p
     }
 
     /// Create an OkLab color space profile.
     /// C版: `cmsCreate_OkLabProfile`
     pub fn new_oklab() -> Self {
-        todo!("Phase 6b: OkLab profile")
+        let mut p = Profile::new_placeholder();
+        p.set_version_f64(4.4);
+        p.header.device_class = ProfileClassSignature::ColorSpace;
+        p.header.color_space = ColorSpaceSignature::Color3;
+        p.header.pcs = ColorSpaceSignature::XyzData;
+        p.header.rendering_intent = 1; // Relative colorimetric
+
+        set_text_tags(&mut p, "OkLab built-in");
+
+        let d50 = wtpnt::d50_xyz();
+        let _ = p.write_tag(TagSignature::MediaWhitePoint, TagData::Xyz(d50));
+
+        // Build BToA0: XYZ/D50 → OkLab
+        if let Some(lut) = build_oklab_btoa() {
+            let _ = p.write_tag(TagSignature::BToA0, TagData::Pipeline(lut));
+        }
+
+        // Build AToB0: OkLab → XYZ/D50
+        if let Some(lut) = build_oklab_atob() {
+            let _ = p.write_tag(TagSignature::AToB0, TagData::Pipeline(lut));
+        }
+
+        p
     }
 
     /// Create a NULL profile (Lab→Gray L* extraction).
@@ -618,7 +934,6 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn linearization_device_link_rgb_header() {
         let gamma = ToneCurve::build_gamma(2.2).unwrap();
         let curves = [gamma.clone(), gamma.clone(), gamma];
@@ -630,7 +945,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn linearization_device_link_has_atob0() {
         let gamma = ToneCurve::build_gamma(1.8).unwrap();
         let curves = [gamma.clone(), gamma.clone(), gamma.clone(), gamma];
@@ -645,7 +959,6 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn ink_limiting_header() {
         let p = Profile::new_ink_limiting_device_link(ColorSpaceSignature::CmykData, 200.0);
         assert!(p.is_ok());
@@ -656,14 +969,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn ink_limiting_rejects_non_cmyk() {
         let p = Profile::new_ink_limiting_device_link(ColorSpaceSignature::RgbData, 200.0);
         assert!(p.is_err());
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn ink_limiting_transform_respects_limit() {
         // Create ink-limiting device link with 200% limit
         let mut link =
@@ -703,7 +1014,6 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn bchsw_header() {
         let mut p = Profile::new_bchsw_abstract(17, 10.0, 1.0, 0.0, 0.0, 6500, 6500);
         let p2 = roundtrip(&mut p);
@@ -713,7 +1023,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn bchsw_brightness_increases_l() {
         // Brightness +20 should increase L* of a mid-gray
         let mut bchsw = Profile::new_bchsw_abstract(17, 20.0, 1.0, 0.0, 0.0, 6500, 6500);
@@ -739,7 +1048,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn bchsw_hue_rotation() {
         // Hue +180 should rotate hue
         let mut bchsw = Profile::new_bchsw_abstract(17, 0.0, 1.0, 180.0, 0.0, 6500, 6500);
@@ -769,7 +1077,6 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn oklab_header() {
         let mut p = Profile::new_oklab();
         let p2 = roundtrip(&mut p);
@@ -779,7 +1086,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn oklab_has_atob0_and_btoa0() {
         let mut p = Profile::new_oklab();
         let mut p2 = roundtrip(&mut p);
