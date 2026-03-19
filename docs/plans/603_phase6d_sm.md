@@ -1,6 +1,6 @@
 # Phase 6d: sm.rs ガマットバウンダリ記述
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmssm.c`（737行）
 **Rust見積**: ~200行（impl）+ ~100行（tests）
 **ブランチ**: `feat/phase6d-sm`
