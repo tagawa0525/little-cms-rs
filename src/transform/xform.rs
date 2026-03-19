@@ -264,13 +264,20 @@ impl Transform {
         }
 
         // Capture color spaces from first/last profiles
+        // Entry is always the first profile's device color space.
+        // Exit depends on the last profile's class:
+        //   Input/Link/Abstract → exit is PCS (header.pcs)
+        //   Output/Display → exit is device color space (header.color_space)
         let entry_color_space = profiles[0].header.color_space;
-        let exit_color_space = profiles[profiles.len() - 1].header.pcs;
-        // For output/display profiles, the exit space is the device color space
-        let exit_color_space = if profiles.len() >= 2 {
-            profiles[profiles.len() - 1].header.color_space
+        let last = &profiles[profiles.len() - 1];
+        let last_class = last.header.device_class;
+        let exit_color_space = if last_class == ProfileClassSignature::Link
+            || last_class == ProfileClassSignature::Abstract
+            || last_class == ProfileClassSignature::Input
+        {
+            last.header.pcs
         } else {
-            exit_color_space
+            last.header.color_space
         };
 
         // Build pipeline from profiles
