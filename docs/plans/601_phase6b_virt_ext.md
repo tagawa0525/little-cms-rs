@@ -1,6 +1,6 @@
 # Phase 6b: virt.rs 仮想プロファイル拡張（デバイスリンク・BCHSW・OkLab）
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmsvirt.c`（1,353行）の未移植部分
 **Rust見積**: ~250行（impl）+ ~200行（tests）
 **ブランチ**: `feat/phase6b-virt-ext`
