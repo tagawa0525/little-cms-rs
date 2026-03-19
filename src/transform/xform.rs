@@ -10,7 +10,9 @@ use crate::pipeline::pack::{
 };
 use crate::profile::io::Profile;
 use crate::transform::cnvrt;
-use crate::types::{MAX_CHANNELS, PixelFormat};
+use crate::types::{ColorSpaceSignature, MAX_CHANNELS, PixelFormat};
+
+use crate::types::{ProfileClassSignature, StageSignature, TagSignature};
 
 // ============================================================================
 // Transform flags
@@ -30,6 +32,78 @@ pub const FLAGS_SOFTPROOFING: u32 = 0x4000;
 pub const FLAGS_BLACKPOINTCOMPENSATION: u32 = 0x2000;
 pub const FLAGS_COPY_ALPHA: u32 = 0x04000000;
 
+// ============================================================================
+// Device link helpers
+// ============================================================================
+
+fn is_pcs(cs: ColorSpaceSignature) -> bool {
+    cs == ColorSpaceSignature::XyzData || cs == ColorSpaceSignature::LabData
+}
+
+/// Set device class and color spaces based on PCS status.
+/// C版: `FixColorSpaces`
+fn fix_color_spaces(profile: &mut Profile, entry: ColorSpaceSignature, exit: ColorSpaceSignature) {
+    // Default: device link
+    profile.header.device_class = ProfileClassSignature::Link;
+    profile.header.color_space = entry;
+    profile.header.pcs = exit;
+
+    // Both PCS → Abstract
+    if is_pcs(entry) && is_pcs(exit) {
+        profile.header.device_class = ProfileClassSignature::Abstract;
+    }
+}
+
+/// Allowed LUT stage combination for ICC tag writing.
+struct AllowedLut {
+    is_v4: bool,
+    required_tag: Option<TagSignature>,
+    stage_types: &'static [StageSignature],
+}
+
+#[rustfmt::skip]
+const ALLOWED_LUT_TYPES: &[AllowedLut] = &[
+    // V2: Lut16Type
+    AllowedLut { is_v4: false, required_tag: None, stage_types: &[StageSignature::MatrixElem, StageSignature::CurveSetElem, StageSignature::CLutElem, StageSignature::CurveSetElem] },
+    AllowedLut { is_v4: false, required_tag: None, stage_types: &[StageSignature::CurveSetElem, StageSignature::CLutElem, StageSignature::CurveSetElem] },
+    AllowedLut { is_v4: false, required_tag: None, stage_types: &[StageSignature::CurveSetElem, StageSignature::CLutElem] },
+    // V4 AToB: LutAtoBType
+    AllowedLut { is_v4: true, required_tag: None, stage_types: &[StageSignature::CurveSetElem] },
+    AllowedLut { is_v4: true, required_tag: Some(TagSignature::AToB0), stage_types: &[StageSignature::CurveSetElem, StageSignature::MatrixElem, StageSignature::CurveSetElem] },
+    AllowedLut { is_v4: true, required_tag: Some(TagSignature::AToB0), stage_types: &[StageSignature::CurveSetElem, StageSignature::CLutElem, StageSignature::CurveSetElem] },
+    AllowedLut { is_v4: true, required_tag: Some(TagSignature::AToB0), stage_types: &[StageSignature::CurveSetElem, StageSignature::CLutElem, StageSignature::CurveSetElem, StageSignature::MatrixElem, StageSignature::CurveSetElem] },
+    // V4 BToA: LutBtoAType
+    AllowedLut { is_v4: true, required_tag: Some(TagSignature::BToA0), stage_types: &[StageSignature::CurveSetElem] },
+    AllowedLut { is_v4: true, required_tag: Some(TagSignature::BToA0), stage_types: &[StageSignature::CurveSetElem, StageSignature::MatrixElem, StageSignature::CurveSetElem] },
+    AllowedLut { is_v4: true, required_tag: Some(TagSignature::BToA0), stage_types: &[StageSignature::CurveSetElem, StageSignature::CLutElem, StageSignature::CurveSetElem] },
+    AllowedLut { is_v4: true, required_tag: Some(TagSignature::BToA0), stage_types: &[StageSignature::MatrixElem, StageSignature::CurveSetElem, StageSignature::CLutElem, StageSignature::CurveSetElem, StageSignature::CurveSetElem] },
+];
+
+/// Check if pipeline stages match an allowed combination.
+/// C版: `FindCombination`
+fn find_combination(lut: &Pipeline, is_v4: bool, dest_tag: TagSignature) -> Option<usize> {
+    let stages = lut.stages();
+    for (i, entry) in ALLOWED_LUT_TYPES.iter().enumerate() {
+        if entry.is_v4 != is_v4 {
+            continue;
+        }
+        if entry.required_tag.is_some_and(|req| req != dest_tag) {
+            continue;
+        }
+        if stages.len() != entry.stage_types.len() {
+            continue;
+        }
+        let matches = stages
+            .iter()
+            .zip(entry.stage_types.iter())
+            .all(|(s, t)| s.stage_type() == *t);
+        if matches {
+            return Some(i);
+        }
+    }
+    None
+}
+
 /// Color transform: converts pixel data between ICC profiles.
 pub struct Transform {
     pipeline: Pipeline,
@@ -38,6 +112,9 @@ pub struct Transform {
     from_input: FormatterIn,
     to_output: FormatterOut,
     flags: u32,
+    entry_color_space: ColorSpaceSignature,
+    exit_color_space: ColorSpaceSignature,
+    rendering_intent: u32,
 }
 
 impl Transform {
@@ -47,6 +124,97 @@ impl Transform {
 
     pub fn output_format(&self) -> PixelFormat {
         self.output_format
+    }
+
+    pub fn pipeline(&self) -> &Pipeline {
+        &self.pipeline
+    }
+
+    /// Convert this transform into a device link profile.
+    /// C版: `cmsTransform2DeviceLink`
+    pub fn to_device_link(&self, version: f64) -> Result<Profile, CmsError> {
+        use crate::pipeline::lut::{Stage, StageLoc};
+        use crate::profile::tag_types::TagData;
+
+        let mut lut = self.pipeline.clone();
+
+        // Lab V2/V4 encoding fix
+        if self.entry_color_space == ColorSpaceSignature::LabData
+            && version < 4.0
+            && let Some(stage) = Stage::new_lab_v2_to_v4_curves()
+        {
+            lut.insert_stage(StageLoc::AtBegin, stage);
+        }
+        if self.exit_color_space == ColorSpaceSignature::LabData
+            && version < 4.0
+            && let Some(stage) = Stage::new_lab_v4_to_v2()
+        {
+            lut.insert_stage(StageLoc::AtEnd, stage);
+        }
+
+        // Create profile and set header
+        let mut p = Profile::new_placeholder();
+        p.set_version_f64(version);
+        fix_color_spaces(&mut p, self.entry_color_space, self.exit_color_space);
+
+        // Determine destination tag
+        // Device links always use AToB0 (fix_color_spaces never sets Output class)
+        let dest_tag = TagSignature::AToB0;
+
+        let is_v4 = version >= 4.0;
+
+        // Phase 1: Try direct match
+        let mut found = find_combination(&lut, is_v4, dest_tag);
+
+        // Phase 2: Optimize and retry (mask out NOOPTIMIZE for device link path)
+        if found.is_none() {
+            let mut flags = self.flags & !FLAGS_NOOPTIMIZE;
+            super::opt::optimize_pipeline(&mut lut, self.rendering_intent, &mut flags);
+            found = find_combination(&lut, is_v4, dest_tag);
+        }
+
+        // Phase 3: Force CLUT, ensure curve wrappers, retry
+        if found.is_none() {
+            let mut flags = (self.flags & !FLAGS_NOOPTIMIZE) | FLAGS_FORCE_CLUT;
+            super::opt::optimize_pipeline(&mut lut, self.rendering_intent, &mut flags);
+
+            // Ensure first stage is curves
+            if lut
+                .first_stage()
+                .is_some_and(|s| s.stage_type() != StageSignature::CurveSetElem)
+                && let Some(stage) = Stage::new_identity_curves(lut.input_channels())
+            {
+                lut.insert_stage(StageLoc::AtBegin, stage);
+            }
+
+            // Ensure last stage is curves
+            if lut
+                .last_stage()
+                .is_some_and(|s| s.stage_type() != StageSignature::CurveSetElem)
+                && let Some(stage) = Stage::new_identity_curves(lut.output_channels())
+            {
+                lut.insert_stage(StageLoc::AtEnd, stage);
+            }
+
+            found = find_combination(&lut, is_v4, dest_tag);
+        }
+
+        if found.is_none() {
+            return Err(CmsError {
+                code: ErrorCode::NotSuitable,
+                message: "no compatible LUT format for device link".into(),
+            });
+        }
+
+        // Write tags (propagate errors)
+        crate::profile::virt::set_text_tags_fallible(&mut p, "devicelink")?;
+
+        let d50 = crate::curves::wtpnt::d50_xyz();
+        p.write_tag(TagSignature::MediaWhitePoint, TagData::Xyz(d50))?;
+        p.write_tag(dest_tag, TagData::Pipeline(lut))?;
+        p.header.rendering_intent = self.rendering_intent;
+
+        Ok(p)
     }
 
     /// Create a transform from two profiles (consumed).
@@ -89,6 +257,23 @@ impl Transform {
                 message: "mixed float/integer formats are not supported".into(),
             });
         }
+
+        // Capture color spaces from first/last profiles
+        // Entry is always the first profile's device color space.
+        // Exit depends on the last profile's class:
+        //   Input/Link/Abstract → exit is PCS (header.pcs)
+        //   Output/Display → exit is device color space (header.color_space)
+        let entry_color_space = profiles[0].header.color_space;
+        let last = &profiles[profiles.len() - 1];
+        let last_class = last.header.device_class;
+        let exit_color_space = if last_class == ProfileClassSignature::Link
+            || last_class == ProfileClassSignature::Abstract
+            || last_class == ProfileClassSignature::Input
+        {
+            last.header.pcs
+        } else {
+            last.header.color_space
+        };
 
         // Build pipeline from profiles
         let n = profiles.len();
@@ -148,6 +333,9 @@ impl Transform {
             from_input,
             to_output,
             flags,
+            entry_color_space,
+            exit_color_space,
+            rendering_intent: intent,
         })
     }
 
@@ -435,5 +623,52 @@ mod tests {
         xform.do_transform(&input, &mut output, 1);
         // Should produce non-zero output
         assert!(output[0] > 0 || output[1] > 0 || output[2] > 0);
+    }
+
+    // ================================================================
+    // to_device_link
+    // ================================================================
+
+    #[test]
+    fn test_device_link_rgb_to_rgb() {
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let xform = Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_8, 1, 0).unwrap();
+
+        let mut dl = xform.to_device_link(4.4).unwrap();
+        let dl = roundtrip(&mut dl);
+        assert_eq!(dl.header.device_class, ProfileClassSignature::Link);
+        assert_eq!(dl.header.color_space, ColorSpaceSignature::RgbData);
+    }
+
+    #[test]
+    fn test_device_link_has_lut_tag() {
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let xform = Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_8, 1, 0).unwrap();
+
+        let mut dl = xform.to_device_link(4.4).unwrap();
+        let mut dl = roundtrip(&mut dl);
+        // Device link should have AToB0 tag
+        assert!(dl.read_tag(TagSignature::AToB0).is_ok());
+    }
+
+    #[test]
+    fn test_device_link_pipeline_preserved() {
+        // Verify that device link profile contains a valid pipeline
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let xform = Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_8, 1, 0).unwrap();
+
+        let mut dl = xform.to_device_link(4.4).unwrap();
+        let mut dl = roundtrip(&mut dl);
+
+        // Read the pipeline from AToB0
+        if let Ok(TagData::Pipeline(lut)) = dl.read_tag(TagSignature::AToB0) {
+            assert_eq!(lut.input_channels(), 3);
+            assert_eq!(lut.output_channels(), 3);
+        } else {
+            panic!("device link should have a valid Pipeline in AToB0");
+        }
     }
 }
