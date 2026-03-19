@@ -1,6 +1,6 @@
 # Phase 6e: cgats.rs CGATS/IT8 パーサ
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmscgats.c`（3,301行）
 **Rust見積**: ~400行（impl）+ ~150行（tests）
 **ブランチ**: `feat/phase6e-cgats`
