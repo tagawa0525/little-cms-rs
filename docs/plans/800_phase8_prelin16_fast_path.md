@@ -1,6 +1,6 @@
 # Phase 8: Prelin16 16bit 高速パス
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmsopt.c`（Prelin16Data / PrelinEval16 / OptimizeByResampling 強化: ~250行相当）
 **Rust見積**: ~200行（impl）+ ~50行（tests）
 **ブランチ**: `feat/phase8-prelin16`
