@@ -5,6 +5,7 @@
 // Reads and writes CGATS.17 / IT8.7 color measurement data files.
 // Supports header properties, data format definitions, and data tables.
 
+use crate::context::{CmsError, ErrorCode};
 use std::collections::BTreeMap;
 
 // ============================================================================
@@ -60,8 +61,11 @@ impl It8 {
     }
 
     /// Parse IT8/CGATS text.
-    pub fn load_from_str(text: &str) -> Result<Self, String> {
-        Parser::parse(text)
+    pub fn load_from_str(text: &str) -> Result<Self, CmsError> {
+        Parser::parse(text).map_err(|msg| CmsError {
+            code: ErrorCode::CorruptionDetected,
+            message: msg,
+        })
     }
 
     /// Serialize to CGATS text format.
@@ -158,7 +162,7 @@ impl It8 {
 
     pub fn data_row_col(&self, row: usize, col: usize) -> Option<&str> {
         let t = &self.tables[self.current];
-        let idx = row * t.n_cols() + col;
+        let idx = row.checked_mul(t.n_cols())?.checked_add(col)?;
         t.data.get(idx).map(|s| s.as_str())
     }
 
@@ -168,7 +172,10 @@ impl It8 {
 
     pub fn set_data_row_col(&mut self, row: usize, col: usize, value: &str) {
         let t = &mut self.tables[self.current];
-        let n_cols = t.n_cols().max(1);
+        let n_cols = t.n_cols();
+        if n_cols == 0 || col >= n_cols {
+            return; // no data format defined or column out of range
+        }
         // Ensure enough rows
         if row >= t.n_rows {
             t.n_rows = row + 1;
@@ -226,6 +233,20 @@ impl Default for It8 {
 // Writer
 // ============================================================================
 
+/// Quote a string value: escape backslashes and double-quotes.
+fn quote_string(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// Quote a cell value if it contains whitespace, quotes, or backslashes.
+fn quote_cell(s: &str) -> String {
+    if s.contains(|c: char| c.is_whitespace() || c == '"' || c == '\\') {
+        quote_string(s)
+    } else {
+        s.to_string()
+    }
+}
+
 fn write_table(out: &mut String, table: &Table) {
     use std::fmt::Write;
 
@@ -234,11 +255,11 @@ fn write_table(out: &mut String, table: &Table) {
 
     // Properties
     for (key, value) in &table.properties {
-        // Quote strings that contain spaces or aren't purely numeric
+        // Pure numeric values are unquoted; everything else is quoted
         if value.parse::<f64>().is_ok() {
             writeln!(out, "{key}\t{value}").unwrap();
         } else {
-            writeln!(out, "{key}\t\"{}\"", value.replace('"', "\\\"")).unwrap();
+            writeln!(out, "{key}\t{}", quote_string(value)).unwrap();
         }
     }
 
@@ -256,7 +277,10 @@ fn write_table(out: &mut String, table: &Table) {
         for row in 0..table.n_rows {
             let start = row * n_cols;
             let end = start + n_cols;
-            let cells: Vec<&str> = table.data[start..end].iter().map(|s| s.as_str()).collect();
+            let cells: Vec<String> = table.data[start..end]
+                .iter()
+                .map(|s| quote_cell(s))
+                .collect();
             writeln!(out, "{}", cells.join("\t")).unwrap();
         }
         writeln!(out, "END_DATA").unwrap();
@@ -369,7 +393,7 @@ impl<'a> Parser<'a> {
         loop {
             self.skip_whitespace_and_comments();
             if self.at_end() {
-                break;
+                return Err(format!("line {}: unexpected EOF in DATA", self.line));
             }
 
             // Peek for END_DATA
