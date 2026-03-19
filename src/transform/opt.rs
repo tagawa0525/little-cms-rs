@@ -3,7 +3,7 @@
 // ============================================================================
 
 use crate::pipeline::lut::{Pipeline, Stage, StageData, StageLoc, sample_clut_16bit};
-use crate::types::StageSignature;
+use crate::types::{ColorSpaceSignature, StageSignature};
 
 use super::xform::{FLAGS_FORCE_CLUT, FLAGS_NOOPTIMIZE};
 
@@ -315,6 +315,50 @@ pub fn optimize_by_resampling(pipeline: &mut Pipeline, _intent: u32, flags: &mut
 }
 
 // ============================================================================
+// FixWhiteMisalignment
+// ============================================================================
+
+/// Patch CLUT white point to ensure white→white mapping.
+///
+/// C版: `FixWhiteMisalignment`
+#[allow(unused_variables)]
+pub fn fix_white_misalignment(
+    pipeline: &mut Pipeline,
+    entry_cs: ColorSpaceSignature,
+    exit_cs: ColorSpaceSignature,
+) -> bool {
+    false // stub
+}
+
+// ============================================================================
+// OptimizeMatrixShaper
+// ============================================================================
+
+/// Optimize matrix-shaper pipelines to a 1.14 fixed-point fast path.
+///
+/// C版: `OptimizeMatrixShaper`
+#[allow(unused_variables)]
+pub fn optimize_by_matrix_shaper(pipeline: &mut Pipeline, intent: u32, flags: &mut u32) -> bool {
+    false // stub
+}
+
+// ============================================================================
+// OptimizeByComputingLinearization
+// ============================================================================
+
+/// Extract pre-linearization curves and create 8-bit fast CLUT path.
+///
+/// C版: `OptimizeByComputingLinearization`
+#[allow(unused_variables)]
+pub fn optimize_by_computing_linearization(
+    pipeline: &mut Pipeline,
+    intent: u32,
+    flags: &mut u32,
+) -> bool {
+    false // stub
+}
+
+// ============================================================================
 // Main entry point
 // ============================================================================
 
@@ -341,8 +385,12 @@ pub fn optimize_pipeline(pipeline: &mut Pipeline, intent: u32, flags: &mut u32) 
     if optimize_by_joining_curves(pipeline, intent, flags) {
         return;
     }
-    // Deferred: optimize_by_matrix_shaper
-    // Deferred: optimize_by_computing_linearization
+    if optimize_by_matrix_shaper(pipeline, intent, flags) {
+        return;
+    }
+    if optimize_by_computing_linearization(pipeline, intent, flags) {
+        return;
+    }
     optimize_by_resampling(pipeline, intent, flags);
 }
 
@@ -787,6 +835,325 @@ mod tests {
                 input[i],
                 output[i]
             );
+        }
+    }
+
+    // ================================================================
+    // fix_white_misalignment
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn fix_white_patches_clut_white_node() {
+        use crate::pipeline::lut::sample_clut_16bit;
+        use crate::types::ColorSpaceSignature;
+
+        // Build a pipeline: curves → CLUT → curves
+        // where the CLUT maps white to slightly-off-white
+        let mut p = Pipeline::new(3, 3).unwrap();
+        let grid = 9;
+
+        let id_curves = Stage::new_identity_curves(3).unwrap();
+        p.insert_stage(StageLoc::AtEnd, id_curves);
+
+        let mut clut = Stage::new_clut_16bit_uniform(grid, 3, 3, None).unwrap();
+        sample_clut_16bit(
+            &mut clut,
+            |input, output, _| {
+                // Slightly offset: 0xFFFF maps to 0xFFF0 instead of 0xFFFF
+                for ch in 0..3 {
+                    output[ch] = (input[ch] as u32 * 0xFFF0 / 0xFFFF) as u16;
+                }
+                true
+            },
+            0,
+        );
+        p.insert_stage(StageLoc::AtEnd, clut);
+
+        let post_curves = Stage::new_identity_curves(3).unwrap();
+        p.insert_stage(StageLoc::AtEnd, post_curves);
+
+        // Before fix: white should NOT map to 0xFFFF
+        let mut out = [0u16; 3];
+        p.eval_16(&[0xFFFF, 0xFFFF, 0xFFFF], &mut out);
+        assert!(out[0] < 0xFFFF, "white should be off before fix");
+
+        // Apply fix
+        fix_white_misalignment(
+            &mut p,
+            ColorSpaceSignature::RgbData,
+            ColorSpaceSignature::RgbData,
+        );
+
+        // After fix: white should map to 0xFFFF
+        p.eval_16(&[0xFFFF, 0xFFFF, 0xFFFF], &mut out);
+        for (ch, &val) in out[..3].iter().enumerate() {
+            assert_eq!(val, 0xFFFF, "ch {ch}: white should be fixed to 0xFFFF");
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn fix_white_noop_when_already_correct() {
+        use crate::pipeline::lut::sample_clut_16bit;
+        use crate::types::ColorSpaceSignature;
+
+        // Build a pipeline where white already maps correctly
+        let mut p = Pipeline::new(3, 3).unwrap();
+        let grid = 9;
+
+        let mut clut = Stage::new_clut_16bit_uniform(grid, 3, 3, None).unwrap();
+        sample_clut_16bit(
+            &mut clut,
+            |input, output, _| {
+                output[..3].copy_from_slice(&input[..3]); // identity
+                true
+            },
+            0,
+        );
+        p.insert_stage(StageLoc::AtEnd, clut);
+
+        // Verify white maps correctly
+        let mut out = [0u16; 3];
+        p.eval_16(&[0xFFFF, 0xFFFF, 0xFFFF], &mut out);
+        assert_eq!(out[0], 0xFFFF);
+
+        // Should be a no-op
+        let result = fix_white_misalignment(
+            &mut p,
+            ColorSpaceSignature::RgbData,
+            ColorSpaceSignature::RgbData,
+        );
+        assert!(result, "should return true (whites already match)");
+    }
+
+    // ================================================================
+    // optimize_by_matrix_shaper
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn mat_shaper_detects_curve_matrix_curve() {
+        // Build a typical matrix-shaper pipeline: curves → matrix → curves
+        let mut p = Pipeline::new(3, 3).unwrap();
+
+        let gamma = ToneCurve::build_gamma(2.2).unwrap();
+        let curves = vec![gamma.clone(), gamma.clone(), gamma.clone()];
+        let stage_c1 = Stage::new_tone_curves(Some(&curves), 3).unwrap();
+        p.insert_stage(StageLoc::AtEnd, stage_c1);
+
+        let matrix = [
+            0.4361, 0.3851, 0.1431, 0.2225, 0.7169, 0.0606, 0.0139, 0.0971, 0.7141,
+        ];
+        let stage_m = Stage::new_matrix(3, 3, &matrix, None).unwrap();
+        p.insert_stage(StageLoc::AtEnd, stage_m);
+
+        let inv_gamma = ToneCurve::build_gamma(1.0 / 2.2).unwrap();
+        let inv_curves = vec![inv_gamma.clone(), inv_gamma.clone(), inv_gamma.clone()];
+        let stage_c2 = Stage::new_tone_curves(Some(&inv_curves), 3).unwrap();
+        p.insert_stage(StageLoc::AtEnd, stage_c2);
+
+        // Save original output
+        let mut orig_out = [0u16; 3];
+        p.eval_16(&[0x8080, 0x8080, 0x8080], &mut orig_out);
+
+        let mut flags = 0u32;
+        let ok = optimize_by_matrix_shaper(&mut p, 0, &mut flags);
+        assert!(ok, "should detect and optimize matrix-shaper");
+
+        // Pipeline should have fast_eval16 set
+        assert!(p.has_fast_eval16(), "should have fast eval path");
+
+        // Output should be close to original
+        let mut opt_out = [0u16; 3];
+        p.eval_16(&[0x8080, 0x8080, 0x8080], &mut opt_out);
+
+        for ch in 0..3 {
+            let diff = (orig_out[ch] as i32 - opt_out[ch] as i32).unsigned_abs();
+            assert!(
+                diff < 300,
+                "ch {ch}: orig={}, opt={}, diff={}",
+                orig_out[ch],
+                opt_out[ch],
+                diff
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn mat_shaper_preserves_white() {
+        let mut p = Pipeline::new(3, 3).unwrap();
+
+        let gamma = ToneCurve::build_gamma(2.2).unwrap();
+        let curves = vec![gamma.clone(), gamma.clone(), gamma.clone()];
+        let stage_c1 = Stage::new_tone_curves(Some(&curves), 3).unwrap();
+        p.insert_stage(StageLoc::AtEnd, stage_c1);
+
+        // Identity matrix — white should stay white
+        let matrix = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let stage_m = Stage::new_matrix(3, 3, &matrix, None).unwrap();
+        p.insert_stage(StageLoc::AtEnd, stage_m);
+
+        let inv_gamma = ToneCurve::build_gamma(1.0 / 2.2).unwrap();
+        let inv_curves = vec![inv_gamma.clone(), inv_gamma.clone(), inv_gamma.clone()];
+        let stage_c2 = Stage::new_tone_curves(Some(&inv_curves), 3).unwrap();
+        p.insert_stage(StageLoc::AtEnd, stage_c2);
+
+        let mut flags = 0u32;
+        optimize_by_matrix_shaper(&mut p, 0, &mut flags);
+
+        // White (0xFF expanded to 0xFF00+0xFF = 0xFFFF by 8→16) should map to white
+        let mut out = [0u16; 3];
+        p.eval_16(&[0xFFFF, 0xFFFF, 0xFFFF], &mut out);
+        for (ch, &val) in out[..3].iter().enumerate() {
+            // Allow some tolerance for fixed-point quantization
+            assert!(
+                val > 0xFF00,
+                "ch {ch}: white should be near 0xFFFF, got {val:#06X}",
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn mat_shaper_rejects_non_rgb() {
+        // CMYK pipeline should not be optimized by matrix shaper
+        let mut p = Pipeline::new(4, 4).unwrap();
+        let gamma = ToneCurve::build_gamma(2.2).unwrap();
+        let curves = vec![gamma.clone(), gamma.clone(), gamma.clone(), gamma.clone()];
+        let stage_c = Stage::new_tone_curves(Some(&curves), 4).unwrap();
+        p.insert_stage(StageLoc::AtEnd, stage_c);
+
+        let mut flags = 0u32;
+        let ok = optimize_by_matrix_shaper(&mut p, 0, &mut flags);
+        assert!(!ok, "should reject non-RGB pipelines");
+    }
+
+    // ================================================================
+    // optimize_by_computing_linearization
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn linearization_extracts_precurves() {
+        use crate::pipeline::lut::sample_clut_16bit;
+
+        // Build: curves → CLUT → curves
+        let mut p = Pipeline::new(3, 3).unwrap();
+
+        let gamma = ToneCurve::build_gamma(2.2).unwrap();
+        let curves = vec![gamma.clone(), gamma.clone(), gamma.clone()];
+        let stage_c1 = Stage::new_tone_curves(Some(&curves), 3).unwrap();
+        p.insert_stage(StageLoc::AtEnd, stage_c1);
+
+        let mut clut = Stage::new_clut_16bit_uniform(17, 3, 3, None).unwrap();
+        sample_clut_16bit(
+            &mut clut,
+            |input, output, _| {
+                output[..3].copy_from_slice(&input[..3]); // identity CLUT
+                true
+            },
+            0,
+        );
+        p.insert_stage(StageLoc::AtEnd, clut);
+
+        let inv_gamma = ToneCurve::build_gamma(1.0 / 2.2).unwrap();
+        let inv_curves = vec![inv_gamma.clone(), inv_gamma.clone(), inv_gamma.clone()];
+        let stage_c2 = Stage::new_tone_curves(Some(&inv_curves), 3).unwrap();
+        p.insert_stage(StageLoc::AtEnd, stage_c2);
+
+        // Save original output
+        let mut orig_out = [0u16; 3];
+        p.eval_16(&[0x8080, 0x8080, 0x8080], &mut orig_out);
+
+        let mut flags = 0u32;
+        let ok = optimize_by_computing_linearization(&mut p, 0, &mut flags);
+        assert!(ok, "should extract linearization from pipeline");
+
+        // Should now have fast eval
+        assert!(p.has_fast_eval16(), "should have fast eval path");
+
+        // Output should be close to original
+        let mut opt_out = [0u16; 3];
+        p.eval_16(&[0x8080, 0x8080, 0x8080], &mut opt_out);
+
+        for ch in 0..3 {
+            let diff = (orig_out[ch] as i32 - opt_out[ch] as i32).unsigned_abs();
+            assert!(
+                diff < 500,
+                "ch {ch}: orig={}, opt={}, diff={}",
+                orig_out[ch],
+                opt_out[ch],
+                diff
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn linearization_rejects_non_3ch() {
+        // 1-channel pipeline should not be linearized
+        let mut p = Pipeline::new(1, 1).unwrap();
+        let gamma = ToneCurve::build_gamma(2.2).unwrap();
+        let stage = Stage::new_tone_curves(Some(&[gamma]), 1).unwrap();
+        p.insert_stage(StageLoc::AtEnd, stage);
+
+        let mut flags = 0u32;
+        let ok = optimize_by_computing_linearization(&mut p, 0, &mut flags);
+        assert!(!ok, "should reject non-3ch pipelines");
+    }
+
+    // ================================================================
+    // Integration: full optimization pipeline with new strategies
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn optimize_pipeline_uses_matrix_shaper() {
+        use crate::profile::io::Profile;
+        use crate::types::TYPE_RGB_8;
+
+        fn roundtrip(p: &mut Profile) -> Profile {
+            let data = p.save_to_mem().unwrap();
+            Profile::open_mem(&data).unwrap()
+        }
+
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+
+        // sRGB→sRGB should use matrix-shaper optimization
+        let xform =
+            super::super::xform::Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_8, 1, 0).unwrap();
+
+        // Verify the pipeline has fast eval set
+        assert!(
+            xform.pipeline().has_fast_eval16(),
+            "sRGB→sRGB should use matrix-shaper fast path"
+        );
+
+        // Verify accuracy: multiple test colors
+        let test_colors: &[[u8; 3]] = &[
+            [0, 0, 0],       // black
+            [255, 255, 255], // white
+            [128, 128, 128], // mid gray
+            [255, 0, 0],     // red
+            [0, 255, 0],     // green
+            [0, 0, 255],     // blue
+        ];
+
+        for color in test_colors {
+            let mut output = [0u8; 3];
+            xform.do_transform(color, &mut output, 1);
+            for ch in 0..3 {
+                assert!(
+                    (output[ch] as i16 - color[ch] as i16).unsigned_abs() <= 3,
+                    "color {:?} ch {ch}: in={}, out={}",
+                    color,
+                    color[ch],
+                    output[ch]
+                );
+            }
         }
     }
 }

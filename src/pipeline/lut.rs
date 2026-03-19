@@ -939,6 +939,11 @@ impl Pipeline {
         self.save_as_8bits
     }
 
+    /// Whether an optimized 16-bit evaluation path is active.
+    pub fn has_fast_eval16(&self) -> bool {
+        false // stub — will be replaced by FastEval16 enum
+    }
+
     /// Check if stages match a pattern of types and return their indices.
     ///
     /// C版: `cmsPipelineCheckAndRetreiveStages`
