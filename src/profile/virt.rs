@@ -468,8 +468,19 @@ impl Profile {
     pub fn new_linearization_device_link(
         color_space: ColorSpaceSignature,
         transfer_functions: &[ToneCurve],
-    ) -> Self {
+    ) -> Result<Self, CmsError> {
         let n_channels = color_space.channels();
+        if transfer_functions.len() < n_channels as usize {
+            return Err(CmsError {
+                code: ErrorCode::Range,
+                message: format!(
+                    "need {} curves for {:?}, got {}",
+                    n_channels,
+                    color_space,
+                    transfer_functions.len()
+                ),
+            });
+        }
 
         let mut p = Profile::new_placeholder();
         p.set_version_f64(4.4);
@@ -487,7 +498,7 @@ impl Profile {
             let _ = p.write_tag(TagSignature::AToB0, TagData::Pipeline(lut));
         }
 
-        p
+        Ok(p)
     }
 
     /// Create an ink-limiting device link profile (CMYK only).
@@ -945,7 +956,8 @@ mod tests {
     fn linearization_device_link_rgb_header() {
         let gamma = ToneCurve::build_gamma(2.2).unwrap();
         let curves = [gamma.clone(), gamma.clone(), gamma];
-        let mut p = Profile::new_linearization_device_link(ColorSpaceSignature::RgbData, &curves);
+        let mut p =
+            Profile::new_linearization_device_link(ColorSpaceSignature::RgbData, &curves).unwrap();
         let p2 = roundtrip(&mut p);
         assert_eq!(p2.header.device_class, ProfileClassSignature::Link);
         assert_eq!(p2.header.color_space, ColorSpaceSignature::RgbData);
@@ -956,7 +968,8 @@ mod tests {
     fn linearization_device_link_has_atob0() {
         let gamma = ToneCurve::build_gamma(1.8).unwrap();
         let curves = [gamma.clone(), gamma.clone(), gamma.clone(), gamma];
-        let mut p = Profile::new_linearization_device_link(ColorSpaceSignature::CmykData, &curves);
+        let mut p =
+            Profile::new_linearization_device_link(ColorSpaceSignature::CmykData, &curves).unwrap();
         let mut p2 = roundtrip(&mut p);
         assert!(p2.read_tag(TagSignature::AToB0).is_ok());
         assert_eq!(p2.header.color_space, ColorSpaceSignature::CmykData);
