@@ -346,6 +346,26 @@ impl Transform {
         })
     }
 
+    /// Create a proofing transform with gamut check support.
+    ///
+    /// C版: `cmsCreateProofingTransformTHR`
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_proofing(
+        _input_profile: Profile,
+        _input_format: PixelFormat,
+        _output_profile: Profile,
+        _output_format: PixelFormat,
+        _proofing_profile: Profile,
+        _intent: u32,
+        _proofing_intent: u32,
+        _flags: u32,
+    ) -> Result<Self, CmsError> {
+        Err(CmsError {
+            code: ErrorCode::NotSuitable,
+            message: "new_proofing not yet implemented".into(),
+        })
+    }
+
     /// Transform a buffer of pixels.
     pub fn do_transform(&self, input: &[u8], output: &mut [u8], pixel_count: usize) {
         // Copy extra (alpha) channels if requested
@@ -676,6 +696,146 @@ mod tests {
             assert_eq!(lut.output_channels(), 3);
         } else {
             panic!("device link should have a valid Pipeline in AToB0");
+        }
+    }
+
+    // ================================================================
+    // Proofing transform
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn test_proofing_transform_basic() {
+        // Create a proofing transform: sRGB → sRGB with sRGB proof
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let proof = roundtrip(&mut Profile::new_srgb());
+
+        let xform = Transform::new_proofing(
+            src,
+            TYPE_RGB_8,
+            dst,
+            TYPE_RGB_8,
+            proof,
+            0,                  // perceptual intent
+            1,                  // proofing intent: relative colorimetric
+            FLAGS_SOFTPROOFING, // soft proofing only
+        )
+        .unwrap();
+
+        // Mid-gray should come through approximately intact
+        let input: [u8; 3] = [128, 128, 128];
+        let mut output = [0u8; 3];
+        xform.do_transform(&input, &mut output, 1);
+
+        for i in 0..3 {
+            assert!(
+                (output[i] as i16 - input[i] as i16).unsigned_abs() <= 10,
+                "channel {i}: input={}, output={}",
+                input[i],
+                output[i]
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn test_proofing_transform_gamut_check_alarm() {
+        // With FLAGS_GAMUTCHECK, out-of-gamut colors should produce alarm codes
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+
+        // Create a narrow-gamut proofing profile (very small primaries)
+        let gamma_curve = ToneCurve::build_gamma(2.2).unwrap();
+        let trc = [gamma_curve.clone(), gamma_curve.clone(), gamma_curve];
+        let d65 = CieXyY {
+            x: 0.3127,
+            y: 0.3290,
+            big_y: 1.0,
+        };
+        // Very narrow gamut: primaries close to white point
+        let narrow_primaries = CieXyYTriple {
+            red: CieXyY {
+                x: 0.40,
+                y: 0.35,
+                big_y: 1.0,
+            },
+            green: CieXyY {
+                x: 0.30,
+                y: 0.40,
+                big_y: 1.0,
+            },
+            blue: CieXyY {
+                x: 0.25,
+                y: 0.25,
+                big_y: 1.0,
+            },
+        };
+        let mut narrow = Profile::new_rgb(&d65, &narrow_primaries, &trc);
+        let proof = roundtrip(&mut narrow);
+
+        let alarm = [0x7F00u16; 16];
+        let xform = Transform::new_proofing(
+            src,
+            TYPE_RGB_8,
+            dst,
+            TYPE_RGB_8,
+            proof,
+            0, // perceptual
+            1, // proofing: relative colorimetric
+            FLAGS_SOFTPROOFING | FLAGS_GAMUTCHECK,
+        )
+        .unwrap();
+
+        // Pure red (255,0,0) should be out of the narrow gamut
+        let input: [u8; 3] = [255, 0, 0];
+        let mut output = [0u8; 3];
+        xform.do_transform(&input, &mut output, 1);
+
+        // Alarm code 0x7F00 → 8-bit = 0x7F = 127
+        let alarm_byte = (alarm[0] >> 8) as u8;
+        assert_eq!(
+            output[0], alarm_byte,
+            "out-of-gamut R should be alarm code, got {}",
+            output[0]
+        );
+        assert_eq!(
+            output[1], alarm_byte,
+            "out-of-gamut G should be alarm code, got {}",
+            output[1]
+        );
+        assert_eq!(
+            output[2], alarm_byte,
+            "out-of-gamut B should be alarm code, got {}",
+            output[2]
+        );
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn test_proofing_no_flags_fallback() {
+        // Without SOFTPROOFING/GAMUTCHECK, should be a simple 2-profile transform
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let proof = roundtrip(&mut Profile::new_srgb());
+
+        let xform = Transform::new_proofing(
+            src, TYPE_RGB_8, dst, TYPE_RGB_8, proof, 0, 1, 0, // no flags
+        )
+        .unwrap();
+
+        let input: [u8; 3] = [200, 100, 50];
+        let mut output = [0u8; 3];
+        xform.do_transform(&input, &mut output, 1);
+
+        // Should produce valid output (approximately identity for same profiles)
+        for i in 0..3 {
+            assert!(
+                (output[i] as i16 - input[i] as i16).unsigned_abs() <= 5,
+                "channel {i}: input={}, output={}",
+                input[i],
+                output[i]
+            );
         }
     }
 }

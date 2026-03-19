@@ -2,13 +2,36 @@
 // Gamut mapping utilities (C版: cmsgmt.c)
 // ============================================================================
 
+use crate::context::{CmsError, ErrorCode};
 use crate::curves::gamma::ToneCurve;
 use crate::math::pcs;
-use crate::pipeline::lut::slice_space_16;
+use crate::pipeline::lut::{Pipeline, slice_space_16};
 use crate::profile::io::Profile;
 use crate::types::*;
 
 use super::xform::{FLAGS_NOCACHE, FLAGS_NOOPTIMIZE};
+
+// ============================================================================
+// Gamut check pipeline (stub — to be implemented in GREEN phase)
+// ============================================================================
+
+/// Build a gamut check pipeline that maps input colors to a single-channel
+/// bilevel signal: 0 = in-gamut, >0 = out-of-gamut (with dE magnitude).
+///
+/// C版: `_cmsCreateGamutCheckPipeline`
+pub fn create_gamut_check_pipeline(
+    _profiles: &mut [Profile],
+    _bpc: &[bool],
+    _intents: &[u32],
+    _adaptation: &[f64],
+    _gamut_pcs_position: usize,
+    _gamut_profile: &mut Profile,
+) -> Result<Pipeline, CmsError> {
+    Err(CmsError {
+        code: ErrorCode::NotSuitable,
+        message: "create_gamut_check_pipeline not yet implemented".into(),
+    })
+}
 
 // ============================================================================
 // Public API
@@ -411,5 +434,70 @@ mod tests {
         let mut p = roundtrip(&mut Profile::new_lab4(None));
         let gamma = detect_rgb_profile_gamma(&mut p, 0.1);
         assert_eq!(gamma, -1.0);
+    }
+
+    // ================================================================
+    // create_gamut_check_pipeline
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn gamut_check_pipeline_srgb_midgray_in_gamut() {
+        // Mid-gray Lab(50,0,0) should be in sRGB gamut → output 0
+        let srgb1 = roundtrip(&mut Profile::new_srgb());
+        let srgb2 = roundtrip(&mut Profile::new_srgb());
+        let mut gamut_profile = roundtrip(&mut Profile::new_srgb());
+
+        let pipeline = create_gamut_check_pipeline(
+            &mut [srgb1, srgb2],
+            &[false, false],
+            &[0, 0],
+            &[1.0, 1.0],
+            1,
+            &mut gamut_profile,
+        )
+        .unwrap();
+
+        // Lab L*=50, a*=0, b*=0 in 16-bit encoding
+        // L* encoding: L * 65535 / 100
+        let l50 = (50.0 * 65535.0 / 100.0) as u16;
+        let ab0 = 32768u16; // a*=0, b*=0
+        let input = [l50, ab0, ab0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut output = [0u16; 16];
+        pipeline.eval_16(&input, &mut output);
+
+        // In-gamut colors should produce 0
+        assert_eq!(output[0], 0, "mid-gray should be in sRGB gamut");
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn gamut_check_pipeline_out_of_gamut_returns_nonzero() {
+        // Highly saturated Lab color outside sRGB gamut
+        let srgb1 = roundtrip(&mut Profile::new_srgb());
+        let srgb2 = roundtrip(&mut Profile::new_srgb());
+        let mut gamut_profile = roundtrip(&mut Profile::new_srgb());
+
+        let pipeline = create_gamut_check_pipeline(
+            &mut [srgb1, srgb2],
+            &[false, false],
+            &[0, 0],
+            &[1.0, 1.0],
+            1,
+            &mut gamut_profile,
+        )
+        .unwrap();
+
+        // Lab L*=50, a*=120, b*=120 — far outside sRGB gamut
+        let l50 = (50.0 * 65535.0 / 100.0) as u16;
+        // a* = +120 → encoded = 32768 + 120 * 256 = 32768 + 30720 = 63488
+        let a_enc = 63488u16;
+        let b_enc = 63488u16;
+        let input = [l50, a_enc, b_enc, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut output = [0u16; 16];
+        pipeline.eval_16(&input, &mut output);
+
+        // Out-of-gamut colors should produce non-zero
+        assert!(output[0] > 0, "saturated Lab should be out of sRGB gamut");
     }
 }

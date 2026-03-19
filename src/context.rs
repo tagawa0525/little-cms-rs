@@ -97,6 +97,19 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "not yet implemented"]
+    fn alarm_codes_default_values() {
+        // C default: [0x7F00, 0x7F00, 0x7F00, 0, 0, ...]
+        let ctx = Context::new();
+        assert_eq!(ctx.alarm_codes[0], 0x7F00);
+        assert_eq!(ctx.alarm_codes[1], 0x7F00);
+        assert_eq!(ctx.alarm_codes[2], 0x7F00);
+        for i in 3..16 {
+            assert_eq!(ctx.alarm_codes[i], 0, "alarm_codes[{i}] should be 0");
+        }
+    }
+
+    #[test]
 
     fn error_code_values() {
         assert_eq!(ErrorCode::Undefined as u32, 0);
