@@ -280,6 +280,44 @@ impl Profile {
         p
     }
 
+    /// Create a linearization device link profile.
+    /// C版: `cmsCreateLinearizationDeviceLinkTHR`
+    pub fn new_linearization_device_link(
+        _color_space: ColorSpaceSignature,
+        _transfer_functions: &[ToneCurve],
+    ) -> Self {
+        todo!("Phase 6b: linearization device link")
+    }
+
+    /// Create an ink-limiting device link profile (CMYK only).
+    /// C版: `cmsCreateInkLimitingDeviceLinkTHR`
+    pub fn new_ink_limiting_device_link(
+        _color_space: ColorSpaceSignature,
+        _limit: f64,
+    ) -> Result<Self, crate::context::CmsError> {
+        todo!("Phase 6b: ink limiting device link")
+    }
+
+    /// Create a BCHSW (Brightness/Contrast/Hue/Saturation/WhitePoint) abstract profile.
+    /// C版: `cmsCreateBCHSWabstractProfileTHR`
+    pub fn new_bchsw_abstract(
+        _n_lut_points: u32,
+        _bright: f64,
+        _contrast: f64,
+        _hue: f64,
+        _saturation: f64,
+        _temp_src: u32,
+        _temp_dest: u32,
+    ) -> Self {
+        todo!("Phase 6b: BCHSW abstract profile")
+    }
+
+    /// Create an OkLab color space profile.
+    /// C版: `cmsCreate_OkLabProfile`
+    pub fn new_oklab() -> Self {
+        todo!("Phase 6b: OkLab profile")
+    }
+
     /// Create a NULL profile (Lab→Gray L* extraction).
     /// C版: `cmsCreateNULLProfileTHR`
     pub fn new_null() -> Self {
@@ -572,6 +610,186 @@ mod tests {
             output[2].abs() < 3.0,
             "b* should be ~0 for white, got {}",
             output[2]
+        );
+    }
+
+    // ================================================================
+    // Profile::new_linearization_device_link
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn linearization_device_link_rgb_header() {
+        let gamma = ToneCurve::build_gamma(2.2).unwrap();
+        let curves = [gamma.clone(), gamma.clone(), gamma];
+        let mut p = Profile::new_linearization_device_link(ColorSpaceSignature::RgbData, &curves);
+        let p2 = roundtrip(&mut p);
+        assert_eq!(p2.header.device_class, ProfileClassSignature::Link);
+        assert_eq!(p2.header.color_space, ColorSpaceSignature::RgbData);
+        assert_eq!(p2.header.pcs, ColorSpaceSignature::RgbData);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn linearization_device_link_has_atob0() {
+        let gamma = ToneCurve::build_gamma(1.8).unwrap();
+        let curves = [gamma.clone(), gamma.clone(), gamma.clone(), gamma];
+        let mut p = Profile::new_linearization_device_link(ColorSpaceSignature::CmykData, &curves);
+        let mut p2 = roundtrip(&mut p);
+        assert!(p2.read_tag(TagSignature::AToB0).is_ok());
+        assert_eq!(p2.header.color_space, ColorSpaceSignature::CmykData);
+    }
+
+    // ================================================================
+    // Profile::new_ink_limiting_device_link
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn ink_limiting_header() {
+        let p = Profile::new_ink_limiting_device_link(ColorSpaceSignature::CmykData, 200.0);
+        assert!(p.is_ok());
+        let mut p = p.unwrap();
+        let p2 = roundtrip(&mut p);
+        assert_eq!(p2.header.device_class, ProfileClassSignature::Link);
+        assert_eq!(p2.header.color_space, ColorSpaceSignature::CmykData);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn ink_limiting_rejects_non_cmyk() {
+        let p = Profile::new_ink_limiting_device_link(ColorSpaceSignature::RgbData, 200.0);
+        assert!(p.is_err());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn ink_limiting_transform_respects_limit() {
+        // Create ink-limiting device link with 200% limit
+        let mut link =
+            Profile::new_ink_limiting_device_link(ColorSpaceSignature::CmykData, 200.0).unwrap();
+        let link = roundtrip(&mut link);
+
+        // Create a pass-through CMYK profile pair using the device link
+        let src_cmyk = roundtrip(
+            &mut Profile::new_ink_limiting_device_link(
+                ColorSpaceSignature::CmykData,
+                400.0, // no effective limit
+            )
+            .unwrap(),
+        );
+
+        let xform = Transform::new(src_cmyk, TYPE_CMYK_16, link, TYPE_CMYK_16, 0, 0).unwrap();
+
+        // Input: C=100%, M=100%, Y=100%, K=100% = 400% total
+        let input: [u8; 8] = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+        let mut output = [0u8; 8];
+        xform.do_transform(&input, &mut output, 1);
+
+        // Output CMY should be reduced, K unchanged
+        let c = u16::from_ne_bytes([output[0], output[1]]) as f64 / 655.35;
+        let m = u16::from_ne_bytes([output[2], output[3]]) as f64 / 655.35;
+        let y = u16::from_ne_bytes([output[4], output[5]]) as f64 / 655.35;
+        let k = u16::from_ne_bytes([output[6], output[7]]) as f64 / 655.35;
+        let total = c + m + y + k;
+        assert!(
+            total <= 210.0,
+            "total ink should be ≤ ~200%, got {total:.1}%"
+        );
+    }
+
+    // ================================================================
+    // Profile::new_bchsw_abstract
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn bchsw_header() {
+        let mut p = Profile::new_bchsw_abstract(17, 10.0, 1.0, 0.0, 0.0, 6500, 6500);
+        let p2 = roundtrip(&mut p);
+        assert_eq!(p2.header.device_class, ProfileClassSignature::Abstract);
+        assert_eq!(p2.header.color_space, ColorSpaceSignature::LabData);
+        assert_eq!(p2.header.pcs, ColorSpaceSignature::LabData);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn bchsw_brightness_increases_l() {
+        // Brightness +20 should increase L* of a mid-gray
+        let mut bchsw = Profile::new_bchsw_abstract(17, 20.0, 1.0, 0.0, 0.0, 6500, 6500);
+        let bchsw = roundtrip(&mut bchsw);
+
+        let src = roundtrip(&mut Profile::new_lab4(None));
+
+        // Use Lab identity profile → BCHSW abstract profile
+        let xform = Transform::new(src, TYPE_LAB_FLT, bchsw, TYPE_LAB_FLT, 0, 0).unwrap();
+
+        // Input: L*=50, a*=0, b*=0
+        let input: [f32; 3] = [50.0, 0.0, 0.0];
+        let input_bytes = floats_to_bytes(&input);
+        let mut output_buf = [0u8; 12];
+        xform.do_transform(&input_bytes, &mut output_buf, 1);
+        let output = bytes_to_floats(&output_buf);
+
+        assert!(
+            output[0] > 60.0,
+            "L* should increase with brightness, got {}",
+            output[0]
+        );
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn bchsw_hue_rotation() {
+        // Hue +180 should rotate hue
+        let mut bchsw = Profile::new_bchsw_abstract(17, 0.0, 1.0, 180.0, 0.0, 6500, 6500);
+        let bchsw = roundtrip(&mut bchsw);
+
+        let src = roundtrip(&mut Profile::new_lab4(None));
+
+        let xform = Transform::new(src, TYPE_LAB_FLT, bchsw, TYPE_LAB_FLT, 0, 0).unwrap();
+
+        // Input: a red-ish color: L*=50, a*=60, b*=20
+        let input: [f32; 3] = [50.0, 60.0, 20.0];
+        let input_bytes = floats_to_bytes(&input);
+        let mut output_buf = [0u8; 12];
+        xform.do_transform(&input_bytes, &mut output_buf, 1);
+        let output = bytes_to_floats(&output_buf);
+
+        // Hue rotated 180° should invert a* and b* signs (approximately)
+        assert!(
+            output[1] < -30.0,
+            "a* should be negative after 180° rotation, got {}",
+            output[1]
+        );
+    }
+
+    // ================================================================
+    // Profile::new_oklab
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn oklab_header() {
+        let mut p = Profile::new_oklab();
+        let p2 = roundtrip(&mut p);
+        assert_eq!(p2.header.device_class, ProfileClassSignature::ColorSpace);
+        assert_eq!(p2.header.color_space, ColorSpaceSignature::Color3);
+        assert_eq!(p2.header.pcs, ColorSpaceSignature::XyzData);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn oklab_has_atob0_and_btoa0() {
+        let mut p = Profile::new_oklab();
+        let mut p2 = roundtrip(&mut p);
+        assert!(
+            p2.read_tag(TagSignature::AToB0).is_ok(),
+            "OkLab should have AToB0"
+        );
+        assert!(
+            p2.read_tag(TagSignature::BToA0).is_ok(),
+            "OkLab should have BToA0"
         );
     }
 
