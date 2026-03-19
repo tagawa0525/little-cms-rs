@@ -80,7 +80,7 @@ pub(crate) enum FastEval16 {
 
 - `Prelin16Data` — 構造体定義
 - `prelin_eval16()` — 16bit評価（C版: `PrelinEval16`）
-- `prelin16_alloc()` — 構築ヘルパー（C版: `PrelinOpt16alloc`）
+- Prelin16Data 構築は `optimize_by_resampling` 内でインライン実行（C版: `PrelinOpt16alloc`）
 
 ### optimize_by_resampling 強化
 
