@@ -2495,7 +2495,9 @@ mod tests {
         let mut dl2 = Profile::open_mem(&data).unwrap();
 
         let tt = dl2.tag_true_type(TagSignature::AToB0);
-        assert!(tt.is_some(), "AToB0 tag should exist");
+        // V4 linearization device link uses LutAtoB type, not Lut16
+        assert_eq!(tt, Some(TagTypeSignature::LutAtoB));
+        assert_ne!(tt, Some(TagTypeSignature::Lut16));
     }
 
     #[test]
