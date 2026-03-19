@@ -19,7 +19,7 @@ Phase 4d で基本的なパイプライン構築（`read_input_lut`, `read_outpu
 3. **`is_intent_supported()`** — レンダリングインテントサポート判定
 4. **Lab V2↔V4 自動挿入** — `read_input_lut` / `read_output_lut` / `read_devicelink_lut` で Lut16Type の Lab PCS 処理
 5. **`tag_true_type()`** — タグの実際の型シグネチャ取得（Lut16 判定用）
-6. **`change_interpolation_to_trilinear()`** — Lab PCS 時の CLUT 補間モード変更
+6. **`Pipeline::change_interp_to_trilinear()`** — Lab PCS 時の CLUT 補間モード変更
 
 ### Deferred
 
@@ -127,7 +127,7 @@ Phase 4d で基本的なパイプライン構築（`read_input_lut`, `read_outpu
 ```text
 1. 全ステージを走査
 2. CLutElem ステージの InterpParams に TRILINEAR フラグを設定
-3. InterpParams を再計算
+3. fast_eval16 を無効化（プリコンパイル済み補間パラメータが陳腐化するため）
 ```
 
 ## コミット構成（TDD）
