@@ -1213,6 +1213,8 @@ impl Pipeline {
                 clut_data.params.flags |= intrp::LERP_FLAGS_TRILINEAR;
             }
         }
+        // Invalidate fast evaluator — its precomputed params are now stale
+        self.fast_eval16 = None;
     }
 
     /// Check if stages match a pattern of types and return their indices.
