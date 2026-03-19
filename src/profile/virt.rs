@@ -55,17 +55,20 @@ fn set_text_tags(profile: &mut Profile, description: &str) {
 
 /// Public version of set_text_tags for cross-module use.
 pub fn set_text_tags_public(profile: &mut Profile, description: &str) {
+    set_text_tags_fallible(profile, description)
+        .expect("text tag write should not fail for placeholder profiles");
+}
+
+/// Fallible version of set_text_tags that propagates write_tag errors.
+pub fn set_text_tags_fallible(profile: &mut Profile, description: &str) -> Result<(), CmsError> {
     let mut desc_mlu = Mlu::new();
     desc_mlu.set_ascii("en", "US", description);
-    profile
-        .write_tag(TagSignature::ProfileDescription, TagData::Mlu(desc_mlu))
-        .expect("ProfileDescription tag write should not fail");
+    profile.write_tag(TagSignature::ProfileDescription, TagData::Mlu(desc_mlu))?;
 
     let mut copy_mlu = Mlu::new();
     copy_mlu.set_ascii("en", "US", "No copyright, use freely");
-    profile
-        .write_tag(TagSignature::Copyright, TagData::Mlu(copy_mlu))
-        .expect("Copyright tag write should not fail");
+    profile.write_tag(TagSignature::Copyright, TagData::Mlu(copy_mlu))?;
+    Ok(())
 }
 
 /// Ink-limiting sampler: reduce CMY to stay under total ink limit.

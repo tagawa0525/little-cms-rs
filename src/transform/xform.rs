@@ -208,12 +208,12 @@ impl Transform {
             });
         }
 
-        // Write tags
-        crate::profile::virt::set_text_tags_public(&mut p, "devicelink");
+        // Write tags (propagate errors)
+        crate::profile::virt::set_text_tags_fallible(&mut p, "devicelink")?;
 
         let d50 = crate::curves::wtpnt::d50_xyz();
-        let _ = p.write_tag(TagSignature::MediaWhitePoint, TagData::Xyz(d50));
-        let _ = p.write_tag(dest_tag, TagData::Pipeline(lut));
+        p.write_tag(TagSignature::MediaWhitePoint, TagData::Xyz(d50))?;
+        p.write_tag(dest_tag, TagData::Pipeline(lut))?;
         p.header.rendering_intent = self.rendering_intent;
 
         Ok(p)
