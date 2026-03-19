@@ -1122,6 +1122,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn oklab_pipeline_roundtrip() {
+        // Test BToA (XYZ→OkLab) followed by AToB (OkLab→XYZ) at pipeline level.
+        // Use D50 white point XYZ = (0.9505, 1.0, 1.089) in PCS encoding.
+        let btoa = super::build_oklab_btoa().unwrap();
+        let atob = super::build_oklab_atob().unwrap();
+
+        // D50 white in PCS float: XYZ × (32768/65535)
+        let pcs_scale = 32768.0 / 65535.0;
+        let xyz_in: [f32; 3] = [
+            (0.9505 * pcs_scale) as f32,
+            (1.0 * pcs_scale) as f32,
+            (1.089 * pcs_scale) as f32,
+        ];
+
+        // XYZ → OkLab
+        let mut oklab = [0.0f32; 3];
+        btoa.eval_float(&xyz_in, &mut oklab);
+
+        // OkLab L should be ~1.0 for white, a≈0, b≈0
+        assert!(
+            (oklab[0] - 1.0).abs() < 0.05,
+            "OkLab L should be ~1.0 for D50 white, got {}",
+            oklab[0]
+        );
+
+        // OkLab → XYZ
+        let mut xyz_out = [0.0f32; 3];
+        atob.eval_float(&oklab, &mut xyz_out);
+
+        // Round-trip should recover input within tolerance
+        for i in 0..3 {
+            assert!(
+                (xyz_out[i] - xyz_in[i]).abs() < 0.01,
+                "XYZ round-trip channel {i}: in={}, out={}",
+                xyz_in[i],
+                xyz_out[i]
+            );
+        }
+    }
+
     // ================================================================
     // Helpers for float byte casting
     // ================================================================
