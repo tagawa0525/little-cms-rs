@@ -165,6 +165,47 @@ fn prelin_eval8(p: &Prelin8Data, input: &[u16], output: &mut [u16]) {
     }
 }
 
+/// Generic 16-bit Curves→CLUT→Curves evaluation.
+///
+/// For each input channel, applies 1D curve interpolation (or identity),
+/// then evaluates the multi-dimensional CLUT, then applies output curves.
+///
+/// C版: `PrelinEval16`
+fn prelin_eval16(p: &Prelin16Data, input: &[u16], output: &mut [u16]) {
+    let n_in = p.n_inputs as usize;
+    let n_out = p.n_outputs as usize;
+
+    // Input curve evaluation
+    let mut stage_abc = [0u16; intrp::MAX_INPUT_DIMENSIONS];
+    for i in 0..n_in {
+        stage_abc[i] = match &p.curves_in[i] {
+            Some((params, table)) => {
+                let mut out = [0u16; 1];
+                params.eval_16(&[input[i]], &mut out, table);
+                out[0]
+            }
+            None => input[i],
+        };
+    }
+
+    // CLUT evaluation
+    let mut stage_def = [0u16; intrp::MAX_STAGE_CHANNELS];
+    p.clut_params
+        .eval_16(&stage_abc[..n_in], &mut stage_def[..n_out], &p.clut_table);
+
+    // Output curve evaluation
+    for i in 0..n_out {
+        output[i] = match &p.curves_out[i] {
+            Some((params, table)) => {
+                let mut out = [0u16; 1];
+                params.eval_16(&[stage_def[i]], &mut out, table);
+                out[0]
+            }
+            None => stage_def[i],
+        };
+    }
+}
+
 // ============================================================================
 // StageData
 // ============================================================================
@@ -899,11 +940,32 @@ pub(crate) struct Prelin8Data {
     pub table: Vec<u16>,
 }
 
+/// Generic 16-bit Shaper-CLUT-Shaper fast path data.
+///
+/// Supports arbitrary input/output channel counts.
+/// Each curve is stored as (InterpParams, table) pair; `None` = identity.
+///
+/// C版: `Prelin16Data`
+#[derive(Clone)]
+pub(crate) struct Prelin16Data {
+    pub n_inputs: u32,
+    pub n_outputs: u32,
+    /// Input curves: 1D lerp16 per channel (None = identity)
+    pub curves_in: Vec<Option<(InterpParams, Vec<u16>)>>,
+    /// CLUT interpolation parameters
+    pub clut_params: InterpParams,
+    /// CLUT table data (u16)
+    pub clut_table: Vec<u16>,
+    /// Output curves: 1D lerp16 per channel (None = identity)
+    pub curves_out: Vec<Option<(InterpParams, Vec<u16>)>>,
+}
+
 /// Optimized 16-bit evaluation path, set by the optimizer.
 #[derive(Clone)]
 pub(crate) enum FastEval16 {
     MatShaper(Box<MatShaper8Data>),
     Prelin8(Box<Prelin8Data>),
+    Prelin16(Box<Prelin16Data>),
 }
 
 /// A chain of processing stages that transforms color data.
@@ -1106,6 +1168,10 @@ impl Pipeline {
                 }
                 FastEval16::Prelin8(data) => {
                     prelin_eval8(data, input, output);
+                    return;
+                }
+                FastEval16::Prelin16(data) => {
+                    prelin_eval16(data, input, output);
                     return;
                 }
             }

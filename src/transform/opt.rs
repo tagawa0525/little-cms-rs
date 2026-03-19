@@ -274,46 +274,183 @@ pub fn optimize_by_joining_curves(pipeline: &mut Pipeline, _intent: u32, _flags:
     true
 }
 
-/// Resample any pipeline into a CLUT.
+/// Check if all curves in a curve-set stage are linear (identity).
+fn all_curves_are_linear(stage: &Stage) -> bool {
+    match stage.curves() {
+        Some(curves) => curves.iter().all(|c| c.is_linear()),
+        None => true,
+    }
+}
+
+/// Resample any pipeline into an optimized Curves→CLUT→Curves structure.
+///
+/// Keeps pre/post linearization curves from the pipeline (if present and
+/// non-linear), samples the CLUT from the remaining stages, and builds
+/// a Prelin16Data fast evaluator.
 ///
 /// C版: `OptimizeByResampling`
-pub fn optimize_by_resampling(pipeline: &mut Pipeline, _intent: u32, flags: &mut u32) -> bool {
+pub fn optimize_by_resampling(
+    pipeline: &mut Pipeline,
+    intent: u32,
+    flags: &mut u32,
+    input_format: u32,
+    output_format: u32,
+) -> bool {
+    use crate::curves::gamma::ToneCurve;
+    use crate::curves::intrp::{InterpParams, LERP_FLAGS_16BITS};
+    use crate::pipeline::lut::{CLutTable, FastEval16, Prelin16Data};
+    use crate::types::PixelFormat;
+
     let n_in = pipeline.input_channels();
     let n_out = pipeline.output_channels();
 
     // Determine grid point count from input channels
     let grid_points = crate::math::pcs::reasonable_gridpoints(n_in, *flags);
 
-    // Create new CLUT stage
+    // Detect and extract pre/post linearization curves
+    let mut src = pipeline.clone();
+    let mut pre_curves: Option<Vec<ToneCurve>> = None;
+    let mut post_curves: Option<Vec<ToneCurve>> = None;
+
+    // Check first stage for pre-linearization curves
+    if !src.stages().is_empty()
+        && src.stages()[0].stage_type() == StageSignature::CurveSetElem
+        && !all_curves_are_linear(&src.stages()[0])
+    {
+        pre_curves = src.stages()[0].curves().map(|c| c.to_vec());
+        // Remove the first stage from sampling source
+        let keep: Vec<usize> = (1..src.stages().len()).collect();
+        rebuild_pipeline_with_indices(&mut src, &keep);
+    }
+
+    // Check last stage for post-linearization curves
+    if !src.stages().is_empty() {
+        let last_idx = src.stages().len() - 1;
+        if src.stages()[last_idx].stage_type() == StageSignature::CurveSetElem
+            && !all_curves_are_linear(&src.stages()[last_idx])
+        {
+            post_curves = src.stages()[last_idx].curves().map(|c| c.to_vec());
+            let keep: Vec<usize> = (0..last_idx).collect();
+            rebuild_pipeline_with_indices(&mut src, &keep);
+        }
+    }
+
+    // Build the destination pipeline: [PreCurves] → CLUT → [PostCurves]
+    let Some(mut dest) = Pipeline::new(n_in, n_out) else {
+        return false;
+    };
+
+    if let Some(ref curves) = pre_curves
+        && let Some(stage) = Stage::new_tone_curves(Some(curves), n_in)
+    {
+        dest.insert_stage(StageLoc::AtEnd, stage);
+    }
+
     let mut clut_stage = match Stage::new_clut_16bit_uniform(grid_points, n_in, n_out, None) {
         Some(s) => s,
         None => return false,
     };
 
-    // Sample: evaluate original pipeline at each grid node
-    let original = pipeline.clone();
+    // Sample the CLUT using the source pipeline (with pre/post curves removed)
     let ok = sample_clut_16bit(
         &mut clut_stage,
         |input, output, _cargo| {
-            original.eval_16(input, output);
+            src.eval_16(input, output);
             true
         },
-        0, // SAMPLER_WRITE
+        0,
     );
-
     if !ok {
         return false;
     }
 
-    // Build new pipeline with just the CLUT
-    let Some(mut new_pipeline) = Pipeline::new(n_in, n_out) else {
-        return false;
-    };
-    if !new_pipeline.insert_stage(StageLoc::AtEnd, clut_stage) {
+    if !dest.insert_stage(StageLoc::AtEnd, clut_stage) {
         return false;
     }
 
-    *pipeline = new_pipeline;
+    if let Some(ref curves) = post_curves
+        && let Some(stage) = Stage::new_tone_curves(Some(curves), n_out)
+    {
+        dest.insert_stage(StageLoc::AtEnd, stage);
+    }
+
+    // Fix white misalignment before building fast evaluator
+    if intent == INTENT_ABSOLUTE_COLORIMETRIC {
+        *flags |= FLAGS_NOWHITEONWHITEFIXUP;
+    }
+    if *flags & FLAGS_NOWHITEONWHITEFIXUP == 0 {
+        let infmt = PixelFormat(input_format);
+        let outfmt = PixelFormat(output_format);
+        if let (Some(in_cs), Some(out_cs)) = (
+            ColorSpaceSignature::from_pixel_type(infmt.colorspace()),
+            ColorSpaceSignature::from_pixel_type(outfmt.colorspace()),
+        ) {
+            fix_white_misalignment(&mut dest, in_cs, out_cs);
+        }
+    }
+
+    // Build Prelin16Data fast evaluator
+    // Find the CLUT stage in dest pipeline
+    let clut_idx = dest
+        .stages()
+        .iter()
+        .position(|s| s.stage_type() == StageSignature::CLutElem);
+    let Some(clut_idx) = clut_idx else {
+        return false;
+    };
+
+    let (clut_params, clut_table) = match dest.stages()[clut_idx].data() {
+        StageData::CLut(c) => {
+            let table = match &c.table {
+                CLutTable::U16(t) => t.clone(),
+                CLutTable::Float(t) => t
+                    .iter()
+                    .map(|&v| crate::curves::intrp::quick_saturate_word(v as f64 * 65535.0))
+                    .collect(),
+            };
+            (c.params.clone(), table)
+        }
+        _ => return false,
+    };
+
+    // Build curve data for Prelin16
+    let curves_in: Vec<Option<(InterpParams, Vec<u16>)>> = if let Some(ref curves) = pre_curves {
+        curves
+            .iter()
+            .map(|c| {
+                let table = c.table16().to_vec();
+                let n = table.len() as u32;
+                InterpParams::compute_uniform(n, 1, 1, LERP_FLAGS_16BITS).map(|p| (p, table))
+            })
+            .collect()
+    } else {
+        (0..n_in).map(|_| None).collect()
+    };
+
+    let curves_out: Vec<Option<(InterpParams, Vec<u16>)>> = if let Some(ref curves) = post_curves {
+        curves
+            .iter()
+            .map(|c| {
+                let table = c.table16().to_vec();
+                let n = table.len() as u32;
+                InterpParams::compute_uniform(n, 1, 1, LERP_FLAGS_16BITS).map(|p| (p, table))
+            })
+            .collect()
+    } else {
+        (0..n_out).map(|_| None).collect()
+    };
+
+    let p16 = Prelin16Data {
+        n_inputs: n_in,
+        n_outputs: n_out,
+        curves_in,
+        clut_params,
+        clut_table,
+        curves_out,
+    };
+
+    dest.fast_eval16 = Some(FastEval16::Prelin16(Box::new(p16)));
+    *pipeline = dest;
     true
 }
 
@@ -915,7 +1052,7 @@ pub fn optimize_pipeline(
     // Force CLUT path
     if *flags & FLAGS_FORCE_CLUT != 0 {
         pre_optimize(pipeline);
-        optimize_by_resampling(pipeline, intent, flags);
+        optimize_by_resampling(pipeline, intent, flags, input_format, output_format);
         return;
     }
 
@@ -932,7 +1069,7 @@ pub fn optimize_pipeline(
     if optimize_by_computing_linearization(pipeline, intent, flags, input_format, output_format) {
         return;
     }
-    optimize_by_resampling(pipeline, intent, flags);
+    optimize_by_resampling(pipeline, intent, flags, input_format, output_format);
 }
 
 // ============================================================================
@@ -1230,12 +1367,17 @@ mod tests {
         p.eval_16(&[0x8000, 0x8000, 0x8000], &mut orig_out);
 
         let mut flags = 0u32;
-        let ok = optimize_by_resampling(&mut p, 0, &mut flags);
+        let ok = optimize_by_resampling(&mut p, 0, &mut flags, 0, 0);
         assert!(ok);
 
-        // Should be a single CLUT stage
-        assert_eq!(p.stage_count(), 1);
-        assert_eq!(p.stages()[0].stage_type(), StageSignature::CLutElem);
+        // Should be Curves → CLUT → Curves (pre/post kept)
+        assert_eq!(p.stage_count(), 3);
+        assert_eq!(p.stages()[0].stage_type(), StageSignature::CurveSetElem);
+        assert_eq!(p.stages()[1].stage_type(), StageSignature::CLutElem);
+        assert_eq!(p.stages()[2].stage_type(), StageSignature::CurveSetElem);
+
+        // Should have fast eval
+        assert!(p.has_fast_eval16());
 
         // Verify similar output for mid-gray
         let mut opt_out = [0u16; 3];
@@ -1725,7 +1867,6 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn resampling_sets_prelin16_fast_eval() {
         // Build a pipeline: curves → CLUT → curves
         let mut p = Pipeline::new(3, 3).unwrap();
@@ -1750,7 +1891,7 @@ mod tests {
         p.eval_16(&[0x8000, 0x8000, 0x8000], &mut orig_out);
 
         let mut flags = 0u32;
-        let ok = optimize_by_resampling(&mut p, 0, &mut flags);
+        let ok = optimize_by_resampling(&mut p, 0, &mut flags, 0, 0);
         assert!(ok);
 
         // Should have fast eval path
@@ -1776,7 +1917,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn resampling_no_curves_uses_direct_clut() {
         // Pipeline with only non-curve stages (no pre/post linearization)
         // Should still optimize but without Prelin16 curves wrapping
@@ -1792,7 +1932,7 @@ mod tests {
         p.eval_16(&[0x8000, 0x8000, 0x8000], &mut orig_out);
 
         let mut flags = 0u32;
-        let ok = optimize_by_resampling(&mut p, 0, &mut flags);
+        let ok = optimize_by_resampling(&mut p, 0, &mut flags, 0, 0);
         assert!(ok);
 
         // Should have fast eval (direct CLUT or Prelin16 with identity curves)
