@@ -340,10 +340,12 @@ pub(crate) fn optimize_by_resampling(
         return false;
     };
 
-    if let Some(ref curves) = pre_curves
-        && let Some(stage) = Stage::new_tone_curves(Some(curves), n_in)
-    {
-        dest.insert_stage(StageLoc::AtEnd, stage);
+    if let Some(ref curves) = pre_curves {
+        let inserted = Stage::new_tone_curves(Some(curves), n_in)
+            .is_some_and(|stage| dest.insert_stage(StageLoc::AtEnd, stage));
+        if !inserted {
+            pre_curves = None;
+        }
     }
 
     let mut clut_stage = match Stage::new_clut_16bit_uniform(grid_points, n_in, n_out, None) {
@@ -368,10 +370,12 @@ pub(crate) fn optimize_by_resampling(
         return false;
     }
 
-    if let Some(ref curves) = post_curves
-        && let Some(stage) = Stage::new_tone_curves(Some(curves), n_out)
-    {
-        dest.insert_stage(StageLoc::AtEnd, stage);
+    if let Some(ref curves) = post_curves {
+        let inserted = Stage::new_tone_curves(Some(curves), n_out)
+            .is_some_and(|stage| dest.insert_stage(StageLoc::AtEnd, stage));
+        if !inserted {
+            post_curves = None;
+        }
     }
 
     // Fix white misalignment before building fast evaluator
