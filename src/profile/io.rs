@@ -1610,6 +1610,34 @@ impl Profile {
             }),
         }
     }
+
+    /// Get the true type signature of a tag (first 4 bytes of raw tag data).
+    /// C版: `_cmsGetTagTrueType`
+    pub fn tag_true_type(&mut self, _sig: TagSignature) -> Option<TagTypeSignature> {
+        todo!()
+    }
+
+    /// Read a device link / abstract profile LUT pipeline.
+    /// C版: `_cmsReadDevicelinkLUT`
+    pub fn read_devicelink_lut(&mut self, _intent: u32) -> Result<Pipeline, CmsError> {
+        todo!()
+    }
+
+    /// Check if a specific rendering intent is implemented as a CLUT.
+    /// C版: `cmsIsCLUT`
+    pub fn is_clut(&self, _intent: u32, _direction: crate::types::UsedDirection) -> bool {
+        todo!()
+    }
+
+    /// Check if a rendering intent is supported (CLUT or matrix-shaper).
+    /// C版: `cmsIsIntentSupported`
+    pub fn is_intent_supported(
+        &self,
+        _intent: u32,
+        _direction: crate::types::UsedDirection,
+    ) -> bool {
+        todo!()
+    }
 }
 
 #[cfg(test)]
@@ -2320,5 +2348,101 @@ mod tests {
         let pipe = p2.read_output_lut(0).unwrap();
         assert_eq!(pipe.input_channels(), 3);
         assert_eq!(pipe.output_channels(), 1);
+    }
+
+    // ========================================================================
+    // Phase 9: io.rs completion tests
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn tag_true_type_returns_correct_type() {
+        use crate::curves::gamma::ToneCurve;
+
+        // Linearization device link writes AToB0 as a pipeline tag
+        let gamma = ToneCurve::build_gamma(2.2).unwrap();
+        let mut dl = Profile::new_linearization_device_link(
+            ColorSpaceSignature::RgbData,
+            &[gamma.clone(), gamma.clone(), gamma],
+        )
+        .unwrap();
+        let data = dl.save_to_mem().unwrap();
+        let mut dl2 = Profile::open_mem(&data).unwrap();
+
+        let tt = dl2.tag_true_type(TagSignature::AToB0);
+        assert!(tt.is_some(), "AToB0 tag should exist");
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_devicelink_lut_roundtrip() {
+        // Create a linearization device link profile (RGB)
+        let gamma = ToneCurve::build_gamma(2.2).unwrap();
+        let mut dl = Profile::new_linearization_device_link(
+            ColorSpaceSignature::RgbData,
+            &[gamma.clone(), gamma.clone(), gamma],
+        )
+        .unwrap();
+        let data = dl.save_to_mem().unwrap();
+        let mut dl2 = Profile::open_mem(&data).unwrap();
+
+        let pipe = dl2.read_devicelink_lut(0).unwrap();
+        assert_eq!(pipe.input_channels(), 3);
+        assert_eq!(pipe.output_channels(), 3);
+
+        // Evaluate: mid-gray should map to mid-gray-ish value
+        let input = [0.5f32, 0.5, 0.5];
+        let mut output = [0.0f32; 3];
+        pipe.eval_float(&input, &mut output);
+        for (ch, &val) in output.iter().enumerate() {
+            assert!(val > 0.1 && val < 0.9, "ch {ch}: unexpected value {val}");
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn is_clut_matrix_shaper_returns_false() {
+        use crate::types::UsedDirection;
+
+        let mut p = build_rgb_matrix_shaper_profile();
+        let data = p.save_to_mem().unwrap();
+        let p2 = Profile::open_mem(&data).unwrap();
+
+        // Matrix-shaper profile has no AToB/BToA CLUT tags
+        assert!(!p2.is_clut(0, UsedDirection::AsInput));
+        assert!(!p2.is_clut(0, UsedDirection::AsOutput));
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn is_clut_device_link_returns_true() {
+        use crate::types::UsedDirection;
+
+        let gamma = ToneCurve::build_gamma(2.2).unwrap();
+        let mut dl = Profile::new_linearization_device_link(
+            ColorSpaceSignature::RgbData,
+            &[gamma.clone(), gamma.clone(), gamma],
+        )
+        .unwrap();
+        let data = dl.save_to_mem().unwrap();
+        let dl2 = Profile::open_mem(&data).unwrap();
+
+        // Device link with perceptual intent should return true for intent 0
+        assert!(dl2.is_clut(0, UsedDirection::AsInput));
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn is_intent_supported_matrix_shaper() {
+        use crate::types::UsedDirection;
+
+        let mut p = build_rgb_matrix_shaper_profile();
+        let data = p.save_to_mem().unwrap();
+        let p2 = Profile::open_mem(&data).unwrap();
+
+        // Matrix-shaper can handle any intent via fallback
+        assert!(p2.is_intent_supported(0, UsedDirection::AsInput));
+        assert!(p2.is_intent_supported(1, UsedDirection::AsInput));
+        assert!(p2.is_intent_supported(0, UsedDirection::AsOutput));
     }
 }
