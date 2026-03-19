@@ -50,6 +50,11 @@ pub const REC709_PRIMARIES: CieXyYTriple = CieXyYTriple {
 /// Write ProfileDescription and Copyright tags.
 /// C版: `SetTextTags`
 fn set_text_tags(profile: &mut Profile, description: &str) {
+    set_text_tags_public(profile, description);
+}
+
+/// Public version of set_text_tags for cross-module use.
+pub fn set_text_tags_public(profile: &mut Profile, description: &str) {
     let mut desc_mlu = Mlu::new();
     desc_mlu.set_ascii("en", "US", description);
     profile
