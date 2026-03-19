@@ -1719,4 +1719,100 @@ mod tests {
             }
         }
     }
+
+    // ================================================================
+    // Prelin16: 16-bit CLUT fast path
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn resampling_sets_prelin16_fast_eval() {
+        // Build a pipeline: curves → CLUT → curves
+        let mut p = Pipeline::new(3, 3).unwrap();
+
+        let gamma = ToneCurve::build_gamma(2.2).unwrap();
+        let curves = vec![gamma.clone(), gamma.clone(), gamma.clone()];
+        let stage_c1 = Stage::new_tone_curves(Some(&curves), 3).unwrap();
+
+        // Small CLUT for testing
+        let stage_clut = Stage::new_clut_16bit_uniform(9, 3, 3, None).unwrap();
+
+        let inv_gamma = ToneCurve::build_gamma(1.0 / 2.2).unwrap();
+        let inv_curves = vec![inv_gamma.clone(), inv_gamma.clone(), inv_gamma.clone()];
+        let stage_c2 = Stage::new_tone_curves(Some(&inv_curves), 3).unwrap();
+
+        p.insert_stage(StageLoc::AtEnd, stage_c1);
+        p.insert_stage(StageLoc::AtEnd, stage_clut);
+        p.insert_stage(StageLoc::AtEnd, stage_c2);
+
+        // Save original output
+        let mut orig_out = [0u16; 3];
+        p.eval_16(&[0x8000, 0x8000, 0x8000], &mut orig_out);
+
+        let mut flags = 0u32;
+        let ok = optimize_by_resampling(&mut p, 0, &mut flags);
+        assert!(ok);
+
+        // Should have fast eval path
+        assert!(
+            p.has_fast_eval16(),
+            "resampling with curves should set Prelin16 fast eval"
+        );
+
+        // Output should be close to original
+        let mut opt_out = [0u16; 3];
+        p.eval_16(&[0x8000, 0x8000, 0x8000], &mut opt_out);
+
+        for ch in 0..3 {
+            let diff = (orig_out[ch] as i32 - opt_out[ch] as i32).unsigned_abs();
+            assert!(
+                diff < 500,
+                "ch {ch}: orig={}, opt={}, diff={}",
+                orig_out[ch],
+                opt_out[ch],
+                diff
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn resampling_no_curves_uses_direct_clut() {
+        // Pipeline with only non-curve stages (no pre/post linearization)
+        // Should still optimize but without Prelin16 curves wrapping
+        let mut p = Pipeline::new(3, 3).unwrap();
+
+        let matrix = [
+            0.4361, 0.3851, 0.1431, 0.2225, 0.7169, 0.0606, 0.0139, 0.0971, 0.7141,
+        ];
+        let stage_m = Stage::new_matrix(3, 3, &matrix, None).unwrap();
+        p.insert_stage(StageLoc::AtEnd, stage_m);
+
+        let mut orig_out = [0u16; 3];
+        p.eval_16(&[0x8000, 0x8000, 0x8000], &mut orig_out);
+
+        let mut flags = 0u32;
+        let ok = optimize_by_resampling(&mut p, 0, &mut flags);
+        assert!(ok);
+
+        // Should have fast eval (direct CLUT or Prelin16 with identity curves)
+        assert!(
+            p.has_fast_eval16(),
+            "resampled pipeline should have fast eval"
+        );
+
+        let mut opt_out = [0u16; 3];
+        p.eval_16(&[0x8000, 0x8000, 0x8000], &mut opt_out);
+
+        for ch in 0..3 {
+            let diff = (orig_out[ch] as i32 - opt_out[ch] as i32).unsigned_abs();
+            assert!(
+                diff < 200,
+                "ch {ch}: orig={}, opt={}, diff={}",
+                orig_out[ch],
+                opt_out[ch],
+                diff
+            );
+        }
+    }
 }
