@@ -1652,9 +1652,22 @@ impl Profile {
     }
 
     /// Get the true type signature of a tag (first 4 bytes of raw tag data).
+    /// Peeks cached data when available to avoid cloning the entire tag.
     /// C版: `_cmsGetTagTrueType`
     pub fn tag_true_type(&mut self, sig: TagSignature) -> Option<TagTypeSignature> {
-        let raw = self.read_raw_tag(sig).ok()?;
+        let idx = self.search_tag_follow_links(sig)?;
+        let raw = match &self.tags[idx].data {
+            TagDataState::Raw(data) => data.as_slice(),
+            TagDataState::NotLoaded => {
+                // Load and cache, then peek
+                self.read_raw_tag(sig).ok()?;
+                let idx = self.search_tag_follow_links(sig)?;
+                match &self.tags[idx].data {
+                    TagDataState::Raw(data) => data.as_slice(),
+                    _ => return None,
+                }
+            }
+        };
         if raw.len() < 4 {
             return None;
         }
