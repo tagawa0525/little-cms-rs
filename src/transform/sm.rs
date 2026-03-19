@@ -164,7 +164,7 @@ impl GamutBoundary {
 
     /// Add a Lab sample point to the gamut boundary.
     /// Keeps only the maximum-radius point per sector.
-    pub fn add_point(&mut self, lab: &CieLab) -> bool {
+    pub fn add_point(&mut self, lab: &CieLab) {
         let sp = to_spherical(lab);
         let (ai, ti) = quantize(&sp);
 
@@ -173,7 +173,6 @@ impl GamutBoundary {
             pt.kind = PointType::Specified;
             pt.p = sp;
         }
-        true
     }
 
     /// Interpolate missing sectors from neighboring sample data.
@@ -427,6 +426,34 @@ mod tests {
         assert!(
             gbd.check(&mid),
             "computed GBD should cover intermediate hue"
+        );
+    }
+
+    #[test]
+    fn compute_handles_high_radius_neighbors() {
+        let mut gbd = GamutBoundary::new();
+
+        // Add points with high chroma (radius > 50 from center Lab(50,0,0))
+        for angle_deg in (0..360).step_by(45) {
+            let rad = (angle_deg as f64).to_radians();
+            gbd.add_point(&CieLab {
+                l: 60.0,
+                a: 80.0 * rad.sin(),
+                b: 80.0 * rad.cos(),
+            });
+        }
+
+        gbd.compute();
+
+        // A point with radius ~60 in an intermediate sector should be inside
+        let test = CieLab {
+            l: 60.0,
+            a: 60.0 * 22.5_f64.to_radians().sin(),
+            b: 60.0 * 22.5_f64.to_radians().cos(),
+        };
+        assert!(
+            gbd.check(&test),
+            "high-radius modeled sector should allow r>50"
         );
     }
 }
