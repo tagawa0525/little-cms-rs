@@ -1559,8 +1559,10 @@ impl Profile {
                     pipe.change_interp_to_trilinear();
                 }
 
-                // Lab V2↔V4 conversion for Lut16Type
-                if self.tag_true_type(tag16) == Some(TagTypeSignature::Lut16) {
+                // Lab V2↔V4 conversion for Lut16Type with Lab PCS
+                if self.tag_true_type(tag16) == Some(TagTypeSignature::Lut16)
+                    && self.header.pcs == ColorSpaceSignature::LabData
+                {
                     if self.header.color_space == ColorSpaceSignature::LabData
                         && let Some(stage) = Stage::new_lab_v4_to_v2()
                     {
@@ -1620,9 +1622,10 @@ impl Profile {
                     pipe.change_interp_to_trilinear();
                 }
 
-                // Lab V2↔V4 conversion for Lut16Type
-                if self.tag_true_type(tag16) == Some(TagTypeSignature::Lut16) {
-                    // PCS input → prepend V4→V2
+                // Lab V2↔V4 conversion for Lut16Type with Lab PCS
+                if self.tag_true_type(tag16) == Some(TagTypeSignature::Lut16)
+                    && self.header.pcs == ColorSpaceSignature::LabData
+                {
                     if let Some(stage) = Stage::new_lab_v4_to_v2() {
                         pipe.insert_stage(StageLoc::AtBegin, stage);
                     }
