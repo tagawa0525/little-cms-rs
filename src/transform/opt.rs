@@ -5,7 +5,7 @@
 use crate::pipeline::lut::{Pipeline, Stage, StageData, StageLoc, sample_clut_16bit};
 use crate::types::{ColorSpaceSignature, StageSignature};
 
-use super::xform::{FLAGS_FORCE_CLUT, FLAGS_NOOPTIMIZE};
+use super::xform::{FLAGS_FORCE_CLUT, FLAGS_NOOPTIMIZE, FLAGS_NOWHITEONWHITEFIXUP};
 
 // ============================================================================
 // Constants
@@ -13,6 +13,9 @@ use super::xform::{FLAGS_FORCE_CLUT, FLAGS_NOOPTIMIZE};
 
 /// Number of sample points for curve joining / prelinearization.
 const PRELINEARIZATION_POINTS: u32 = 4096;
+
+/// Rendering intent: absolute colorimetric (ICC spec).
+const INTENT_ABSOLUTE_COLORIMETRIC: u32 = 3;
 
 // ============================================================================
 // Pre-optimization: remove redundant stages
@@ -721,9 +724,10 @@ fn prelin8_alloc(
 /// C版: `OptimizeByComputingLinearization`
 pub fn optimize_by_computing_linearization(
     pipeline: &mut Pipeline,
-    _intent: u32,
+    intent: u32,
     flags: &mut u32,
     input_format: u32,
+    output_format: u32,
 ) -> bool {
     use crate::curves::gamma::ToneCurve;
     use crate::pipeline::lut::{CLutTable, FastEval16};
@@ -755,16 +759,14 @@ pub fn optimize_by_computing_linearization(
 
         // Feed input with a gray ramp (all channels same value)
         let mut input = [0u16; crate::types::MAX_CHANNELS];
-        for ch in 0..3 {
-            input[ch] = v;
-        }
+        input[..3].fill(v);
 
         let mut output = [0u16; crate::types::MAX_CHANNELS];
         pipeline.eval_16(&input, &mut output);
 
         // Store each channel's response
-        for ch in 0..3 {
-            curve_data[ch][pt] = if ch < n_out { output[ch] } else { 0 };
+        for (ch, data) in curve_data.iter_mut().enumerate() {
+            data[pt] = if ch < n_out { output[ch] } else { 0 };
         }
     }
 
@@ -845,7 +847,24 @@ pub fn optimize_by_computing_linearization(
         return false;
     }
 
-    // Extract CLUT params and table for Prelin8Data
+    // Apply white point fix BEFORE building Prelin8Data.
+    // Prelin8Data copies the CLUT table, so the fix must be applied first.
+    // (C version shares the table via pointer; Rust version copies it.)
+    if intent == INTENT_ABSOLUTE_COLORIMETRIC {
+        *flags |= FLAGS_NOWHITEONWHITEFIXUP;
+    }
+    if *flags & FLAGS_NOWHITEONWHITEFIXUP == 0 {
+        let infmt = PixelFormat(input_format);
+        let outfmt = PixelFormat(output_format);
+        if let (Some(in_cs), Some(out_cs)) = (
+            ColorSpaceSignature::from_pixel_type(infmt.colorspace()),
+            ColorSpaceSignature::from_pixel_type(outfmt.colorspace()),
+        ) {
+            fix_white_misalignment(&mut new_pipeline, in_cs, out_cs);
+        }
+    }
+
+    // Extract CLUT params and table for Prelin8Data (after white fix)
     let clut_stage_ref = &new_pipeline.stages()[0];
     let (params, table_data) = match clut_stage_ref.data() {
         StageData::CLut(c) => {
@@ -868,8 +887,6 @@ pub fn optimize_by_computing_linearization(
     new_pipeline.fast_eval16 = Some(FastEval16::Prelin8(Box::new(p8)));
     *pipeline = new_pipeline;
 
-    // Apply white point fix
-    // (uses the generic eval path since fast_eval16 reads from its own table copy)
     true
 }
 
@@ -912,7 +929,7 @@ pub fn optimize_pipeline(
     if optimize_by_matrix_shaper(pipeline, intent, flags, input_format, output_format) {
         return;
     }
-    if optimize_by_computing_linearization(pipeline, intent, flags, input_format) {
+    if optimize_by_computing_linearization(pipeline, intent, flags, input_format, output_format) {
         return;
     }
     optimize_by_resampling(pipeline, intent, flags);
@@ -1604,8 +1621,13 @@ mod tests {
         p.eval_16(&[0x8080, 0x8080, 0x8080], &mut orig_out);
 
         let mut flags = 0u32;
-        let ok =
-            optimize_by_computing_linearization(&mut p, 0, &mut flags, crate::types::TYPE_RGB_8.0);
+        let ok = optimize_by_computing_linearization(
+            &mut p,
+            0,
+            &mut flags,
+            crate::types::TYPE_RGB_8.0,
+            crate::types::TYPE_RGB_8.0,
+        );
         assert!(ok, "should extract linearization from pipeline");
 
         // Should now have fast eval
@@ -1636,8 +1658,13 @@ mod tests {
         p.insert_stage(StageLoc::AtEnd, stage);
 
         let mut flags = 0u32;
-        let ok =
-            optimize_by_computing_linearization(&mut p, 0, &mut flags, crate::types::TYPE_RGB_8.0);
+        let ok = optimize_by_computing_linearization(
+            &mut p,
+            0,
+            &mut flags,
+            crate::types::TYPE_RGB_8.0,
+            crate::types::TYPE_RGB_8.0,
+        );
         assert!(!ok, "should reject non-3ch pipelines");
     }
 
