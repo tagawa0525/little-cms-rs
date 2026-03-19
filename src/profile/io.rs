@@ -1544,7 +1544,7 @@ impl Profile {
             }
 
             if self.has_tag(tag16) {
-                let pipe = match self.read_tag(tag16)? {
+                let mut pipe = match self.read_tag(tag16)? {
                     TagData::Pipeline(p) => p,
                     _ => {
                         return Err(CmsError {
@@ -1553,6 +1553,26 @@ impl Profile {
                         });
                     }
                 };
+
+                // Lab PCS → use trilinear interpolation
+                if self.header.pcs == ColorSpaceSignature::LabData {
+                    pipe.change_interp_to_trilinear();
+                }
+
+                // Lab V2↔V4 conversion for Lut16Type with Lab PCS
+                if self.tag_true_type(tag16) == Some(TagTypeSignature::Lut16)
+                    && self.header.pcs == ColorSpaceSignature::LabData
+                {
+                    if self.header.color_space == ColorSpaceSignature::LabData
+                        && let Some(stage) = Stage::new_lab_v4_to_v2()
+                    {
+                        pipe.insert_stage(StageLoc::AtBegin, stage);
+                    }
+                    if let Some(stage) = Stage::new_lab_v2_to_v4() {
+                        pipe.insert_stage(StageLoc::AtEnd, stage);
+                    }
+                }
+
                 return Ok(pipe);
             }
         }
@@ -1587,7 +1607,7 @@ impl Profile {
             }
 
             if self.has_tag(tag16) {
-                let pipe = match self.read_tag(tag16)? {
+                let mut pipe = match self.read_tag(tag16)? {
                     TagData::Pipeline(p) => p,
                     _ => {
                         return Err(CmsError {
@@ -1596,6 +1616,26 @@ impl Profile {
                         });
                     }
                 };
+
+                // Lab PCS → use trilinear interpolation
+                if self.header.pcs == ColorSpaceSignature::LabData {
+                    pipe.change_interp_to_trilinear();
+                }
+
+                // Lab V2↔V4 conversion for Lut16Type with Lab PCS
+                if self.tag_true_type(tag16) == Some(TagTypeSignature::Lut16)
+                    && self.header.pcs == ColorSpaceSignature::LabData
+                {
+                    if let Some(stage) = Stage::new_lab_v4_to_v2() {
+                        pipe.insert_stage(StageLoc::AtBegin, stage);
+                    }
+                    if self.header.color_space == ColorSpaceSignature::LabData
+                        && let Some(stage) = Stage::new_lab_v2_to_v4()
+                    {
+                        pipe.insert_stage(StageLoc::AtEnd, stage);
+                    }
+                }
+
                 return Ok(pipe);
             }
         }
@@ -1609,6 +1649,120 @@ impl Profile {
                 message: "No LUT tags and color space is not Gray or RGB".to_string(),
             }),
         }
+    }
+
+    /// Get the true type signature of a tag (first 4 bytes of raw tag data).
+    /// Peeks cached data when available to avoid cloning the entire tag.
+    /// C版: `_cmsGetTagTrueType`
+    pub fn tag_true_type(&mut self, sig: TagSignature) -> Option<TagTypeSignature> {
+        let idx = self.search_tag_follow_links(sig)?;
+        let raw = match &self.tags[idx].data {
+            TagDataState::Raw(data) => data.as_slice(),
+            TagDataState::NotLoaded => {
+                // Load and cache, then peek
+                self.read_raw_tag(sig).ok()?;
+                let idx = self.search_tag_follow_links(sig)?;
+                match &self.tags[idx].data {
+                    TagDataState::Raw(data) => data.as_slice(),
+                    _ => return None,
+                }
+            }
+        };
+        if raw.len() < 4 {
+            return None;
+        }
+        let type_sig_raw = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]);
+        TagTypeSignature::try_from(type_sig_raw).ok()
+    }
+
+    /// Read a device link / abstract profile LUT pipeline.
+    /// C版: `_cmsReadDevicelinkLUT`
+    pub fn read_devicelink_lut(&mut self, intent: u32) -> Result<Pipeline, CmsError> {
+        if intent > 3 {
+            return Err(CmsError {
+                code: ErrorCode::Range,
+                message: format!("Invalid rendering intent: {intent}"),
+            });
+        }
+
+        // Try 16-bit LUT tags (skip float DToB for now)
+        let mut tag16 = DEVICE2PCS16[intent as usize];
+        if !self.has_tag(tag16) {
+            tag16 = DEVICE2PCS16[0]; // Fallback to perceptual
+        }
+        if !self.has_tag(tag16) {
+            return Err(CmsError {
+                code: ErrorCode::Internal,
+                message: "No LUT tag found for device link".to_string(),
+            });
+        }
+
+        let mut pipe = match self.read_tag(tag16)? {
+            TagData::Pipeline(p) => p,
+            _ => {
+                return Err(CmsError {
+                    code: ErrorCode::Internal,
+                    message: "Expected Pipeline from LUT tag".to_string(),
+                });
+            }
+        };
+
+        // Lab PCS → use trilinear interpolation
+        if self.header.pcs == ColorSpaceSignature::LabData {
+            pipe.change_interp_to_trilinear();
+        }
+
+        // Lab V2↔V4 conversion for Lut16Type
+        if self.tag_true_type(tag16) == Some(TagTypeSignature::Lut16) {
+            if self.header.color_space == ColorSpaceSignature::LabData
+                && let Some(stage) = Stage::new_lab_v4_to_v2()
+            {
+                pipe.insert_stage(StageLoc::AtBegin, stage);
+            }
+            if self.header.pcs == ColorSpaceSignature::LabData
+                && let Some(stage) = Stage::new_lab_v2_to_v4()
+            {
+                pipe.insert_stage(StageLoc::AtEnd, stage);
+            }
+        }
+
+        Ok(pipe)
+    }
+
+    /// Check if a specific rendering intent is implemented as a CLUT.
+    /// C版: `cmsIsCLUT`
+    pub fn is_clut(&self, intent: u32, direction: crate::types::UsedDirection) -> bool {
+        use crate::types::UsedDirection;
+
+        // Device link: single fixed intent
+        if self.header.device_class == ProfileClassSignature::Link {
+            return self.header.rendering_intent == intent;
+        }
+
+        let tag_table = match direction {
+            UsedDirection::AsInput => &DEVICE2PCS16,
+            UsedDirection::AsOutput => &PCS2DEVICE16,
+            UsedDirection::AsProof => {
+                return self.is_intent_supported(intent, UsedDirection::AsInput)
+                    && self.is_intent_supported(1, UsedDirection::AsOutput);
+                // 1 = INTENT_RELATIVE_COLORIMETRIC
+            }
+        };
+
+        if intent > 3 {
+            return false;
+        }
+
+        self.has_tag(tag_table[intent as usize])
+    }
+
+    /// Check if a rendering intent is supported (CLUT or matrix-shaper).
+    /// C版: `cmsIsIntentSupported`
+    pub fn is_intent_supported(&self, intent: u32, direction: crate::types::UsedDirection) -> bool {
+        if self.is_clut(intent, direction) {
+            return true;
+        }
+        self.is_matrix_shaper()
     }
 }
 
@@ -2320,5 +2474,98 @@ mod tests {
         let pipe = p2.read_output_lut(0).unwrap();
         assert_eq!(pipe.input_channels(), 3);
         assert_eq!(pipe.output_channels(), 1);
+    }
+
+    // ========================================================================
+    // Phase 9: io.rs completion tests
+    // ========================================================================
+
+    #[test]
+    fn tag_true_type_returns_correct_type() {
+        use crate::curves::gamma::ToneCurve;
+
+        // Linearization device link writes AToB0 as a pipeline tag
+        let gamma = ToneCurve::build_gamma(2.2).unwrap();
+        let mut dl = Profile::new_linearization_device_link(
+            ColorSpaceSignature::RgbData,
+            &[gamma.clone(), gamma.clone(), gamma],
+        )
+        .unwrap();
+        let data = dl.save_to_mem().unwrap();
+        let mut dl2 = Profile::open_mem(&data).unwrap();
+
+        let tt = dl2.tag_true_type(TagSignature::AToB0);
+        // V4 linearization device link uses LutAtoB type, not Lut16
+        assert_eq!(tt, Some(TagTypeSignature::LutAtoB));
+        assert_ne!(tt, Some(TagTypeSignature::Lut16));
+    }
+
+    #[test]
+    fn read_devicelink_lut_roundtrip() {
+        // Create a linearization device link profile (RGB)
+        let gamma = ToneCurve::build_gamma(2.2).unwrap();
+        let mut dl = Profile::new_linearization_device_link(
+            ColorSpaceSignature::RgbData,
+            &[gamma.clone(), gamma.clone(), gamma],
+        )
+        .unwrap();
+        let data = dl.save_to_mem().unwrap();
+        let mut dl2 = Profile::open_mem(&data).unwrap();
+
+        let pipe = dl2.read_devicelink_lut(0).unwrap();
+        assert_eq!(pipe.input_channels(), 3);
+        assert_eq!(pipe.output_channels(), 3);
+
+        // Evaluate: mid-gray should map to mid-gray-ish value
+        let input = [0.5f32, 0.5, 0.5];
+        let mut output = [0.0f32; 3];
+        pipe.eval_float(&input, &mut output);
+        for (ch, &val) in output.iter().enumerate() {
+            assert!(val > 0.1 && val < 0.9, "ch {ch}: unexpected value {val}");
+        }
+    }
+
+    #[test]
+    fn is_clut_matrix_shaper_returns_false() {
+        use crate::types::UsedDirection;
+
+        let mut p = build_rgb_matrix_shaper_profile();
+        let data = p.save_to_mem().unwrap();
+        let p2 = Profile::open_mem(&data).unwrap();
+
+        // Matrix-shaper profile has no AToB/BToA CLUT tags
+        assert!(!p2.is_clut(0, UsedDirection::AsInput));
+        assert!(!p2.is_clut(0, UsedDirection::AsOutput));
+    }
+
+    #[test]
+    fn is_clut_device_link_returns_true() {
+        use crate::types::UsedDirection;
+
+        let gamma = ToneCurve::build_gamma(2.2).unwrap();
+        let mut dl = Profile::new_linearization_device_link(
+            ColorSpaceSignature::RgbData,
+            &[gamma.clone(), gamma.clone(), gamma],
+        )
+        .unwrap();
+        let data = dl.save_to_mem().unwrap();
+        let dl2 = Profile::open_mem(&data).unwrap();
+
+        // Device link with perceptual intent should return true for intent 0
+        assert!(dl2.is_clut(0, UsedDirection::AsInput));
+    }
+
+    #[test]
+    fn is_intent_supported_matrix_shaper() {
+        use crate::types::UsedDirection;
+
+        let mut p = build_rgb_matrix_shaper_profile();
+        let data = p.save_to_mem().unwrap();
+        let p2 = Profile::open_mem(&data).unwrap();
+
+        // Matrix-shaper can handle any intent via fallback
+        assert!(p2.is_intent_supported(0, UsedDirection::AsInput));
+        assert!(p2.is_intent_supported(1, UsedDirection::AsInput));
+        assert!(p2.is_intent_supported(0, UsedDirection::AsOutput));
     }
 }

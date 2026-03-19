@@ -1203,6 +1203,20 @@ impl Pipeline {
         self.fast_eval16.is_some()
     }
 
+    /// Change CLUT interpolation to trilinear for Lab PCS.
+    /// C版: `ChangeInterpolationToTrilinear`
+    pub fn change_interp_to_trilinear(&mut self) {
+        for stage in &mut self.stages {
+            if stage.stage_type() == StageSignature::CLutElem
+                && let StageData::CLut(ref mut clut_data) = stage.data
+            {
+                clut_data.params.flags |= intrp::LERP_FLAGS_TRILINEAR;
+            }
+        }
+        // Invalidate fast evaluator — its precomputed params are now stale
+        self.fast_eval16 = None;
+    }
+
     /// Check if stages match a pattern of types and return their indices.
     ///
     /// C版: `cmsPipelineCheckAndRetreiveStages`
@@ -2314,5 +2328,29 @@ mod tests {
         let target = [0.5f32, 0.5];
         let mut result = [0.0f32; 2];
         assert!(!p.eval_reverse_float(&target, &mut result, None));
+    }
+
+    #[test]
+    fn change_interp_to_trilinear_sets_flag() {
+        use crate::curves::intrp::LERP_FLAGS_TRILINEAR;
+
+        // Build a 3→3 pipeline with a CLUT stage
+        let mut pipe = Pipeline::new(3, 3).unwrap();
+        let clut = Stage::new_clut_16bit(&[17, 17, 17], 3, 3, None).unwrap();
+        pipe.insert_stage(StageLoc::AtEnd, clut);
+
+        // Initially should not have trilinear flag
+        if let StageData::CLut(clut_data) = pipe.stages()[0].data() {
+            assert_eq!(clut_data.params.flags & LERP_FLAGS_TRILINEAR, 0);
+        }
+
+        pipe.change_interp_to_trilinear();
+
+        // After change, CLUT should have trilinear flag
+        if let StageData::CLut(clut_data) = pipe.stages()[0].data() {
+            assert_ne!(clut_data.params.flags & LERP_FLAGS_TRILINEAR, 0);
+        } else {
+            panic!("Expected CLut stage");
+        }
     }
 }

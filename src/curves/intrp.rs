@@ -320,15 +320,19 @@ fn bilinear_interp_16(input: &[u16], output: &mut [u16], p: &InterpParams, table
         y0_stride + p.opta[0] as usize
     };
 
+    // C版 uses CMS_NO_SANITIZE for wrapping i32 arithmetic.
     for i in 0..p.n_outputs as usize {
         let d00 = table[x0_stride + y0_stride + i] as i32;
         let d10 = table[x1_stride + y0_stride + i] as i32;
         let d01 = table[x0_stride + y1_stride + i] as i32;
         let d11 = table[x1_stride + y1_stride + i] as i32;
 
-        let dx0 = d00 + (((d10 - d00) * rx + 0x8000) >> 16);
-        let dx1 = d01 + (((d11 - d01) * rx + 0x8000) >> 16);
-        output[i] = (dx0 + (((dx1 - dx0) * ry + 0x8000) >> 16)) as u16;
+        let lerp = |a: i32, l: i32, h: i32| -> i32 {
+            l.wrapping_add((h.wrapping_sub(l).wrapping_mul(a).wrapping_add(0x8000)) >> 16)
+        };
+        let dx0 = lerp(rx, d00, d10);
+        let dx1 = lerp(rx, d01, d11);
+        output[i] = lerp(ry, dx0, dx1) as u16;
     }
 }
 
@@ -408,6 +412,8 @@ fn trilinear_interp_16(input: &[u16], output: &mut [u16], p: &InterpParams, tabl
         z0s + p.opta[0] as usize
     };
 
+    // C版 uses CMS_NO_SANITIZE for wrapping i32 arithmetic.
+    // (h-l)*a can exceed i32::MAX (65535*65535 = ~4.3B), matching C wrapping.
     for i in 0..p.n_outputs as usize {
         let d000 = table[x0s + y0s + z0s + i] as i32;
         let d100 = table[x1s + y0s + z0s + i] as i32;
@@ -418,13 +424,16 @@ fn trilinear_interp_16(input: &[u16], output: &mut [u16], p: &InterpParams, tabl
         let d011 = table[x0s + y1s + z1s + i] as i32;
         let d111 = table[x1s + y1s + z1s + i] as i32;
 
-        let dx00 = d000 + (((d100 - d000) * rx + 0x8000) >> 16);
-        let dx01 = d001 + (((d101 - d001) * rx + 0x8000) >> 16);
-        let dx10 = d010 + (((d110 - d010) * rx + 0x8000) >> 16);
-        let dx11 = d011 + (((d111 - d011) * rx + 0x8000) >> 16);
-        let dxy0 = dx00 + (((dx10 - dx00) * ry + 0x8000) >> 16);
-        let dxy1 = dx01 + (((dx11 - dx01) * ry + 0x8000) >> 16);
-        output[i] = (dxy0 + (((dxy1 - dxy0) * rz + 0x8000) >> 16)) as u16;
+        let lerp = |a: i32, l: i32, h: i32| -> i32 {
+            l.wrapping_add((h.wrapping_sub(l).wrapping_mul(a).wrapping_add(0x8000)) >> 16)
+        };
+        let dx00 = lerp(rx, d000, d100);
+        let dx01 = lerp(rx, d001, d101);
+        let dx10 = lerp(rx, d010, d110);
+        let dx11 = lerp(rx, d011, d111);
+        let dxy0 = lerp(ry, dx00, dx10);
+        let dxy1 = lerp(ry, dx01, dx11);
+        output[i] = lerp(rz, dxy0, dxy1) as u16;
     }
 }
 
