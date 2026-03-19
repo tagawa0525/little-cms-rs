@@ -289,7 +289,7 @@ fn all_curves_are_linear(stage: &Stage) -> bool {
 /// a Prelin16Data fast evaluator.
 ///
 /// C版: `OptimizeByResampling`
-pub fn optimize_by_resampling(
+pub(crate) fn optimize_by_resampling(
     pipeline: &mut Pipeline,
     intent: u32,
     flags: &mut u32,
