@@ -1206,7 +1206,13 @@ impl Pipeline {
     /// Change CLUT interpolation to trilinear for Lab PCS.
     /// C版: `ChangeInterpolationToTrilinear`
     pub fn change_interp_to_trilinear(&mut self) {
-        todo!()
+        for stage in &mut self.stages {
+            if stage.stage_type() == StageSignature::CLutElem
+                && let StageData::CLut(ref mut clut_data) = stage.data
+            {
+                clut_data.params.flags |= intrp::LERP_FLAGS_TRILINEAR;
+            }
+        }
     }
 
     /// Check if stages match a pattern of types and return their indices.
@@ -2323,7 +2329,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn change_interp_to_trilinear_sets_flag() {
         use crate::curves::intrp::LERP_FLAGS_TRILINEAR;
 
