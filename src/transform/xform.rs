@@ -879,8 +879,11 @@ impl Transform {
             unroll(self.input_format, &mut w_in, &input[in_offset..], 0);
 
             if is_null {
-                // Null transform: pass through
-                w_out = w_in;
+                // Null transform: copy only active channels, clear rest
+                w_out = [0u16; MAX_CHANNELS];
+                let n_copy = (self.input_format.channels() as usize)
+                    .min(self.output_format.channels() as usize);
+                w_out[..n_copy].copy_from_slice(&w_in[..n_copy]);
             } else if use_cache && w_in == self.cache_in.get() {
                 // Cache hit
                 w_out = self.cache_out.get();
@@ -941,8 +944,11 @@ impl Transform {
             unroll(self.input_format, &mut w_in, &input[in_offset..], 0);
 
             if is_null {
-                // Null transform: pass through
-                w_out = w_in;
+                // Null transform: copy only active channels, clear rest
+                w_out = [0.0f32; MAX_CHANNELS];
+                let n_copy = (self.input_format.channels() as usize)
+                    .min(self.output_format.channels() as usize);
+                w_out[..n_copy].copy_from_slice(&w_in[..n_copy]);
             } else if let Some(ref gamut) = self.gamut_check {
                 let mut out_of_gamut = [0.0f32; MAX_CHANNELS];
                 gamut.eval_float(&w_in, &mut out_of_gamut);
