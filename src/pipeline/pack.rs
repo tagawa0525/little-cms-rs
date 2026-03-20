@@ -675,10 +675,18 @@ pub fn find_formatter_out(format: PixelFormat, flags: u32) -> Option<FormatterOu
 /// Return the pixel format suitable for the PCS of a profile.
 /// C版: `cmsFormatterForPCSOfProfile`
 pub fn formatter_for_pcs_of_profile(
-    _profile: &crate::profile::io::Profile,
-    _is_float: bool,
+    profile: &crate::profile::io::Profile,
+    is_float: bool,
 ) -> PixelFormat {
-    todo!("Phase 14a-C: not yet implemented")
+    use crate::types::{ColorSpaceSignature, TYPE_LAB_16, TYPE_LAB_DBL, TYPE_XYZ_16, TYPE_XYZ_DBL};
+
+    match (profile.header.pcs, is_float) {
+        (ColorSpaceSignature::LabData, true) => TYPE_LAB_DBL,
+        (ColorSpaceSignature::LabData, false) => TYPE_LAB_16,
+        (ColorSpaceSignature::XyzData, true) => TYPE_XYZ_DBL,
+        (_, false) => TYPE_XYZ_16,
+        (_, true) => TYPE_XYZ_DBL,
+    }
 }
 
 #[cfg(test)]
@@ -1222,7 +1230,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn pcs_formatter_lab_profile_16bit() {
         use crate::profile::io::Profile;
         let mut p = Profile::new_placeholder();
@@ -1233,7 +1240,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn pcs_formatter_xyz_profile_16bit() {
         use crate::profile::io::Profile;
         let mut p = Profile::new_placeholder();
@@ -1244,7 +1250,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn pcs_formatter_lab_profile_float() {
         use crate::profile::io::Profile;
         let mut p = Profile::new_placeholder();
@@ -1255,7 +1260,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn pcs_formatter_xyz_profile_float() {
         use crate::profile::io::Profile;
         let mut p = Profile::new_placeholder();
