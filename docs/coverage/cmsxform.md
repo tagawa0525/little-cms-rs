@@ -17,11 +17,11 @@
 
 ### Transform実行
 
-| C 関数                     | Rust 対応                                 | 状態   |
-| -------------------------- | ----------------------------------------- | ------ |
-| `cmsDoTransform`           | `Transform::do_transform()`               | 実装済 |
-| `cmsDoTransformStride`     | `Transform::do_transform_stride()`        | 実装済 |
-| `cmsDoTransformLineStride` | `Transform::do_transform_line_stride()`   | 実装済 |
+| C 関数                     | Rust 対応                               | 状態   |
+| -------------------------- | --------------------------------------- | ------ |
+| `cmsDoTransform`           | `Transform::do_transform()`             | 実装済 |
+| `cmsDoTransformStride`     | `Transform::do_transform_stride()`      | 実装済 |
+| `cmsDoTransformLineStride` | `Transform::do_transform_line_stride()` | 実装済 |
 
 ### Transform管理
 
