@@ -8,7 +8,7 @@ use crate::curves::gamma::ToneCurve;
 use crate::curves::wtpnt;
 use crate::math::mtrx::Mat3;
 use crate::pipeline::lut::{Pipeline, Stage, StageLoc};
-use crate::pipeline::named::Mlu;
+use crate::pipeline::named::{Mlu, ProfileSequenceDesc, ProfileSequenceDescEntry};
 use crate::profile::tag_types::TagData;
 use crate::types::{
     CieXyz, ColorSpaceSignature, D50_X, D50_Y, D50_Z, DateTimeNumber, EncodedXyzNumber,
@@ -661,6 +661,26 @@ impl Profile {
         // Compute MD5 and store as profile ID
         self.header.profile_id = ProfileId(Md5::digest(&blob));
         Ok(())
+    }
+
+    /// Read profile sequence from Desc and Id tags, merging if both exist.
+    /// C版: `_cmsReadProfileSequence`
+    pub fn read_profile_sequence(&mut self) -> Option<ProfileSequenceDesc> {
+        let _ = self;
+        todo!()
+    }
+
+    /// Write profile sequence to Desc tag (and Id tag if v4+).
+    /// C版: `_cmsWriteProfileSequence`
+    pub fn write_profile_sequence(&mut self, _seq: &ProfileSequenceDesc) -> Result<(), CmsError> {
+        todo!()
+    }
+
+    /// Build a profile sequence from an array of profiles.
+    /// C版: `_cmsCompileProfileSequence`
+    pub fn compile_profile_sequence(profiles: &mut [Profile]) -> Option<ProfileSequenceDesc> {
+        let _ = profiles;
+        todo!()
     }
 
     // ========================================================================
@@ -2732,5 +2752,45 @@ mod tests {
             p1.header.profile_id, p2.header.profile_id,
             "different profiles should have different MD5 IDs"
         );
+    }
+
+    // ================================================================
+    // Phase 13c: Profile sequence helpers
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn compile_profile_sequence_from_srgb() {
+        let mut p1 = Profile::new_srgb();
+        let mut p2 = Profile::new_srgb();
+        let seq = Profile::compile_profile_sequence(&mut [p1, p2])
+            .expect("should compile sequence from 2 sRGB profiles");
+        assert_eq!(seq.len(), 2);
+        // Each entry should have a non-empty description
+        let e0 = seq.get(0).unwrap();
+        assert!(
+            e0.description.get_ascii("en", "US").is_some(),
+            "description should be set"
+        );
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn write_and_read_profile_sequence() {
+        let mut p1 = Profile::new_srgb();
+        let mut p2 = Profile::new_srgb();
+        let seq = Profile::compile_profile_sequence(&mut [p1, p2]).unwrap();
+
+        let mut profile = Profile::new_placeholder();
+        profile.header.version = 0x04200000;
+        profile.write_profile_sequence(&seq).unwrap();
+
+        let data = profile.save_to_mem().unwrap();
+        let mut loaded = Profile::open_mem(&data).unwrap();
+
+        let read_seq = loaded
+            .read_profile_sequence()
+            .expect("should read back sequence");
+        assert_eq!(read_seq.len(), 2);
     }
 }
