@@ -36,12 +36,12 @@ TAC検出、RGBガンマ検出、Lab desaturation を実装する。
 | `compute_k_to_lstar()` | `ComputeKToLstar`     | K値→L*対応曲線計算         |
 | `chain_to_lab()`       | `_cmsChain2Lab`       | プロファイル列→Lab変換作成 |
 
-### Deferred
+### Deferred → Phase 10 で実装済
 
-| 関数                            | C版                            | 理由                                                            |
-| ------------------------------- | ------------------------------ | --------------------------------------------------------------- |
-| `create_gamut_check_pipeline()` | `_cmsCreateGamutCheckPipeline` | FLAGS_GAMUTCHECK の Transform 統合が必要。xform.rs の拡張が前提 |
-| `GamutSampler`                  | `GamutSampler`                 | 同上                                                            |
+| 関数                            | C版                            | 状態       |
+| ------------------------------- | ------------------------------ | ---------- |
+| `create_gamut_check_pipeline()` | `_cmsCreateGamutCheckPipeline` | Phase 10済 |
+| `GamutSampler`                  | `GamutSampler`                 | Phase 10済 |
 
 ## 処理フロー
 

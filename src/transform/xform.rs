@@ -105,6 +105,11 @@ fn find_combination(lut: &Pipeline, is_v4: bool, dest_tag: TagSignature) -> Opti
 }
 
 /// Color transform: converts pixel data between ICC profiles.
+/// Default alarm codes (C版: `_cmsAlarmCodesChunk`)
+pub const DEFAULT_ALARM_CODES: [u16; MAX_CHANNELS] = [
+    0x7F00, 0x7F00, 0x7F00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+
 pub struct Transform {
     pipeline: Pipeline,
     input_format: PixelFormat,
@@ -115,6 +120,8 @@ pub struct Transform {
     entry_color_space: ColorSpaceSignature,
     exit_color_space: ColorSpaceSignature,
     rendering_intent: u32,
+    gamut_check: Option<Pipeline>,
+    alarm_codes: [u16; MAX_CHANNELS],
 }
 
 impl Transform {
@@ -343,6 +350,162 @@ impl Transform {
             entry_color_space,
             exit_color_space,
             rendering_intent: intent,
+            gamut_check: None,
+            alarm_codes: DEFAULT_ALARM_CODES,
+        })
+    }
+
+    /// Create a proofing transform with gamut check support.
+    ///
+    /// C版: `cmsCreateProofingTransformTHR`
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_proofing(
+        mut input_profile: Profile,
+        input_format: PixelFormat,
+        mut output_profile: Profile,
+        output_format: PixelFormat,
+        mut proofing_profile: Profile,
+        intent: u32,
+        proofing_intent: u32,
+        flags: u32,
+    ) -> Result<Self, CmsError> {
+        // Reject mixed float/integer formats (same check as new_multiprofile)
+        if input_format.is_float() != output_format.is_float() {
+            return Err(CmsError {
+                code: ErrorCode::NotSuitable,
+                message: "mixed float/integer formats are not supported".into(),
+            });
+        }
+
+        // Without SOFTPROOFING or GAMUTCHECK, fall back to simple transform
+        if (flags & (FLAGS_SOFTPROOFING | FLAGS_GAMUTCHECK)) == 0 {
+            return Self::new(
+                input_profile,
+                input_format,
+                output_profile,
+                output_format,
+                intent,
+                flags,
+            );
+        }
+
+        let bpc = (flags & FLAGS_BLACKPOINTCOMPENSATION) != 0;
+
+        // Serialize profiles so we can create copies
+        let input_data = input_profile.save_to_mem()?;
+        let output_data = output_profile.save_to_mem()?;
+        let proofing_data = proofing_profile.save_to_mem()?;
+
+        // Build gamut check pipeline if requested
+        let gamut_check = if (flags & FLAGS_GAMUTCHECK) != 0 {
+            let p0 = Profile::open_mem(&input_data)?;
+            let p1 = Profile::open_mem(&proofing_data)?;
+            let mut gamut = Profile::open_mem(&proofing_data)?;
+            Some(super::gmt::create_gamut_check_pipeline(
+                &mut [p0, p1],
+                &[bpc, bpc],
+                &[intent, intent],
+                &[1.0, 1.0],
+                1,
+                &mut gamut,
+            )?)
+        } else {
+            None
+        };
+
+        // Build 4-profile proofing chain:
+        // [Input, Proofing, Proofing, Output]
+        // C版: cmsCreateProofingTransformTHR
+        let p0 = Profile::open_mem(&input_data)?;
+        let p1 = Profile::open_mem(&proofing_data)?;
+        let p2 = Profile::open_mem(&proofing_data)?;
+        let p3 = Profile::open_mem(&output_data)?;
+
+        let intents = [
+            intent,
+            intent,
+            1, /* RELATIVE_COLORIMETRIC */
+            proofing_intent,
+        ];
+        let mut bpc_arr = [bpc, bpc, false, false];
+        let adaptation = [1.0f64; 4];
+
+        let entry_color_space = p0.header.color_space;
+        let last = &p3;
+        let last_class = last.header.device_class;
+        let exit_color_space = if last_class == ProfileClassSignature::Link
+            || last_class == ProfileClassSignature::Abstract
+            || last_class == ProfileClassSignature::Input
+        {
+            last.header.pcs
+        } else {
+            last.header.color_space
+        };
+
+        let mut pipeline =
+            cnvrt::link_profiles(&mut [p0, p1, p2, p3], &intents, &mut bpc_arr, &adaptation)?;
+
+        // Optimize
+        let mut opt_flags = flags;
+        super::opt::optimize_pipeline(
+            &mut pipeline,
+            intent,
+            &mut opt_flags,
+            input_format.0,
+            output_format.0,
+        );
+
+        // Validate channels
+        if input_format.channels() != pipeline.input_channels() {
+            return Err(CmsError {
+                code: ErrorCode::ColorspaceCheck,
+                message: format!(
+                    "input format channels ({}) != pipeline input channels ({})",
+                    input_format.channels(),
+                    pipeline.input_channels()
+                ),
+            });
+        }
+        if output_format.channels() != pipeline.output_channels() {
+            return Err(CmsError {
+                code: ErrorCode::ColorspaceCheck,
+                message: format!(
+                    "output format channels ({}) != pipeline output channels ({})",
+                    output_format.channels(),
+                    pipeline.output_channels()
+                ),
+            });
+        }
+
+        // Select formatters
+        let pack_flags = if input_format.is_float() {
+            CMS_PACK_FLAGS_FLOAT
+        } else {
+            CMS_PACK_FLAGS_16BITS
+        };
+
+        let from_input = find_formatter_in(input_format, pack_flags).ok_or_else(|| CmsError {
+            code: ErrorCode::NotSuitable,
+            message: format!("no input formatter for format {:#010X}", input_format.0),
+        })?;
+
+        let to_output = find_formatter_out(output_format, pack_flags).ok_or_else(|| CmsError {
+            code: ErrorCode::NotSuitable,
+            message: format!("no output formatter for format {:#010X}", output_format.0),
+        })?;
+
+        Ok(Transform {
+            pipeline,
+            input_format,
+            output_format,
+            from_input,
+            to_output,
+            flags,
+            entry_color_space,
+            exit_color_space,
+            rendering_intent: intent,
+            gamut_check,
+            alarm_codes: DEFAULT_ALARM_CODES,
         })
     }
 
@@ -399,7 +562,21 @@ impl Transform {
             let in_offset = i * in_stride;
             let out_offset = i * out_stride;
             unroll(self.input_format, &mut w_in, &input[in_offset..], 0);
-            self.pipeline.eval_16(&w_in, &mut w_out);
+
+            if let Some(ref gamut) = self.gamut_check {
+                let mut w_gamut = [0u16; MAX_CHANNELS];
+                gamut.eval_16(&w_in, &mut w_gamut);
+                if w_gamut[0] >= 1 {
+                    // Out of gamut: use alarm codes
+                    let n_out = self.pipeline.output_channels() as usize;
+                    w_out[..n_out].copy_from_slice(&self.alarm_codes[..n_out]);
+                } else {
+                    self.pipeline.eval_16(&w_in, &mut w_out);
+                }
+            } else {
+                self.pipeline.eval_16(&w_in, &mut w_out);
+            }
+
             pack(self.output_format, &w_out, &mut output[out_offset..], 0);
         }
     }
@@ -432,7 +609,21 @@ impl Transform {
             let in_offset = i * in_stride;
             let out_offset = i * out_stride;
             unroll(self.input_format, &mut w_in, &input[in_offset..], 0);
-            self.pipeline.eval_float(&w_in, &mut w_out);
+
+            if let Some(ref gamut) = self.gamut_check {
+                let mut out_of_gamut = [0.0f32; MAX_CHANNELS];
+                gamut.eval_float(&w_in, &mut out_of_gamut);
+                if out_of_gamut[0] > 0.0 {
+                    for (w, &alarm) in w_out.iter_mut().zip(self.alarm_codes.iter()) {
+                        *w = alarm as f32 / 65535.0;
+                    }
+                } else {
+                    self.pipeline.eval_float(&w_in, &mut w_out);
+                }
+            } else {
+                self.pipeline.eval_float(&w_in, &mut w_out);
+            }
+
             pack(self.output_format, &w_out, &mut output[out_offset..], 0);
         }
     }
@@ -676,6 +867,143 @@ mod tests {
             assert_eq!(lut.output_channels(), 3);
         } else {
             panic!("device link should have a valid Pipeline in AToB0");
+        }
+    }
+
+    // ================================================================
+    // Proofing transform
+    // ================================================================
+
+    #[test]
+    fn test_proofing_transform_basic() {
+        // Create a proofing transform: sRGB → sRGB with sRGB proof
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let proof = roundtrip(&mut Profile::new_srgb());
+
+        let xform = Transform::new_proofing(
+            src,
+            TYPE_RGB_8,
+            dst,
+            TYPE_RGB_8,
+            proof,
+            0,                  // perceptual intent
+            1,                  // proofing intent: relative colorimetric
+            FLAGS_SOFTPROOFING, // soft proofing only
+        )
+        .unwrap();
+
+        // Mid-gray should come through approximately intact
+        let input: [u8; 3] = [128, 128, 128];
+        let mut output = [0u8; 3];
+        xform.do_transform(&input, &mut output, 1);
+
+        for i in 0..3 {
+            assert!(
+                (output[i] as i16 - input[i] as i16).unsigned_abs() <= 10,
+                "channel {i}: input={}, output={}",
+                input[i],
+                output[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_proofing_transform_gamut_check_alarm() {
+        // With FLAGS_GAMUTCHECK, out-of-gamut colors should produce alarm codes
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+
+        // Create a narrow-gamut proofing profile (very small primaries)
+        let gamma_curve = ToneCurve::build_gamma(2.2).unwrap();
+        let trc = [gamma_curve.clone(), gamma_curve.clone(), gamma_curve];
+        let d65 = CieXyY {
+            x: 0.3127,
+            y: 0.3290,
+            big_y: 1.0,
+        };
+        // Very narrow gamut: primaries close to white point
+        let narrow_primaries = CieXyYTriple {
+            red: CieXyY {
+                x: 0.40,
+                y: 0.35,
+                big_y: 1.0,
+            },
+            green: CieXyY {
+                x: 0.30,
+                y: 0.40,
+                big_y: 1.0,
+            },
+            blue: CieXyY {
+                x: 0.25,
+                y: 0.25,
+                big_y: 1.0,
+            },
+        };
+        let mut narrow = Profile::new_rgb(&d65, &narrow_primaries, &trc);
+        let proof = roundtrip(&mut narrow);
+
+        let alarm = [0x7F00u16; 16];
+        let xform = Transform::new_proofing(
+            src,
+            TYPE_RGB_8,
+            dst,
+            TYPE_RGB_8,
+            proof,
+            0, // perceptual
+            1, // proofing: relative colorimetric
+            FLAGS_SOFTPROOFING | FLAGS_GAMUTCHECK,
+        )
+        .unwrap();
+
+        // Pure red (255,0,0) should be out of the narrow gamut
+        let input: [u8; 3] = [255, 0, 0];
+        let mut output = [0u8; 3];
+        xform.do_transform(&input, &mut output, 1);
+
+        // Alarm code 0x7F00 → 8-bit = 0x7F = 127
+        let alarm_byte = (alarm[0] >> 8) as u8;
+        assert_eq!(
+            output[0], alarm_byte,
+            "out-of-gamut R should be alarm code, got {}",
+            output[0]
+        );
+        assert_eq!(
+            output[1], alarm_byte,
+            "out-of-gamut G should be alarm code, got {}",
+            output[1]
+        );
+        assert_eq!(
+            output[2], alarm_byte,
+            "out-of-gamut B should be alarm code, got {}",
+            output[2]
+        );
+    }
+
+    #[test]
+    fn test_proofing_no_flags_fallback() {
+        // Without SOFTPROOFING/GAMUTCHECK, should be a simple 2-profile transform
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let proof = roundtrip(&mut Profile::new_srgb());
+
+        let xform = Transform::new_proofing(
+            src, TYPE_RGB_8, dst, TYPE_RGB_8, proof, 0, 1, 0, // no flags
+        )
+        .unwrap();
+
+        let input: [u8; 3] = [200, 100, 50];
+        let mut output = [0u8; 3];
+        xform.do_transform(&input, &mut output, 1);
+
+        // Should produce valid output (approximately identity for same profiles)
+        for i in 0..3 {
+            assert!(
+                (output[i] as i16 - input[i] as i16).unsigned_abs() <= 5,
+                "channel {i}: input={}, output={}",
+                input[i],
+                output[i]
+            );
         }
     }
 }

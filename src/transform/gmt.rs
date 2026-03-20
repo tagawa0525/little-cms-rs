@@ -2,13 +2,243 @@
 // Gamut mapping utilities (C版: cmsgmt.c)
 // ============================================================================
 
+use crate::context::{CmsError, ErrorCode};
 use crate::curves::gamma::ToneCurve;
 use crate::math::pcs;
-use crate::pipeline::lut::slice_space_16;
+use crate::pipeline::lut::{Pipeline, Stage, StageLoc, sample_clut_16bit, slice_space_16};
 use crate::profile::io::Profile;
 use crate::types::*;
 
-use super::xform::{FLAGS_NOCACHE, FLAGS_NOOPTIMIZE};
+use super::xform::{FLAGS_HIGHRESPRECALC, FLAGS_NOCACHE, FLAGS_NOOPTIMIZE, Transform};
+
+/// Threshold for out-of-gamut detection on LUT-based profiles.
+const ERR_THRESHOLD: f64 = 5.0;
+
+// ============================================================================
+// Gamut check pipeline
+// ============================================================================
+
+/// Serialize and deserialize a profile to create a copy.
+fn clone_profile(profile: &mut Profile) -> Result<Profile, CmsError> {
+    let data = profile.save_to_mem()?;
+    Profile::open_mem(&data)
+}
+
+/// Build a gamut check pipeline that maps input colors to a single-channel
+/// bilevel signal: 0 = in-gamut, >0 = out-of-gamut (with dE magnitude).
+///
+/// C版: `_cmsCreateGamutCheckPipeline`
+pub fn create_gamut_check_pipeline(
+    profiles: &mut [Profile],
+    bpc: &[bool],
+    intents: &[u32],
+    adaptation: &[f64],
+    gamut_pcs_position: usize,
+    gamut_profile: &mut Profile,
+) -> Result<Pipeline, CmsError> {
+    if gamut_pcs_position == 0 || gamut_pcs_position > 255 {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: format!("Wrong PCS position. 1..255 expected, {gamut_pcs_position} found."),
+        });
+    }
+
+    // Ensure we have enough elements in all parameter slices up to gamut_pcs_position
+    if profiles.len() < gamut_pcs_position
+        || bpc.len() < gamut_pcs_position
+        || intents.len() < gamut_pcs_position
+        || adaptation.len() < gamut_pcs_position
+    {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: format!(
+                "Not enough elements for gamut PCS position {gamut_pcs_position}: \
+                 profiles={}, bpc={}, intents={}, adaptation={}",
+                profiles.len(),
+                bpc.len(),
+                intents.len(),
+                adaptation.len()
+            ),
+        });
+    }
+
+    // Threshold: matrix-shaper profiles are very accurate, LUT-based less so
+    let threshold = if gamut_profile.is_matrix_shaper() {
+        1.0
+    } else {
+        ERR_THRESHOLD
+    };
+
+    // Input-side color space (CLUT input dimensionality comes from the first profile,
+    // since wIn at evaluation time is in the transform's input color space)
+    let input_color_space = profiles[0].header.color_space;
+    let n_input_channels = input_color_space.channels();
+    let n_gridpoints = pcs::reasonable_gridpoints(n_input_channels, FLAGS_HIGHRESPRECALC);
+
+    // Gamut/proofing device color space (for forward/reverse transforms)
+    let color_space = gamut_profile.header.color_space;
+    let n_channels = color_space.channels();
+
+    // Build hInput: profiles[0..gamut_pcs_position] + Lab → converts input to Lab16
+    let mut input_chain: Vec<Profile> = Vec::with_capacity(gamut_pcs_position + 1);
+    for profile in profiles.iter_mut().take(gamut_pcs_position) {
+        input_chain.push(clone_profile(profile)?);
+    }
+    // Append Lab profile at the end
+    let mut lab = Profile::new_lab4(None);
+    input_chain.push(clone_profile(&mut lab)?);
+
+    let input_fmt = PixelFormat::build(input_color_space.to_pixel_type(), n_input_channels, 2);
+
+    let h_input = Transform::new_multiprofile(
+        &mut input_chain,
+        input_fmt,
+        TYPE_LAB_16,
+        intents[0],
+        FLAGS_NOCACHE | FLAGS_NOOPTIMIZE,
+    )?;
+
+    // Build hForward: Lab → gamut device colorants (relative colorimetric)
+    let lab_fwd = clone_profile(&mut lab)?;
+    let gamut_fwd = clone_profile(gamut_profile)?;
+    let device_fmt = PixelFormat::build(color_space.to_pixel_type(), n_channels, 2);
+
+    let h_forward = Transform::new(
+        lab_fwd,
+        TYPE_LAB_16,
+        gamut_fwd,
+        device_fmt,
+        1, // INTENT_RELATIVE_COLORIMETRIC
+        FLAGS_NOCACHE | FLAGS_NOOPTIMIZE,
+    )?;
+
+    // Build hReverse: gamut device colorants → Lab (relative colorimetric)
+    let gamut_rev = clone_profile(gamut_profile)?;
+    let lab_rev = clone_profile(&mut lab)?;
+
+    let h_reverse = Transform::new(
+        gamut_rev,
+        device_fmt,
+        lab_rev,
+        TYPE_LAB_16,
+        1, // INTENT_RELATIVE_COLORIMETRIC
+        FLAGS_NOCACHE | FLAGS_NOOPTIMIZE,
+    )?;
+
+    // Build the gamut check pipeline: n_input_channels input → 1 output
+    // Uses input profile's channels since wIn at evaluation time is in input color space
+    let mut gamut = Pipeline::new(n_input_channels, 1).ok_or_else(|| CmsError {
+        code: ErrorCode::Internal,
+        message: "Failed to allocate gamut check pipeline".into(),
+    })?;
+
+    let grid_points = [n_gridpoints; crate::curves::intrp::MAX_INPUT_DIMENSIONS];
+    let mut clut =
+        Stage::new_clut_16bit(&grid_points, n_input_channels, 1, None).ok_or_else(|| CmsError {
+            code: ErrorCode::Internal,
+            message: "Failed to allocate gamut check CLUT".into(),
+        })?;
+
+    // Pre-compute byte strides for the transforms
+    let in_stride = crate::pipeline::pack::pixel_size(input_fmt);
+    let lab_stride = crate::pipeline::pack::pixel_size(TYPE_LAB_16);
+    let dev_stride = crate::pipeline::pack::pixel_size(device_fmt);
+
+    // Pre-allocate reusable buffers outside the closure to avoid per-node allocation
+    let mut in_buf = vec![0u8; in_stride];
+    let mut lab_buf = vec![0u8; lab_stride];
+    let mut proof_buf = vec![0u8; dev_stride];
+    let mut lab_out_buf = vec![0u8; lab_stride];
+
+    // Sample the CLUT with the gamut sampler
+    sample_clut_16bit(
+        &mut clut,
+        |input: &[u16], output: &mut [u16], _cargo: &()| {
+            // Pack input as 16-bit bytes for hInput transform
+            in_buf.fill(0);
+            for (i, &v) in input.iter().enumerate().take(n_input_channels as usize) {
+                let bytes = v.to_ne_bytes();
+                in_buf[i * 2] = bytes[0];
+                in_buf[i * 2 + 1] = bytes[1];
+            }
+
+            // hInput: input → Lab16
+            h_input.do_transform(&in_buf, &mut lab_buf, 1);
+
+            // Decode Lab16 → CIELab
+            let lab_in1 = decode_lab16_buf(&lab_buf);
+
+            // Encode Lab → Lab16 bytes for forward transform
+            encode_lab16_buf(&lab_in1, &mut lab_buf);
+
+            // hForward: Lab → device colorants
+            h_forward.do_transform(&lab_buf, &mut proof_buf, 1);
+
+            // hReverse: device → Lab
+            h_reverse.do_transform(&proof_buf, &mut lab_out_buf, 1);
+            let lab_out1 = decode_lab16_buf(&lab_out_buf);
+
+            // Second round-trip (reuse existing buffers)
+            encode_lab16_buf(&lab_out1, &mut lab_buf);
+            h_forward.do_transform(&lab_buf, &mut proof_buf, 1);
+            h_reverse.do_transform(&proof_buf, &mut lab_out_buf, 1);
+            let lab_out2 = decode_lab16_buf(&lab_out_buf);
+
+            let lab_in2 = lab_out1;
+
+            // Compute dE values
+            let d_e1 = pcs::delta_e(&lab_in1, &lab_out1);
+            let d_e2 = pcs::delta_e(&lab_in2, &lab_out2);
+
+            // Gamut decision
+            if d_e1 < threshold && d_e2 < threshold {
+                output[0] = 0; // In gamut
+            } else if d_e1 < threshold {
+                output[0] = 0; // Undefined, assume in gamut
+            } else if d_e2 < threshold {
+                // Clearly out of gamut
+                output[0] = ((d_e1 - threshold) + 0.5) as u16;
+            } else {
+                // Both large — perceptual mapping case
+                let error_ratio = if d_e2 == 0.0 { d_e1 } else { d_e1 / d_e2 };
+                if error_ratio > threshold {
+                    output[0] = ((error_ratio - threshold) + 0.5) as u16;
+                } else {
+                    output[0] = 0;
+                }
+            }
+
+            // Clamp to max encodeable value
+            if output[0] > 0xFFFE {
+                output[0] = 0xFFFE;
+            }
+
+            true
+        },
+        0,
+    );
+
+    gamut.insert_stage(StageLoc::AtBegin, clut);
+    Ok(gamut)
+}
+
+/// Decode Lab from 16-bit byte buffer (native endian).
+fn decode_lab16_buf(buf: &[u8]) -> CieLab {
+    let encoded = [
+        u16::from_ne_bytes([buf[0], buf[1]]),
+        u16::from_ne_bytes([buf[2], buf[3]]),
+        u16::from_ne_bytes([buf[4], buf[5]]),
+    ];
+    pcs::pcs_encoded_lab_to_float(&encoded)
+}
+
+/// Encode CIELab to 16-bit byte buffer (native endian).
+fn encode_lab16_buf(lab: &CieLab, buf: &mut [u8]) {
+    let encoded = pcs::float_to_pcs_encoded_lab(lab);
+    buf[0..2].copy_from_slice(&encoded[0].to_ne_bytes());
+    buf[2..4].copy_from_slice(&encoded[1].to_ne_bytes());
+    buf[4..6].copy_from_slice(&encoded[2].to_ne_bytes());
+}
 
 // ============================================================================
 // Public API
@@ -277,7 +507,6 @@ mod tests {
     // ================================================================
 
     #[test]
-
     fn desaturate_in_gamut() {
         let mut lab = CieLab {
             l: 50.0,
@@ -291,7 +520,6 @@ mod tests {
     }
 
     #[test]
-
     fn desaturate_negative_l() {
         let mut lab = CieLab {
             l: -5.0,
@@ -306,7 +534,6 @@ mod tests {
     }
 
     #[test]
-
     fn desaturate_clips_l_above_100() {
         let mut lab = CieLab {
             l: 120.0,
@@ -319,7 +546,6 @@ mod tests {
     }
 
     #[test]
-
     fn desaturate_clips_out_of_gamut_a() {
         let mut lab = CieLab {
             l: 50.0,
@@ -333,7 +559,6 @@ mod tests {
     }
 
     #[test]
-
     fn desaturate_zero_a_clips_b() {
         let mut lab = CieLab {
             l: 50.0,
@@ -350,7 +575,6 @@ mod tests {
     // ================================================================
 
     #[test]
-
     fn detect_tac_non_output_returns_zero() {
         // sRGB is Display class, not Output
         let mut p = roundtrip(&mut Profile::new_srgb());
@@ -363,7 +587,6 @@ mod tests {
     // ================================================================
 
     #[test]
-
     fn detect_gamma_srgb() {
         let mut p = roundtrip(&mut Profile::new_srgb());
         let gamma = detect_rgb_profile_gamma(&mut p, 0.1);
@@ -372,7 +595,6 @@ mod tests {
     }
 
     #[test]
-
     fn detect_gamma_linear() {
         let gamma_curve = crate::curves::gamma::ToneCurve::build_gamma(1.0).unwrap();
         let trc = [gamma_curve.clone(), gamma_curve.clone(), gamma_curve];
@@ -405,11 +627,100 @@ mod tests {
     }
 
     #[test]
-
     fn detect_gamma_non_rgb_returns_minus1() {
         // Lab profile is not RGB
         let mut p = roundtrip(&mut Profile::new_lab4(None));
         let gamma = detect_rgb_profile_gamma(&mut p, 0.1);
         assert_eq!(gamma, -1.0);
+    }
+
+    // ================================================================
+    // create_gamut_check_pipeline
+    // ================================================================
+
+    #[test]
+    fn gamut_check_pipeline_srgb_midgray_in_gamut() {
+        // Mid-gray RGB should be in sRGB gamut → output 0
+        // The gamut check pipeline input is RGB (gamut profile's color space),
+        // not Lab. The sampler converts RGB → Lab internally.
+        let srgb1 = roundtrip(&mut Profile::new_srgb());
+        let srgb2 = roundtrip(&mut Profile::new_srgb());
+        let mut gamut_profile = roundtrip(&mut Profile::new_srgb());
+
+        let pipeline = create_gamut_check_pipeline(
+            &mut [srgb1, srgb2],
+            &[false, false],
+            &[0, 0],
+            &[1.0, 1.0],
+            1,
+            &mut gamut_profile,
+        )
+        .unwrap();
+
+        // Mid-gray RGB (0x8000, 0x8000, 0x8000) — always in sRGB gamut
+        let mid = 0x8000u16;
+        let input = [mid, mid, mid, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut output = [0u16; 16];
+        pipeline.eval_16(&input, &mut output);
+
+        // sRGB color checked against sRGB gamut → in gamut
+        assert_eq!(output[0], 0, "mid-gray should be in sRGB gamut");
+    }
+
+    #[test]
+    fn gamut_check_pipeline_narrow_gamut_detects_out_of_gamut() {
+        // Create a narrow-gamut profile and check sRGB colors against it.
+        // Saturated sRGB colors should be out of the narrow gamut.
+        let gamma_curve = crate::curves::gamma::ToneCurve::build_gamma(2.2).unwrap();
+        let trc = [gamma_curve.clone(), gamma_curve.clone(), gamma_curve];
+        let d65 = CieXyY {
+            x: 0.3127,
+            y: 0.3290,
+            big_y: 1.0,
+        };
+        // Very narrow gamut: primaries close to white point
+        let narrow_primaries = CieXyYTriple {
+            red: CieXyY {
+                x: 0.40,
+                y: 0.35,
+                big_y: 1.0,
+            },
+            green: CieXyY {
+                x: 0.30,
+                y: 0.40,
+                big_y: 1.0,
+            },
+            blue: CieXyY {
+                x: 0.25,
+                y: 0.25,
+                big_y: 1.0,
+            },
+        };
+        let narrow = Profile::new_rgb(&d65, &narrow_primaries, &trc);
+        let mut narrow = roundtrip(&mut { narrow });
+
+        let srgb = roundtrip(&mut Profile::new_srgb());
+        let srgb2 = roundtrip(&mut Profile::new_srgb());
+
+        let pipeline = create_gamut_check_pipeline(
+            &mut [srgb, srgb2],
+            &[false, false],
+            &[0, 0],
+            &[1.0, 1.0],
+            1,
+            &mut narrow,
+        )
+        .unwrap();
+
+        // Pure red (0xFFFF, 0, 0) in sRGB — should be outside the narrow gamut
+        let input = [0xFFFFu16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut output = [0u16; 16];
+        pipeline.eval_16(&input, &mut output);
+
+        assert!(
+            output[0] > 0,
+            "saturated red should be out of narrow gamut, got {}",
+            output[0]
+        );
     }
 }
