@@ -68,6 +68,18 @@ impl It8 {
         })
     }
 
+    /// Load from file.
+    /// C版: `cmsIT8LoadFromFile`
+    pub fn load_from_file(_path: &str) -> Result<Self, CmsError> {
+        todo!()
+    }
+
+    /// Save to file.
+    /// C版: `cmsIT8SaveToFile`
+    pub fn save_to_file(&self, _path: &str) -> Result<(), CmsError> {
+        todo!()
+    }
+
     /// Serialize to CGATS text format.
     pub fn save_to_string(&self) -> String {
         let mut out = String::new();
@@ -664,5 +676,34 @@ END_DATA
         let it8 = It8::load_from_str(text).unwrap();
         assert_eq!(it8.property("ORIGINATOR"), Some("test"));
         assert_eq!(it8.data_row_col_f64(0, 0), Some(42.0));
+    }
+
+    // ================================================================
+    // Phase 13c: File I/O
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn file_io_round_trip() {
+        let it8 = It8::load_from_str(SAMPLE_IT8).unwrap();
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_it8_round_trip.it8");
+        let path_str = path.to_str().unwrap();
+
+        it8.save_to_file(path_str).unwrap();
+        let loaded = It8::load_from_file(path_str).unwrap();
+
+        assert_eq!(loaded.property("ORIGINATOR"), Some("test"));
+        assert_eq!(loaded.n_rows(), 3);
+        assert_eq!(loaded.data_row_col_f64(0, 1), Some(1.0));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn load_from_nonexistent_file() {
+        let result = It8::load_from_file("/nonexistent/path/test.it8");
+        assert!(result.is_err());
     }
 }
