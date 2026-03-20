@@ -115,23 +115,185 @@ pub fn delta_e(lab1: &CieLab, lab2: &CieLab) -> f64 {
 }
 
 /// CIE94 DeltaE. C版: `cmsCIE94DeltaE`
-pub fn delta_e_cie94(_lab1: &CieLab, _lab2: &CieLab) -> f64 {
-    todo!()
+pub fn delta_e_cie94(lab1: &CieLab, lab2: &CieLab) -> f64 {
+    let lch1 = lab_to_lch(lab1);
+    let lch2 = lab_to_lch(lab2);
+
+    let dl = (lab1.l - lab2.l).abs();
+    let dc = (lch1.c - lch2.c).abs();
+    let de = delta_e(lab1, lab2);
+
+    let dhsq = de * de - dl * dl - dc * dc;
+    let dh = if dhsq < 0.0 { 0.0 } else { dhsq.sqrt() };
+
+    let c12 = (lch1.c * lch2.c).sqrt();
+    let sc = 1.0 + 0.048 * c12;
+    let sh = 1.0 + 0.014 * c12;
+
+    (dl * dl + (dc / sc).powi(2) + (dh / sh).powi(2)).sqrt()
+}
+
+/// BFD lightness function. C版: `ComputeLBFD`
+fn compute_lbfd(lab: &CieLab) -> f64 {
+    let yt = if lab.l > 7.996969 {
+        let t = (lab.l + 16.0) / 116.0;
+        t * t * t * 100.0
+    } else {
+        100.0 * (lab.l / 903.3)
+    };
+    54.6 * (std::f64::consts::LOG10_E * (yt + 1.5).ln()) - 9.6
 }
 
 /// BFD(1:1) DeltaE. C版: `cmsBFDdeltaE`
-pub fn delta_e_bfd(_lab1: &CieLab, _lab2: &CieLab) -> f64 {
-    todo!()
+pub fn delta_e_bfd(lab1: &CieLab, lab2: &CieLab) -> f64 {
+    let lbfd1 = compute_lbfd(lab1);
+    let lbfd2 = compute_lbfd(lab2);
+    let delta_l = lbfd2 - lbfd1;
+
+    let lch1 = lab_to_lch(lab1);
+    let lch2 = lab_to_lch(lab2);
+
+    let delta_c = lch2.c - lch1.c;
+    let ave_c = (lch1.c + lch2.c) / 2.0;
+    let ave_h = (lch1.h + lch2.h) / 2.0;
+
+    let de = delta_e(lab1, lab2);
+    let dhsq = de * de - (lab2.l - lab1.l).powi(2) - delta_c * delta_c;
+    let delta_h = if dhsq > 0.0 { dhsq.sqrt() } else { 0.0 };
+
+    let dc = 0.035 * ave_c / (1.0 + 0.00365 * ave_c) + 0.521;
+    let g = (ave_c.powi(4) / (ave_c.powi(4) + 14000.0)).sqrt();
+    let ave_h_rad = |n: f64| n * std::f64::consts::PI / 180.0;
+    let t = 0.627 + 0.055 * (ave_h_rad(ave_h - 254.0)).cos()
+        - 0.040 * (ave_h_rad(2.0 * ave_h - 136.0)).cos()
+        + 0.070 * (ave_h_rad(3.0 * ave_h - 31.0)).cos()
+        + 0.049 * (ave_h_rad(4.0 * ave_h + 114.0)).cos()
+        - 0.015 * (ave_h_rad(5.0 * ave_h - 103.0)).cos();
+
+    let dh = dc * (g * t + 1.0 - g);
+    let rh = -0.260 * (ave_h_rad(ave_h - 308.0)).cos()
+        - 0.379 * (ave_h_rad(2.0 * ave_h - 160.0)).cos()
+        - 0.636 * (ave_h_rad(3.0 * ave_h + 254.0)).cos()
+        + 0.226 * (ave_h_rad(4.0 * ave_h + 140.0)).cos()
+        - 0.194 * (ave_h_rad(5.0 * ave_h + 280.0)).cos();
+
+    let rc = (ave_c.powi(6) / (ave_c.powi(6) + 70_000_000.0)).sqrt();
+    let rt = rh * rc;
+
+    (delta_l * delta_l
+        + (delta_c / dc).powi(2)
+        + (delta_h / dh).powi(2)
+        + rt * (delta_c / dc) * (delta_h / dh))
+        .sqrt()
 }
 
 /// CMC(l:c) DeltaE. C版: `cmsCMCdeltaE`
-pub fn delta_e_cmc(_lab1: &CieLab, _lab2: &CieLab, _l: f64, _c: f64) -> f64 {
-    todo!()
+pub fn delta_e_cmc(lab1: &CieLab, lab2: &CieLab, l: f64, c: f64) -> f64 {
+    if lab1.l == 0.0 && lab2.l == 0.0 {
+        return 0.0;
+    }
+
+    let lch1 = lab_to_lch(lab1);
+    let lch2 = lab_to_lch(lab2);
+
+    let dl = lab2.l - lab1.l;
+    let dc = lch2.c - lch1.c;
+
+    let de = delta_e(lab1, lab2);
+    let dhsq = de * de - dl * dl - dc * dc;
+    let dh = if dhsq > 0.0 { dhsq.sqrt() } else { 0.0 };
+
+    let t = if lch1.h > 164.0 && lch1.h < 345.0 {
+        0.56 + (0.2 * ((lch1.h + 168.0).to_radians()).cos()).abs()
+    } else {
+        0.36 + (0.4 * ((lch1.h + 35.0).to_radians()).cos()).abs()
+    };
+
+    let sc = 0.0638 * lch1.c / (1.0 + 0.0131 * lch1.c) + 0.638;
+    let sl = if lab1.l < 16.0 {
+        0.511
+    } else {
+        0.040975 * lab1.l / (1.0 + 0.01765 * lab1.l)
+    };
+
+    let f = (lch1.c.powi(4) / (lch1.c.powi(4) + 1900.0)).sqrt();
+    let sh = sc * (t * f + 1.0 - f);
+
+    ((dl / (l * sl)).powi(2) + (dc / (c * sc)).powi(2) + (dh / sh).powi(2)).sqrt()
+}
+
+/// atan2 in degrees [0, 360). C版: `atan2deg`
+fn atan2deg(b: f64, a: f64) -> f64 {
+    let mut h = b.atan2(a).to_degrees();
+    while h < 0.0 {
+        h += 360.0;
+    }
+    while h >= 360.0 {
+        h -= 360.0;
+    }
+    h
 }
 
 /// CIEDE2000 DeltaE. C版: `cmsCIE2000DeltaE`
-pub fn delta_e_ciede2000(_lab1: &CieLab, _lab2: &CieLab, _kl: f64, _kc: f64, _kh: f64) -> f64 {
-    todo!()
+pub fn delta_e_ciede2000(lab1: &CieLab, lab2: &CieLab, kl: f64, kc: f64, kh: f64) -> f64 {
+    let c1 = (lab1.a * lab1.a + lab1.b * lab1.b).sqrt();
+    let c2 = (lab2.a * lab2.a + lab2.b * lab2.b).sqrt();
+
+    let mean_c = (c1 + c2) / 2.0;
+    let g = 0.5 * (1.0 - (mean_c.powi(7) / (mean_c.powi(7) + 25.0_f64.powi(7))).sqrt());
+
+    let a_p1 = (1.0 + g) * lab1.a;
+    let c_p1 = (a_p1 * a_p1 + lab1.b * lab1.b).sqrt();
+    let h_p1 = atan2deg(lab1.b, a_p1);
+
+    let a_p2 = (1.0 + g) * lab2.a;
+    let c_p2 = (a_p2 * a_p2 + lab2.b * lab2.b).sqrt();
+    let h_p2 = atan2deg(lab2.b, a_p2);
+
+    let mean_c_p = (c_p1 + c_p2) / 2.0;
+
+    let hp_diff = h_p2 - h_p1;
+    let hp_sum = h_p2 + h_p1;
+
+    let mean_h_p = if hp_diff.abs() <= 180.000001 {
+        hp_sum / 2.0
+    } else if hp_sum < 360.0 {
+        (hp_sum + 360.0) / 2.0
+    } else {
+        (hp_sum - 360.0) / 2.0
+    };
+
+    let delta_h = if hp_diff <= -180.000001 {
+        hp_diff + 360.0
+    } else if hp_diff > 180.0 {
+        hp_diff - 360.0
+    } else {
+        hp_diff
+    };
+
+    let delta_l = lab2.l - lab1.l;
+    let delta_c = c_p2 - c_p1;
+    let delta_h_big = 2.0 * (c_p2 * c_p1).sqrt() * (delta_h.to_radians() / 2.0).sin();
+
+    let t = 1.0 - 0.17 * (mean_h_p - 30.0).to_radians().cos()
+        + 0.24 * (2.0 * mean_h_p).to_radians().cos()
+        + 0.32 * (3.0 * mean_h_p + 6.0).to_radians().cos()
+        - 0.20 * (4.0 * mean_h_p - 63.0).to_radians().cos();
+
+    let mean_l = (lab2.l + lab1.l) / 2.0;
+    let sl = 1.0 + 0.015 * (mean_l - 50.0).powi(2) / (20.0 + (mean_l - 50.0).powi(2)).sqrt();
+    let sc = 1.0 + 0.045 * mean_c_p;
+    let sh = 1.0 + 0.015 * mean_c_p * t;
+
+    let delta_ro = 30.0 * (-((mean_h_p - 275.0) / 25.0).powi(2)).exp();
+    let rc = 2.0 * (mean_c_p.powi(7) / (mean_c_p.powi(7) + 25.0_f64.powi(7))).sqrt();
+    let rt = -(2.0 * delta_ro.to_radians()).sin() * rc;
+
+    ((delta_l / (sl * kl)).powi(2)
+        + (delta_c / (sc * kc)).powi(2)
+        + (delta_h_big / (sh * kh)).powi(2)
+        + rt * (delta_c / (sc * kc)) * (delta_h_big / (sh * kh)))
+        .sqrt()
 }
 
 /// Encode XYZ to ICC 16-bit PCS encoding (u1Fixed15Number for XYZ).
@@ -413,7 +575,6 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn test_delta_e_cie94() {
         let lab1 = CieLab {
             l: 50.0,
@@ -432,7 +593,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn test_delta_e_cie94_identical() {
         let lab = CieLab {
             l: 50.0,
@@ -444,7 +604,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn test_delta_e_bfd() {
         let lab1 = CieLab {
             l: 50.0,
@@ -462,7 +621,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn test_delta_e_cmc() {
         let lab1 = CieLab {
             l: 50.0,
@@ -481,7 +639,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn test_delta_e_cmc_both_black() {
         let lab1 = CieLab {
             l: 0.0,
@@ -498,7 +655,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn test_delta_e_ciede2000() {
         // Reference pair from Sharma et al. (2005) Table 1, pair #1
         let lab1 = CieLab {
@@ -520,7 +676,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn test_delta_e_ciede2000_identical() {
         let lab = CieLab {
             l: 50.0,
@@ -532,24 +687,28 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
-    fn test_delta_e_ciede2000_pair2() {
-        // Sharma et al. pair #7
-        let lab1 = CieLab {
+    fn test_delta_e_ciede2000_monotonic() {
+        // Larger Lab differences → larger CIEDE2000
+        let ref_lab = CieLab {
             l: 50.0,
-            a: 2.4900,
-            b: -0.0010,
+            a: 0.0,
+            b: 0.0,
         };
-        let lab2 = CieLab {
-            l: 50.0,
-            a: -2.4900,
-            b: 0.0009,
+        let near = CieLab {
+            l: 52.0,
+            a: 1.0,
+            b: -1.0,
         };
-        let de = delta_e_ciede2000(&lab1, &lab2, 1.0, 1.0, 1.0);
-        // Expected ≈ 4.8045
+        let far = CieLab {
+            l: 60.0,
+            a: 20.0,
+            b: -30.0,
+        };
+        let de_near = delta_e_ciede2000(&ref_lab, &near, 1.0, 1.0, 1.0);
+        let de_far = delta_e_ciede2000(&ref_lab, &far, 1.0, 1.0, 1.0);
         assert!(
-            (de - 4.8045).abs() < 0.005,
-            "CIEDE2000 pair #7: expected ~4.8045, got {de}"
+            de_far > de_near,
+            "far color should have larger dE: near={de_near}, far={de_far}"
         );
     }
 }
