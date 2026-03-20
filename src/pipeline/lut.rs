@@ -597,6 +597,15 @@ impl Stage {
         Some(stage)
     }
 
+    /// Create a named color stage.
+    ///
+    /// Looks up a named color by index and outputs either PCS or device colorant values.
+    ///
+    /// C版: `_cmsStageAllocNamedColor`
+    pub fn new_named_color(_list: super::named::NamedColorList, _use_pcs: bool) -> Self {
+        todo!("named color stage not yet implemented")
+    }
+
     // --- Special stage constructors ---
 
     /// C版: `_cmsStageAllocLab2XYZ`
@@ -2352,5 +2361,67 @@ mod tests {
         } else {
             panic!("Expected CLut stage");
         }
+    }
+
+    // ========================================================================
+    // Stage: Named Color
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn named_color_stage_pcs_output() {
+        use crate::pipeline::named::NamedColorList;
+
+        // Create a NamedColorList with known PCS values
+        let mut list = NamedColorList::new(4, "", "").unwrap();
+        list.append("Red", &[0xFFFF, 0x0000, 0x0000], None);
+        list.append("Green", &[0x0000, 0xFFFF, 0x0000], None);
+        list.append("Blue", &[0x0000, 0x0000, 0xFFFF], None);
+
+        let stage = Stage::new_named_color(list, true);
+        assert_eq!(stage.input_channels(), 1);
+        assert_eq!(stage.output_channels(), 3);
+
+        // Index 0 → Red PCS
+        let mut output = [0.0f32; 16];
+        stage.eval(&[0.0 / 65535.0], &mut output);
+        assert!((output[0] - 1.0).abs() < 0.001); // 0xFFFF / 65535 ≈ 1.0
+        assert!(output[1].abs() < 0.001);
+        assert!(output[2].abs() < 0.001);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn named_color_stage_device_output() {
+        use crate::pipeline::named::NamedColorList;
+
+        let mut list = NamedColorList::new(4, "", "").unwrap();
+        let colorant = [0x8000u16, 0x4000, 0x2000, 0x1000];
+        list.append("Test", &[0x0000, 0x0000, 0x0000], Some(&colorant));
+
+        let stage = Stage::new_named_color(list, false);
+        assert_eq!(stage.input_channels(), 1);
+        assert_eq!(stage.output_channels(), 4); // colorant_count
+
+        let mut output = [0.0f32; 16];
+        stage.eval(&[0.0 / 65535.0], &mut output);
+        assert!((output[0] - 0x8000 as f32 / 65535.0).abs() < 0.001);
+        assert!((output[1] - 0x4000 as f32 / 65535.0).abs() < 0.001);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn named_color_stage_clamps_index() {
+        use crate::pipeline::named::NamedColorList;
+
+        let mut list = NamedColorList::new(3, "", "").unwrap();
+        list.append("Only", &[0x1234, 0x5678, 0x9ABC], None);
+
+        let stage = Stage::new_named_color(list, true);
+
+        // Index way beyond count should clamp to last
+        let mut output = [0.0f32; 16];
+        stage.eval(&[1.0], &mut output); // 1.0 * 65535 + 0.5 = 65535, clamped to 0
+        assert!((output[0] - 0x1234 as f32 / 65535.0).abs() < 0.001);
     }
 }
