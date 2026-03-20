@@ -81,8 +81,8 @@ pub fn create_gamut_check_pipeline(
 
     // Build hInput: profiles[0..gamut_pcs_position] + Lab → converts input to Lab16
     let mut input_chain: Vec<Profile> = Vec::with_capacity(gamut_pcs_position + 1);
-    for i in 0..gamut_pcs_position {
-        input_chain.push(clone_profile(&mut profiles[i])?);
+    for profile in profiles.iter_mut().take(gamut_pcs_position) {
+        input_chain.push(clone_profile(profile)?);
     }
     // Append Lab profile at the end
     let mut lab = Profile::new_lab4(None);
