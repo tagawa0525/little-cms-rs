@@ -858,54 +858,81 @@ impl Transform {
     #[allow(clippy::too_many_arguments)]
     pub fn do_transform_line_stride(
         &self,
-        _input: &[u8],
-        _output: &mut [u8],
-        _pixels_per_line: usize,
-        _line_count: usize,
-        _bytes_per_line_in: usize,
-        _bytes_per_line_out: usize,
-        _bytes_per_plane_in: usize,
-        _bytes_per_plane_out: usize,
+        input: &[u8],
+        output: &mut [u8],
+        pixels_per_line: usize,
+        line_count: usize,
+        bytes_per_line_in: usize,
+        bytes_per_line_out: usize,
+        bytes_per_plane_in: usize,
+        bytes_per_plane_out: usize,
     ) {
-        todo!()
+        for line in 0..line_count {
+            let in_offset = line * bytes_per_line_in;
+            let out_offset = line * bytes_per_line_out;
+
+            let line_in = &input[in_offset..];
+            let line_out = &mut output[out_offset..];
+
+            // Copy extra (alpha) channels for this line
+            if self.flags & FLAGS_COPY_ALPHA != 0 {
+                super::alpha::handle_extra_channels(
+                    self.input_format,
+                    self.output_format,
+                    line_in,
+                    line_out,
+                    pixels_per_line,
+                );
+            }
+
+            match (&self.from_input, &self.to_output) {
+                (FormatterIn::U16(unroll), FormatterOut::U16(pack)) => {
+                    self.do_transform_16(
+                        *unroll,
+                        *pack,
+                        line_in,
+                        line_out,
+                        pixels_per_line,
+                        bytes_per_plane_in,
+                        bytes_per_plane_out,
+                    );
+                }
+                (FormatterIn::Float(unroll), FormatterOut::Float(pack)) => {
+                    self.do_transform_float(
+                        *unroll,
+                        *pack,
+                        line_in,
+                        line_out,
+                        pixels_per_line,
+                        bytes_per_plane_in,
+                        bytes_per_plane_out,
+                    );
+                }
+                _ => unreachable!("mixed float/u16 formatters rejected at creation"),
+            }
+        }
     }
 
     /// Transform with stride for planar formats (legacy API).
     /// C版: `cmsDoTransformStride`
     pub fn do_transform_stride(
         &self,
-        _input: &[u8],
-        _output: &mut [u8],
-        _pixel_count: usize,
-        _stride: usize,
+        input: &[u8],
+        output: &mut [u8],
+        pixel_count: usize,
+        stride: usize,
     ) {
-        todo!()
+        self.do_transform_line_stride(input, output, pixel_count, 1, 0, 0, stride, stride);
     }
 
     /// Transform a buffer of pixels.
     pub fn do_transform(&self, input: &[u8], output: &mut [u8], pixel_count: usize) {
-        // Copy extra (alpha) channels if requested
-        if self.flags & FLAGS_COPY_ALPHA != 0 {
-            super::alpha::handle_extra_channels(
-                self.input_format,
-                self.output_format,
-                input,
-                output,
-                pixel_count,
-            );
-        }
-
-        match (&self.from_input, &self.to_output) {
-            (FormatterIn::U16(unroll), FormatterOut::U16(pack)) => {
-                self.do_transform_16(*unroll, *pack, input, output, pixel_count);
-            }
-            (FormatterIn::Float(unroll), FormatterOut::Float(pack)) => {
-                self.do_transform_float(*unroll, *pack, input, output, pixel_count);
-            }
-            _ => unreachable!("mixed float/u16 formatters rejected at creation"),
-        }
+        let in_plane = pixel_count * pixel_size(self.input_format);
+        let out_plane = pixel_count * pixel_size(self.output_format);
+        self.do_transform_line_stride(input, output, pixel_count, 1, 0, 0, in_plane, out_plane);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn do_transform_16(
         &self,
         unroll: crate::pipeline::pack::Formatter16In,
@@ -913,6 +940,8 @@ impl Transform {
         input: &[u8],
         output: &mut [u8],
         pixel_count: usize,
+        bytes_per_plane_in: usize,
+        bytes_per_plane_out: usize,
     ) {
         let in_stride = pixel_size(self.input_format);
         let out_stride = pixel_size(self.output_format);
@@ -936,16 +965,19 @@ impl Transform {
         for i in 0..count {
             let in_offset = i * in_stride;
             let out_offset = i * out_stride;
-            unroll(self.input_format, &mut w_in, &input[in_offset..], 0);
+            unroll(
+                self.input_format,
+                &mut w_in,
+                &input[in_offset..],
+                bytes_per_plane_in,
+            );
 
             if is_null {
-                // Null transform: copy only active channels, clear rest
                 w_out = [0u16; MAX_CHANNELS];
                 let n_copy = (self.input_format.channels() as usize)
                     .min(self.output_format.channels() as usize);
                 w_out[..n_copy].copy_from_slice(&w_in[..n_copy]);
             } else if use_cache && w_in == self.cache_in.get() {
-                // Cache hit
                 w_out = self.cache_out.get();
             } else if let Some(ref gamut) = self.gamut_check {
                 let mut w_gamut = [0u16; MAX_CHANNELS];
@@ -968,10 +1000,16 @@ impl Transform {
                 }
             }
 
-            pack(self.output_format, &w_out, &mut output[out_offset..], 0);
+            pack(
+                self.output_format,
+                &w_out,
+                &mut output[out_offset..],
+                bytes_per_plane_out,
+            );
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn do_transform_float(
         &self,
         unroll: crate::pipeline::pack::FormatterFloatIn,
@@ -979,6 +1017,8 @@ impl Transform {
         input: &[u8],
         output: &mut [u8],
         pixel_count: usize,
+        bytes_per_plane_in: usize,
+        bytes_per_plane_out: usize,
     ) {
         let in_stride = pixel_size(self.input_format);
         let out_stride = pixel_size(self.output_format);
@@ -1001,10 +1041,14 @@ impl Transform {
         for i in 0..count {
             let in_offset = i * in_stride;
             let out_offset = i * out_stride;
-            unroll(self.input_format, &mut w_in, &input[in_offset..], 0);
+            unroll(
+                self.input_format,
+                &mut w_in,
+                &input[in_offset..],
+                bytes_per_plane_in,
+            );
 
             if is_null {
-                // Null transform: copy only active channels, clear rest
                 w_out = [0.0f32; MAX_CHANNELS];
                 let n_copy = (self.input_format.channels() as usize)
                     .min(self.output_format.channels() as usize);
@@ -1029,7 +1073,12 @@ impl Transform {
                     .eval_float(&w_in, &mut w_out);
             }
 
-            pack(self.output_format, &w_out, &mut output[out_offset..], 0);
+            pack(
+                self.output_format,
+                &w_out,
+                &mut output[out_offset..],
+                bytes_per_plane_out,
+            );
         }
     }
 }
@@ -1652,7 +1701,6 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn stride_transform_matches_contiguous() {
         // Transform 2 lines of 3 pixels each with padding
         let src = roundtrip(&mut Profile::new_srgb());
@@ -1703,7 +1751,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn stride_transform_single_line_matches_do_transform() {
         let src = roundtrip(&mut Profile::new_srgb());
         let dst = roundtrip(&mut Profile::new_srgb());
@@ -1720,7 +1767,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn do_transform_stride_planar() {
         let src = roundtrip(&mut Profile::new_srgb());
         let dst = roundtrip(&mut Profile::new_srgb());
