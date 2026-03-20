@@ -1837,7 +1837,7 @@ mod tests {
 
         // Verify the pipeline has fast eval set
         assert!(
-            xform.pipeline().has_fast_eval16(),
+            xform.pipeline().unwrap().has_fast_eval16(),
             "sRGB→sRGB should use matrix-shaper fast path"
         );
 
