@@ -1,6 +1,6 @@
 # Phase 12: DeltaE 拡張関数
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmspcs.c`（DeltaE 関数群）
 **Rust見積**: ~150行（impl）+ ~100行（tests）
 **ブランチ**: `feat/phase12-delta-e`
