@@ -417,23 +417,330 @@ fn translate_non_icc_intents(intent: u32) -> u32 {
 /// Build a pipeline for black-preserving K-only intents.
 /// C版: `BlackPreservingKOnlyIntents`
 pub fn black_preserving_k_only_intents(
-    _profiles: &mut [Profile],
-    _intents: &[u32],
-    _bpc: &[bool],
-    _adaptation_states: &[f64],
+    profiles: &mut [Profile],
+    intents: &[u32],
+    bpc: &[bool],
+    adaptation_states: &[f64],
 ) -> Result<Pipeline, CmsError> {
-    todo!("Phase 14c-F: not yet implemented")
+    let n = profiles.len();
+    if n == 0 || n > 255 {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: format!("Invalid number of profiles: {n}"),
+        });
+    }
+
+    // Translate to ICC intents
+    let icc_intents: Vec<u32> = intents
+        .iter()
+        .map(|&i| translate_non_icc_intents(i))
+        .collect();
+
+    // Skip trailing CMYK devicelinks
+    let mut last = n - 1;
+    while last >= 2
+        && profiles[last].header.device_class == ProfileClassSignature::Link
+        && profiles[last].header.color_space == ColorSpaceSignature::CmykData
+    {
+        last -= 1;
+    }
+    let preservation_count = last + 1;
+
+    // If not CMYK→CMYK, fall back to default ICC intents
+    if profiles[0].header.color_space != ColorSpaceSignature::CmykData
+        || (profiles[last].header.color_space != ColorSpaceSignature::CmykData
+            && profiles[last].header.device_class != ProfileClassSignature::Output)
+    {
+        return default_icc_intents(profiles, &icc_intents, bpc, adaptation_states);
+    }
+
+    // Build standard ICC pipeline
+    let cmyk2cmyk = default_icc_intents(
+        &mut profiles[..preservation_count],
+        &icc_intents[..preservation_count],
+        &bpc[..preservation_count],
+        &adaptation_states[..preservation_count],
+    )?;
+
+    // Build K tone curve
+    let k_tone = super::gmt::build_k_tone_curve(
+        &mut profiles[..preservation_count],
+        &icc_intents[..preservation_count],
+        &bpc[..preservation_count],
+        &adaptation_states[..preservation_count],
+        4096,
+        0,
+    )?;
+
+    // Create CLUT
+    let n_grid = crate::math::pcs::reasonable_gridpoints(4, 0);
+    let grid_points = [n_grid; crate::curves::intrp::MAX_INPUT_DIMENSIONS];
+    let mut clut = Stage::new_clut_16bit(&grid_points, 4, 4, None).ok_or_else(|| CmsError {
+        code: ErrorCode::Internal,
+        message: "Failed to allocate CLUT for K-only preservation".into(),
+    })?;
+
+    // Sample the CLUT
+    crate::pipeline::lut::sample_clut_16bit(
+        &mut clut,
+        |input: &[u16], output: &mut [u16], _cargo: &()| {
+            // If C=M=Y=0, preserve K only
+            if input[0] == 0 && input[1] == 0 && input[2] == 0 {
+                output[0] = 0;
+                output[1] = 0;
+                output[2] = 0;
+                output[3] = k_tone.eval_u16(input[3]);
+                return true;
+            }
+
+            // Otherwise use standard ICC pipeline
+            cmyk2cmyk.eval_16(input, output);
+            true
+        },
+        0,
+    );
+
+    let mut result = Pipeline::new(4, 4).ok_or_else(|| CmsError {
+        code: ErrorCode::Internal,
+        message: "Failed to allocate result pipeline".into(),
+    })?;
+    result.insert_stage(StageLoc::AtBegin, clut);
+
+    // Append trailing devicelinks
+    for i in (last + 1)..n {
+        let devlink = profiles[i].read_input_lut(icc_intents[i])?;
+        if !result.cat(&devlink) {
+            return Err(CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to concatenate devicelink".into(),
+            });
+        }
+    }
+
+    Ok(result)
 }
 
 /// Build a pipeline for black-preserving K-plane intents.
 /// C版: `BlackPreservingKPlaneIntents`
 pub fn black_preserving_k_plane_intents(
-    _profiles: &mut [Profile],
-    _intents: &[u32],
-    _bpc: &[bool],
-    _adaptation_states: &[f64],
+    profiles: &mut [Profile],
+    intents: &[u32],
+    bpc: &[bool],
+    adaptation_states: &[f64],
 ) -> Result<Pipeline, CmsError> {
-    todo!("Phase 14c-G: not yet implemented")
+    let n = profiles.len();
+    if n == 0 || n > 255 {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: format!("Invalid number of profiles: {n}"),
+        });
+    }
+
+    // Translate to ICC intents
+    let icc_intents: Vec<u32> = intents
+        .iter()
+        .map(|&i| translate_non_icc_intents(i))
+        .collect();
+
+    // Skip trailing CMYK devicelinks
+    let mut last = n - 1;
+    while last >= 2
+        && profiles[last].header.device_class == ProfileClassSignature::Link
+        && profiles[last].header.color_space == ColorSpaceSignature::CmykData
+    {
+        last -= 1;
+    }
+    let preservation_count = last + 1;
+
+    // If not CMYK→CMYK, fall back to default ICC intents
+    if profiles[0].header.color_space != ColorSpaceSignature::CmykData
+        || (profiles[last].header.color_space != ColorSpaceSignature::CmykData
+            && profiles[last].header.device_class != ProfileClassSignature::Output)
+    {
+        return default_icc_intents(profiles, &icc_intents, bpc, adaptation_states);
+    }
+
+    // Read the input LUT of the last profile (for reverse interpolation)
+    let lab_k2cmyk = profiles[last].read_input_lut(1)?; // Relative colorimetric
+
+    // Get TAC
+    let max_tac = super::gmt::detect_tac(&mut profiles[last]) / 100.0;
+    if max_tac <= 0.0 {
+        // No TAC detected, fall back to default
+        return default_icc_intents(profiles, &icc_intents, bpc, adaptation_states);
+    }
+
+    // Build standard ICC pipeline
+    let cmyk2cmyk = default_icc_intents(
+        &mut profiles[..preservation_count],
+        &icc_intents[..preservation_count],
+        &bpc[..preservation_count],
+        &adaptation_states[..preservation_count],
+    )?;
+
+    // Build K tone curve
+    let k_tone = super::gmt::build_k_tone_curve(
+        &mut profiles[..preservation_count],
+        &icc_intents[..preservation_count],
+        &bpc[..preservation_count],
+        &adaptation_states[..preservation_count],
+        4096,
+        0,
+    )?;
+
+    // Build proof transform: last profile CMYK → Lab (16-bit → Lab DBL)
+    let last_copy = super::gmt::clone_profile_pub(&mut profiles[last])?;
+    let mut lab = Profile::new_lab4(None);
+    let lab_copy = super::gmt::clone_profile_pub(&mut lab)?;
+
+    let h_proof_output = super::xform::Transform::new(
+        last_copy,
+        crate::types::PixelFormat::build(crate::types::PT_CMYK, 4, 2),
+        lab_copy,
+        crate::types::TYPE_LAB_DBL,
+        1, // Relative colorimetric
+        super::xform::FLAGS_NOCACHE | super::xform::FLAGS_NOOPTIMIZE,
+    )?;
+
+    // Build CMYK→Lab float transform for the last profile
+    let last_copy2 = super::gmt::clone_profile_pub(&mut profiles[last])?;
+    let lab_copy2 = super::gmt::clone_profile_pub(&mut lab)?;
+
+    let cmyk2lab = super::xform::Transform::new(
+        last_copy2,
+        crate::types::TYPE_CMYK_FLT,
+        lab_copy2,
+        crate::types::TYPE_LAB_FLT,
+        1, // Relative colorimetric
+        super::xform::FLAGS_NOCACHE | super::xform::FLAGS_NOOPTIMIZE,
+    )?;
+
+    // Create CLUT
+    let n_grid = crate::math::pcs::reasonable_gridpoints(4, 0);
+    let grid_points = [n_grid; crate::curves::intrp::MAX_INPUT_DIMENSIONS];
+    let mut clut = Stage::new_clut_16bit(&grid_points, 4, 4, None).ok_or_else(|| CmsError {
+        code: ErrorCode::Internal,
+        message: "Failed to allocate CLUT for K-plane preservation".into(),
+    })?;
+
+    // Pre-compute byte strides
+    let cmyk16_stride = crate::pipeline::pack::pixel_size(crate::types::PixelFormat::build(
+        crate::types::PT_CMYK,
+        4,
+        2,
+    ));
+    let lab_dbl_stride = crate::pipeline::pack::pixel_size(crate::types::TYPE_LAB_DBL);
+
+    let mut proof_in_buf = vec![0u8; cmyk16_stride];
+    let mut proof_out_buf = vec![0u8; lab_dbl_stride];
+
+    // Sample the CLUT
+    crate::pipeline::lut::sample_clut_16bit(
+        &mut clut,
+        |input: &[u16], output: &mut [u16], _cargo: &()| {
+            // Convert to float
+            let mut inf = [0.0f32; 4];
+            for i in 0..4 {
+                inf[i] = input[i] as f32 / 65535.0;
+            }
+
+            // Get K across tone curve
+            let lab_k3 = k_tone.eval_f32(inf[3]);
+
+            // If C=M=Y=0, black only
+            if input[0] == 0 && input[1] == 0 && input[2] == 0 {
+                output[0] = 0;
+                output[1] = 0;
+                output[2] = 0;
+                output[3] = crate::curves::intrp::quick_saturate_word(lab_k3 as f64 * 65535.0);
+                return true;
+            }
+
+            // Try original transform
+            let mut outf = [0.0f32; 4];
+            cmyk2cmyk.eval_float(&inf, &mut outf);
+
+            // Store initial result
+            for i in 0..4 {
+                output[i] = crate::curves::intrp::quick_saturate_word(outf[i] as f64 * 65535.0);
+            }
+
+            // Check if K already matches
+            if (outf[3] - lab_k3).abs() < (3.0 / 65535.0) {
+                return true;
+            }
+
+            // Get Lab of colorimetric output
+            for (i, &v) in output.iter().enumerate().take(4) {
+                proof_in_buf[i * 2..i * 2 + 2].copy_from_slice(&v.to_ne_bytes());
+            }
+            h_proof_output.do_transform(&proof_in_buf, &mut proof_out_buf, 1);
+
+            // Get Lab+K for reverse interpolation
+            let mut lab_k = [0.0f32; 4];
+            let cmyk_flt_stride = crate::pipeline::pack::pixel_size(crate::types::TYPE_CMYK_FLT);
+            let lab_flt_stride = crate::pipeline::pack::pixel_size(crate::types::TYPE_LAB_FLT);
+            let mut cmyk_buf = vec![0u8; cmyk_flt_stride];
+            let mut lab_buf = vec![0u8; lab_flt_stride];
+            for (i, &v) in outf.iter().enumerate().take(4) {
+                cmyk_buf[i * 4..i * 4 + 4].copy_from_slice(&v.to_ne_bytes());
+            }
+            cmyk2lab.do_transform(&cmyk_buf, &mut lab_buf, 1);
+            for i in 0..3 {
+                lab_k[i] = f32::from_ne_bytes(lab_buf[i * 4..i * 4 + 4].try_into().unwrap());
+            }
+            lab_k[3] = lab_k3;
+
+            // Reverse interpolation: Lab+K → CMY (keeping K fixed)
+            let mut reverse_out = outf;
+            if !lab_k2cmyk.eval_reverse_float(&lab_k, &mut reverse_out, Some(&outf)) {
+                // Cannot find suitable value, keep colorimetric
+                return true;
+            }
+            outf[0] = reverse_out[0];
+            outf[1] = reverse_out[1];
+            outf[2] = reverse_out[2];
+            outf[3] = lab_k3;
+
+            // Apply TAC if needed
+            let sum_cmy = outf[0] as f64 + outf[1] as f64 + outf[2] as f64;
+            let sum_cmyk = sum_cmy + outf[3] as f64;
+
+            let ratio = if sum_cmyk > max_tac {
+                let r = 1.0 - (sum_cmyk - max_tac) / sum_cmy;
+                if r < 0.0 { 0.0 } else { r }
+            } else {
+                1.0
+            };
+
+            output[0] = crate::curves::intrp::quick_saturate_word(outf[0] as f64 * ratio * 65535.0);
+            output[1] = crate::curves::intrp::quick_saturate_word(outf[1] as f64 * ratio * 65535.0);
+            output[2] = crate::curves::intrp::quick_saturate_word(outf[2] as f64 * ratio * 65535.0);
+            output[3] = crate::curves::intrp::quick_saturate_word(outf[3] as f64 * 65535.0);
+
+            true
+        },
+        0,
+    );
+
+    let mut result = Pipeline::new(4, 4).ok_or_else(|| CmsError {
+        code: ErrorCode::Internal,
+        message: "Failed to allocate result pipeline".into(),
+    })?;
+    result.insert_stage(StageLoc::AtBegin, clut);
+
+    // Append trailing devicelinks
+    for i in (last + 1)..n {
+        let devlink = profiles[i].read_input_lut(icc_intents[i])?;
+        if !result.cat(&devlink) {
+            return Err(CmsError {
+                code: ErrorCode::Internal,
+                message: "Failed to concatenate devicelink".into(),
+            });
+        }
+    }
+
+    Ok(result)
 }
 
 /// Return the list of supported rendering intents.

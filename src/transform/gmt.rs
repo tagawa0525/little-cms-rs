@@ -24,6 +24,11 @@ fn clone_profile(profile: &mut Profile) -> Result<Profile, CmsError> {
     Profile::open_mem(&data)
 }
 
+/// Public wrapper for clone_profile.
+pub fn clone_profile_pub(profile: &mut Profile) -> Result<Profile, CmsError> {
+    clone_profile(profile)
+}
+
 /// Build a gamut check pipeline that maps input colors to a single-channel
 /// bilevel signal: 0 = in-gamut, >0 = out-of-gamut (with dE magnitude).
 ///
