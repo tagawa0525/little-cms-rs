@@ -43,6 +43,25 @@ pub fn create_gamut_check_pipeline(
         });
     }
 
+    // Ensure we have enough elements in all parameter slices up to gamut_pcs_position
+    if profiles.len() < gamut_pcs_position
+        || bpc.len() < gamut_pcs_position
+        || intents.len() < gamut_pcs_position
+        || adaptation.len() < gamut_pcs_position
+    {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: format!(
+                "Not enough elements for gamut PCS position {gamut_pcs_position}: \
+                 profiles={}, bpc={}, intents={}, adaptation={}",
+                profiles.len(),
+                bpc.len(),
+                intents.len(),
+                adaptation.len()
+            ),
+        });
+    }
+
     // Threshold: matrix-shaper profiles are very accurate, LUT-based less so
     let threshold = if gamut_profile.is_matrix_shaper() {
         1.0
