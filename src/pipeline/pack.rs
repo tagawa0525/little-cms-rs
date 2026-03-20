@@ -673,6 +673,8 @@ pub fn find_formatter_out(format: PixelFormat, flags: u32) -> Option<FormatterOu
 }
 
 /// Return the pixel format suitable for the PCS of a profile.
+/// When `is_float` is true, returns a 64-bit double format (`TYPE_*_DBL`),
+/// matching the C API behavior. For 16-bit integer, pass `is_float = false`.
 /// C版: `cmsFormatterForPCSOfProfile`
 pub fn formatter_for_pcs_of_profile(
     profile: &crate::profile::io::Profile,
