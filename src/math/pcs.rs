@@ -2,6 +2,7 @@
 //!
 //! XYZ ↔ Lab, encoding/decoding, DeltaE. Matches C版 `cmspcs.c`.
 
+use crate::curves::intrp::quick_saturate_word;
 use crate::types::{CieLCh, CieLab, CieXyY, CieXyz, D50_X, D50_Y, D50_Z};
 
 // CIE L*a*b* constants
@@ -373,12 +374,6 @@ pub fn pcs_encoded_lab_to_float_v2(encoded: &[u16; 3]) -> CieLab {
         a: encoded[1] as f64 / 256.0 - 128.0,
         b: encoded[2] as f64 / 256.0 - 128.0,
     }
-}
-
-/// Clamp and round to u16 range [0, 65535].
-/// C版: `_cmsQuickSaturateWord`
-fn quick_saturate_word(d: f64) -> u16 {
-    (d + 0.5).clamp(0.0, 65535.0) as u16
 }
 
 // ============================================================================
