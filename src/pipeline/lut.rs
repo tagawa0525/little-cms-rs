@@ -222,7 +222,10 @@ pub enum StageData {
         offset: Option<Vec<f64>>,
     },
     CLut(CLutData),
-    NamedColor(super::named::NamedColorList),
+    NamedColor {
+        list: super::named::NamedColorList,
+        use_pcs: bool,
+    },
     None,
 }
 
@@ -597,6 +600,23 @@ impl Stage {
         Some(stage)
     }
 
+    /// Create a named color stage.
+    ///
+    /// Input is a single channel (color index as 0..1 mapped to 0..65535).
+    /// Output is either 3 PCS channels or `colorant_count` device channels.
+    ///
+    /// C版: `_cmsStageAllocNamedColor`
+    pub fn new_named_color(list: super::named::NamedColorList, use_pcs: bool) -> Self {
+        let output_channels = if use_pcs { 3 } else { list.colorant_count() };
+        Stage {
+            stage_type: StageSignature::NamedColorElem,
+            implements: StageSignature::NamedColorElem,
+            input_channels: 1,
+            output_channels,
+            data: StageData::NamedColor { list, use_pcs },
+        }
+    }
+
     // --- Special stage constructors ---
 
     /// C版: `_cmsStageAllocLab2XYZ`
@@ -774,6 +794,9 @@ impl Stage {
                     output[i] = if input[i] < 0.0 { 0.0 } else { input[i] };
                 }
             }
+            StageSignature::NamedColorElem => {
+                self.eval_named_color(input, output);
+            }
             _ => {
                 debug_assert!(
                     false,
@@ -879,6 +902,32 @@ impl Stage {
         output[0] = (lab.l / 100.0) as f32;
         output[1] = ((lab.a + 128.0) / 255.0) as f32;
         output[2] = ((lab.b + 128.0) / 255.0) as f32;
+    }
+
+    fn eval_named_color(&self, input: &[f32], output: &mut [f32]) {
+        if let StageData::NamedColor { ref list, use_pcs } = self.data {
+            let n_out = self.output_channels as usize;
+            let index = (input[0] * 65535.0 + 0.5) as usize;
+            let index = index.min(list.count().saturating_sub(1));
+            if let Some(color) = list.info(index) {
+                if use_pcs {
+                    // PCS mode: output PCS values (normalized to 0..1 range)
+                    for (out, &pcs) in output[..3].iter_mut().zip(color.pcs.iter()) {
+                        *out = pcs as f32 / 65535.0;
+                    }
+                } else {
+                    // Device colorant mode
+                    for (out, &col) in output[..n_out].iter_mut().zip(color.colorant.iter()) {
+                        *out = col as f32 / 65535.0;
+                    }
+                }
+            } else {
+                // Empty list or lookup failed: zero-fill output
+                for out in output[..n_out].iter_mut() {
+                    *out = 0.0;
+                }
+            }
+        }
     }
 }
 
@@ -2352,5 +2401,91 @@ mod tests {
         } else {
             panic!("Expected CLut stage");
         }
+    }
+
+    // ========================================================================
+    // Stage: Named Color
+    // ========================================================================
+
+    #[test]
+
+    fn named_color_stage_pcs_output() {
+        use crate::pipeline::named::NamedColorList;
+
+        // Create a NamedColorList with known PCS values
+        let mut list = NamedColorList::new(4, "", "").unwrap();
+        list.append("Red", &[0xFFFF, 0x0000, 0x0000], None);
+        list.append("Green", &[0x0000, 0xFFFF, 0x0000], None);
+        list.append("Blue", &[0x0000, 0x0000, 0xFFFF], None);
+
+        let stage = Stage::new_named_color(list, true);
+        assert_eq!(stage.input_channels(), 1);
+        assert_eq!(stage.output_channels(), 3);
+
+        // Index 0 → Red PCS
+        let mut output = [0.0f32; 16];
+        stage.eval(&[0.0 / 65535.0], &mut output);
+        assert!((output[0] - 1.0).abs() < 0.001); // 0xFFFF / 65535 ≈ 1.0
+        assert!(output[1].abs() < 0.001);
+        assert!(output[2].abs() < 0.001);
+    }
+
+    #[test]
+
+    fn named_color_stage_device_output() {
+        use crate::pipeline::named::NamedColorList;
+
+        let mut list = NamedColorList::new(4, "", "").unwrap();
+        let colorant = [0x8000u16, 0x4000, 0x2000, 0x1000];
+        list.append("Test", &[0x0000, 0x0000, 0x0000], Some(&colorant));
+
+        let stage = Stage::new_named_color(list, false);
+        assert_eq!(stage.input_channels(), 1);
+        assert_eq!(stage.output_channels(), 4); // colorant_count
+
+        let mut output = [0.0f32; 16];
+        stage.eval(&[0.0 / 65535.0], &mut output);
+        assert!((output[0] - 0x8000 as f32 / 65535.0).abs() < 0.001);
+        assert!((output[1] - 0x4000 as f32 / 65535.0).abs() < 0.001);
+    }
+
+    #[test]
+
+    fn named_color_stage_clamps_index() {
+        use crate::pipeline::named::NamedColorList;
+
+        let mut list = NamedColorList::new(3, "", "").unwrap();
+        list.append("Only", &[0x1234, 0x5678, 0x9ABC], None);
+
+        let stage = Stage::new_named_color(list, true);
+
+        // Index way beyond count should clamp to last
+        let mut output = [0.0f32; 16];
+        stage.eval(&[1.0], &mut output); // 1.0 * 65535 + 0.5 = 65535, clamped to 0
+        assert!((output[0] - 0x1234 as f32 / 65535.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn named_color_stage_device_output_rgb_uses_colorant() {
+        use crate::pipeline::named::NamedColorList;
+
+        // colorant_count == 3, device mode: must use colorant, not PCS
+        let mut list = NamedColorList::new(3, "", "").unwrap();
+        let pcs = [0x1111u16, 0x2222, 0x3333];
+        let colorant = [0xAAAAu16, 0xBBBB, 0xCCCC];
+        list.append("Test", &pcs, Some(&colorant));
+
+        let stage = Stage::new_named_color(list, false);
+        assert_eq!(stage.input_channels(), 1);
+        assert_eq!(stage.output_channels(), 3); // same as PCS channels
+
+        let mut output = [0.0f32; 16];
+        stage.eval(&[0.0], &mut output);
+
+        let scale = 65535.0f32;
+        // Must output colorant values, not PCS
+        assert!((output[0] - colorant[0] as f32 / scale).abs() < 0.001);
+        assert!((output[1] - colorant[1] as f32 / scale).abs() < 0.001);
+        assert!((output[2] - colorant[2] as f32 / scale).abs() < 0.001);
     }
 }
