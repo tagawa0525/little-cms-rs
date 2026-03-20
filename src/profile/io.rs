@@ -481,6 +481,16 @@ pub(crate) struct TagEntry {
 // Profile
 // ============================================================================
 
+/// Which profile information to retrieve.
+/// C版: `cmsInfoType`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileInfoType {
+    Description,
+    Manufacturer,
+    Model,
+    Copyright,
+}
+
 /// An ICC profile.
 /// C版: `_cmsICCPROFILE`
 pub struct Profile {
@@ -574,6 +584,30 @@ impl Profile {
         self.header.size = size;
         self.save_to_io(&mut io)?;
         Ok(())
+    }
+
+    /// Get profile information as ASCII string.
+    /// C版: `cmsGetProfileInfoASCII`
+    pub fn get_profile_info_ascii(
+        &mut self,
+        info: ProfileInfoType,
+        language: &str,
+        country: &str,
+    ) -> Option<String> {
+        let _ = (info, language, country);
+        todo!()
+    }
+
+    /// Get profile information as UTF-8 string.
+    /// C版: `cmsGetProfileInfoUTF8`
+    pub fn get_profile_info_utf8(
+        &mut self,
+        info: ProfileInfoType,
+        language: &str,
+        country: &str,
+    ) -> Option<String> {
+        let _ = (info, language, country);
+        todo!()
     }
 
     // ========================================================================
@@ -2567,5 +2601,47 @@ mod tests {
         assert!(p2.is_intent_supported(0, UsedDirection::AsInput));
         assert!(p2.is_intent_supported(1, UsedDirection::AsInput));
         assert!(p2.is_intent_supported(0, UsedDirection::AsOutput));
+    }
+
+    // ================================================================
+    // Phase 13: Profile info
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn get_profile_info_ascii_description() {
+        let mut p = Profile::new_srgb();
+        let desc = p
+            .get_profile_info_ascii(ProfileInfoType::Description, "en", "US")
+            .expect("sRGB should have a description");
+        assert!(!desc.is_empty(), "description should not be empty");
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn get_profile_info_ascii_copyright() {
+        let mut p = Profile::new_srgb();
+        let copy = p
+            .get_profile_info_ascii(ProfileInfoType::Copyright, "en", "US")
+            .expect("sRGB should have copyright");
+        assert!(!copy.is_empty(), "copyright should not be empty");
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn get_profile_info_utf8_description() {
+        let mut p = Profile::new_srgb();
+        let desc = p
+            .get_profile_info_utf8(ProfileInfoType::Description, "en", "US")
+            .expect("sRGB should have a description");
+        assert!(!desc.is_empty(), "description should not be empty");
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn get_profile_info_missing_tag_returns_none() {
+        let mut p = Profile::new_placeholder();
+        let result = p.get_profile_info_ascii(ProfileInfoType::Manufacturer, "en", "US");
+        assert!(result.is_none());
     }
 }
