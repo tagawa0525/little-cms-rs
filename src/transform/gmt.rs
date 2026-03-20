@@ -357,6 +357,19 @@ pub fn build_k_tone_curve(
 ) -> Result<ToneCurve, CmsError> {
     let n = profiles.len();
 
+    if n < 2 {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: "K tone curve requires at least 2 profiles".into(),
+        });
+    }
+    if n_points < 2 {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: "K tone curve requires at least 2 sample points".into(),
+        });
+    }
+
     // Must be CMYK → CMYK
     if profiles[0].header.color_space != ColorSpaceSignature::CmykData
         || profiles[n - 1].header.color_space != ColorSpaceSignature::CmykData

@@ -429,6 +429,12 @@ pub fn black_preserving_k_only_intents(
             message: format!("Invalid number of profiles: {n}"),
         });
     }
+    if intents.len() != n || bpc.len() != n || adaptation_states.len() != n {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: "Slice lengths must match number of profiles".into(),
+        });
+    }
 
     // Translate to ICC intents
     let icc_intents: Vec<u32> = intents
@@ -448,8 +454,7 @@ pub fn black_preserving_k_only_intents(
 
     // If not CMYK→CMYK, fall back to default ICC intents
     if profiles[0].header.color_space != ColorSpaceSignature::CmykData
-        || (profiles[last].header.color_space != ColorSpaceSignature::CmykData
-            && profiles[last].header.device_class != ProfileClassSignature::Output)
+        || profiles[last].header.color_space != ColorSpaceSignature::CmykData
     {
         return default_icc_intents(profiles, &icc_intents, bpc, adaptation_states);
     }
@@ -535,6 +540,12 @@ pub fn black_preserving_k_plane_intents(
             message: format!("Invalid number of profiles: {n}"),
         });
     }
+    if intents.len() != n || bpc.len() != n || adaptation_states.len() != n {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: "Slice lengths must match number of profiles".into(),
+        });
+    }
 
     // Translate to ICC intents
     let icc_intents: Vec<u32> = intents
@@ -554,8 +565,7 @@ pub fn black_preserving_k_plane_intents(
 
     // If not CMYK→CMYK, fall back to default ICC intents
     if profiles[0].header.color_space != ColorSpaceSignature::CmykData
-        || (profiles[last].header.color_space != ColorSpaceSignature::CmykData
-            && profiles[last].header.device_class != ProfileClassSignature::Output)
+        || profiles[last].header.color_space != ColorSpaceSignature::CmykData
     {
         return default_icc_intents(profiles, &icc_intents, bpc, adaptation_states);
     }
@@ -588,28 +598,15 @@ pub fn black_preserving_k_plane_intents(
         0,
     )?;
 
-    // Build proof transform: last profile CMYK → Lab (16-bit → Lab DBL)
-    let last_copy = super::gmt::clone_profile_pub(&mut profiles[last])?;
+    // Build CMYK→Lab float transform for the last profile
     let mut lab = Profile::new_lab4(None);
+    let last_copy = super::gmt::clone_profile_pub(&mut profiles[last])?;
     let lab_copy = super::gmt::clone_profile_pub(&mut lab)?;
 
-    let h_proof_output = super::xform::Transform::new(
-        last_copy,
-        crate::types::PixelFormat::build(crate::types::PT_CMYK, 4, 2),
-        lab_copy,
-        crate::types::TYPE_LAB_DBL,
-        1, // Relative colorimetric
-        super::xform::FLAGS_NOCACHE | super::xform::FLAGS_NOOPTIMIZE,
-    )?;
-
-    // Build CMYK→Lab float transform for the last profile
-    let last_copy2 = super::gmt::clone_profile_pub(&mut profiles[last])?;
-    let lab_copy2 = super::gmt::clone_profile_pub(&mut lab)?;
-
     let cmyk2lab = super::xform::Transform::new(
-        last_copy2,
+        last_copy,
         crate::types::TYPE_CMYK_FLT,
-        lab_copy2,
+        lab_copy,
         crate::types::TYPE_LAB_FLT,
         1, // Relative colorimetric
         super::xform::FLAGS_NOCACHE | super::xform::FLAGS_NOOPTIMIZE,
@@ -623,16 +620,11 @@ pub fn black_preserving_k_plane_intents(
         message: "Failed to allocate CLUT for K-plane preservation".into(),
     })?;
 
-    // Pre-compute byte strides
-    let cmyk16_stride = crate::pipeline::pack::pixel_size(crate::types::PixelFormat::build(
-        crate::types::PT_CMYK,
-        4,
-        2,
-    ));
-    let lab_dbl_stride = crate::pipeline::pack::pixel_size(crate::types::TYPE_LAB_DBL);
-
-    let mut proof_in_buf = vec![0u8; cmyk16_stride];
-    let mut proof_out_buf = vec![0u8; lab_dbl_stride];
+    // Pre-allocate reusable buffers outside the closure
+    let cmyk_flt_stride = crate::pipeline::pack::pixel_size(crate::types::TYPE_CMYK_FLT);
+    let lab_flt_stride = crate::pipeline::pack::pixel_size(crate::types::TYPE_LAB_FLT);
+    let mut cmyk_buf = vec![0u8; cmyk_flt_stride];
+    let mut lab_buf = vec![0u8; lab_flt_stride];
 
     // Sample the CLUT
     crate::pipeline::lut::sample_clut_16bit(
@@ -670,18 +662,8 @@ pub fn black_preserving_k_plane_intents(
                 return true;
             }
 
-            // Get Lab of colorimetric output
-            for (i, &v) in output.iter().enumerate().take(4) {
-                proof_in_buf[i * 2..i * 2 + 2].copy_from_slice(&v.to_ne_bytes());
-            }
-            h_proof_output.do_transform(&proof_in_buf, &mut proof_out_buf, 1);
-
             // Get Lab+K for reverse interpolation
             let mut lab_k = [0.0f32; 4];
-            let cmyk_flt_stride = crate::pipeline::pack::pixel_size(crate::types::TYPE_CMYK_FLT);
-            let lab_flt_stride = crate::pipeline::pack::pixel_size(crate::types::TYPE_LAB_FLT);
-            let mut cmyk_buf = vec![0u8; cmyk_flt_stride];
-            let mut lab_buf = vec![0u8; lab_flt_stride];
             for (i, &v) in outf.iter().enumerate().take(4) {
                 cmyk_buf[i * 4..i * 4 + 4].copy_from_slice(&v.to_ne_bytes());
             }
@@ -706,7 +688,7 @@ pub fn black_preserving_k_plane_intents(
             let sum_cmy = outf[0] as f64 + outf[1] as f64 + outf[2] as f64;
             let sum_cmyk = sum_cmy + outf[3] as f64;
 
-            let ratio = if sum_cmyk > max_tac {
+            let ratio = if sum_cmyk > max_tac && sum_cmy > 0.0 {
                 let r = 1.0 - (sum_cmyk - max_tac) / sum_cmy;
                 if r < 0.0 { 0.0 } else { r }
             } else {
