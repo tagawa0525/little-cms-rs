@@ -792,8 +792,10 @@ impl Transform {
             from_input,
             to_output,
             flags,
-            entry_color_space: ColorSpaceSignature::RgbData,
-            exit_color_space: ColorSpaceSignature::RgbData,
+            entry_color_space: ColorSpaceSignature::from_pixel_type(input_format.colorspace())
+                .unwrap_or(ColorSpaceSignature::RgbData),
+            exit_color_space: ColorSpaceSignature::from_pixel_type(output_format.colorspace())
+                .unwrap_or(ColorSpaceSignature::RgbData),
             rendering_intent: 0,
             gamut_check: None,
             alarm_codes: DEFAULT_ALARM_CODES,
