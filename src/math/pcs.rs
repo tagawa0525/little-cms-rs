@@ -135,11 +135,11 @@ pub fn delta_e_cie94(lab1: &CieLab, lab2: &CieLab) -> f64 {
 
 /// BFD lightness function. C版: `ComputeLBFD`
 fn compute_lbfd(lab: &CieLab) -> f64 {
-    let yt = if lab.l > 7.996969 {
+    let yt = if lab.l > CIE_KAPPA * CIE_EPSILON {
         let t = (lab.l + 16.0) / 116.0;
         t * t * t * 100.0
     } else {
-        100.0 * (lab.l / 903.3)
+        100.0 * (lab.l / CIE_KAPPA)
     };
     54.6 * (std::f64::consts::LOG10_E * (yt + 1.5).ln()) - 9.6
 }
