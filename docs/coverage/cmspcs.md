@@ -12,9 +12,9 @@
 | `cmsxyY2XYZ`                           | `xyy_to_xyz()`                           | 実装済                                  |
 | `cmsXYZ2Lab`                           | `xyz_to_lab()`                           | 実装済                                  |
 | `cmsLab2XYZ`                           | `lab_to_xyz()`                           | 実装済                                  |
-| `cmsLabEncoded2FloatV2`                | —                                        | 未実装                                  |
+| `cmsLabEncoded2FloatV2`                | `pcs_encoded_lab_to_float_v2()`          | 実装済                                  |
 | `cmsLabEncoded2Float`                  | `pcs_encoded_lab_to_float()`             | 実装済                                  |
-| `cmsFloat2LabEncodedV2`                | —                                        | 未実装                                  |
+| `cmsFloat2LabEncodedV2`                | `float_to_pcs_encoded_lab_v2()`          | 実装済                                  |
 | `cmsFloat2LabEncoded`                  | `float_to_pcs_encoded_lab()`             | 実装済                                  |
 | `cmsLab2LCh`                           | `lab_to_lch()`                           | 実装済                                  |
 | `cmsLCh2Lab`                           | `lch_to_lab()`                           | 実装済                                  |
@@ -39,5 +39,5 @@
 
 ## 備考
 
-- V2固有の16bitエンコード/デコード（`cmsLabEncoded2FloatV2`, `cmsFloat2LabEncodedV2`）は未実装。V2→V4変換は `pipeline/pack.rs` の `lab_v2_to_v4` / `lab_v4_to_v2` で対応。
+- V2固有の16bitエンコード/デコードは実装済。V2→V4変換は `pipeline/pack.rs` の `lab_v2_to_v4` / `lab_v4_to_v2` でも対応。
 - `cmsChannelsOf` は `cmsChannelsOfColorSpace` の単なるラッパーで、Rustではメソッド形式（`ColorSpaceSignature::channels()`）で統一。

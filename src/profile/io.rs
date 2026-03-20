@@ -8,6 +8,7 @@ use crate::curves::gamma::ToneCurve;
 use crate::curves::wtpnt;
 use crate::math::mtrx::Mat3;
 use crate::pipeline::lut::{Pipeline, Stage, StageLoc};
+use crate::pipeline::named::Mlu;
 use crate::profile::tag_types::TagData;
 use crate::types::{
     CieXyz, ColorSpaceSignature, D50_X, D50_Y, D50_Z, DateTimeNumber, EncodedXyzNumber,
@@ -481,6 +482,16 @@ pub(crate) struct TagEntry {
 // Profile
 // ============================================================================
 
+/// Which profile information to retrieve.
+/// C版: `cmsInfoType`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileInfoType {
+    Description,
+    Manufacturer,
+    Model,
+    Copyright,
+}
+
 /// An ICC profile.
 /// C版: `_cmsICCPROFILE`
 pub struct Profile {
@@ -573,6 +584,82 @@ impl Profile {
         // Pre-write size into header
         self.header.size = size;
         self.save_to_io(&mut io)?;
+        Ok(())
+    }
+
+    /// Get profile information as ASCII string.
+    /// C版: `cmsGetProfileInfoASCII`
+    pub fn get_profile_info_ascii(
+        &mut self,
+        info: ProfileInfoType,
+        language: &str,
+        country: &str,
+    ) -> Option<String> {
+        let mlu = self.read_info_mlu(info)?;
+        mlu.get_ascii(language, country)
+    }
+
+    /// Get profile information as UTF-8 string.
+    /// C版: `cmsGetProfileInfoUTF8`
+    pub fn get_profile_info_utf8(
+        &mut self,
+        info: ProfileInfoType,
+        language: &str,
+        country: &str,
+    ) -> Option<String> {
+        let mlu = self.read_info_mlu(info)?;
+        mlu.get_utf8(language, country)
+    }
+
+    /// Read the MLU tag for the given info type.
+    /// C版: `GetInfo` (cmsio1.c)
+    fn read_info_mlu(&mut self, info: ProfileInfoType) -> Option<Mlu> {
+        let sig = match info {
+            ProfileInfoType::Description => {
+                if self.has_tag(TagSignature::ProfileDescriptionML) {
+                    TagSignature::ProfileDescriptionML
+                } else {
+                    TagSignature::ProfileDescription
+                }
+            }
+            ProfileInfoType::Manufacturer => TagSignature::DeviceMfgDesc,
+            ProfileInfoType::Model => TagSignature::DeviceModelDesc,
+            ProfileInfoType::Copyright => TagSignature::Copyright,
+        };
+
+        match self.read_tag(sig) {
+            Ok(TagData::Mlu(mlu)) => Some(mlu),
+            _ => None,
+        }
+    }
+
+    /// Compute and store MD5 profile ID.
+    /// C版: `cmsMD5computeID`
+    pub fn compute_md5_id(&mut self) -> Result<(), CmsError> {
+        use crate::math::md5::Md5;
+
+        // Save header fields that must be zeroed for ID computation
+        let saved_flags = self.header.flags;
+        let saved_intent = self.header.rendering_intent;
+        let saved_id = self.header.profile_id;
+
+        // Zero them per ICC spec
+        self.header.flags = 0;
+        self.header.rendering_intent = 0;
+        self.header.profile_id = ProfileId::default();
+
+        // Serialize profile to memory
+        let result = self.save_to_mem();
+
+        // Restore original values regardless of success
+        self.header.flags = saved_flags;
+        self.header.rendering_intent = saved_intent;
+        self.header.profile_id = saved_id;
+
+        let blob = result?;
+
+        // Compute MD5 and store as profile ID
+        self.header.profile_id = ProfileId(Md5::digest(&blob));
         Ok(())
     }
 
@@ -2567,5 +2654,83 @@ mod tests {
         assert!(p2.is_intent_supported(0, UsedDirection::AsInput));
         assert!(p2.is_intent_supported(1, UsedDirection::AsInput));
         assert!(p2.is_intent_supported(0, UsedDirection::AsOutput));
+    }
+
+    // ================================================================
+    // Phase 13: Profile info
+    // ================================================================
+
+    #[test]
+    fn get_profile_info_ascii_description() {
+        let mut p = Profile::new_srgb();
+        let desc = p
+            .get_profile_info_ascii(ProfileInfoType::Description, "en", "US")
+            .expect("sRGB should have a description");
+        assert!(!desc.is_empty(), "description should not be empty");
+    }
+
+    #[test]
+    fn get_profile_info_ascii_copyright() {
+        let mut p = Profile::new_srgb();
+        let copy = p
+            .get_profile_info_ascii(ProfileInfoType::Copyright, "en", "US")
+            .expect("sRGB should have copyright");
+        assert!(!copy.is_empty(), "copyright should not be empty");
+    }
+
+    #[test]
+    fn get_profile_info_utf8_description() {
+        let mut p = Profile::new_srgb();
+        let desc = p
+            .get_profile_info_utf8(ProfileInfoType::Description, "en", "US")
+            .expect("sRGB should have a description");
+        assert!(!desc.is_empty(), "description should not be empty");
+    }
+
+    #[test]
+    fn get_profile_info_missing_tag_returns_none() {
+        let mut p = Profile::new_placeholder();
+        let result = p.get_profile_info_ascii(ProfileInfoType::Manufacturer, "en", "US");
+        assert!(result.is_none());
+    }
+
+    // ================================================================
+    // Phase 13: MD5 Profile ID
+    // ================================================================
+
+    #[test]
+    fn compute_md5_id_sets_nonzero_id() {
+        let mut p = Profile::new_srgb();
+        assert_eq!(p.header.profile_id, ProfileId::default());
+        p.compute_md5_id().unwrap();
+        assert_ne!(
+            p.header.profile_id,
+            ProfileId::default(),
+            "profile_id should be non-zero after MD5 computation"
+        );
+    }
+
+    #[test]
+    fn compute_md5_id_is_idempotent() {
+        let mut p = Profile::new_srgb();
+        p.compute_md5_id().unwrap();
+        let id1 = p.header.profile_id;
+        p.compute_md5_id().unwrap();
+        let id2 = p.header.profile_id;
+        assert_eq!(id1, id2, "same profile should produce same MD5");
+    }
+
+    #[test]
+    fn compute_md5_id_differs_for_different_profiles() {
+        let mut p1 = Profile::new_srgb();
+        p1.compute_md5_id().unwrap();
+
+        let mut p2 = Profile::new_lab4(None);
+        p2.compute_md5_id().unwrap();
+
+        assert_ne!(
+            p1.header.profile_id, p2.header.profile_id,
+            "different profiles should have different MD5 IDs"
+        );
     }
 }

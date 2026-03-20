@@ -4,34 +4,34 @@ C版の各ソースファイルに対応するRust実装の関数レベルカバ
 
 ## カバレッジサマリー
 
-| C ファイル                  | Rust ファイル                       | 公開API | 内部関数 | 実装率 | 状態                               |
-| --------------------------- | ----------------------------------- | ------- | -------- | ------ | ---------------------------------- |
-| [cmserr.c](cmserr.md)       | `src/context.rs`                    | 3/5     | 1/8      | 部分的 | メモリ/Mutex関数はN/A              |
-| [cmshalf.c](cmshalf.md)     | `src/math/half.rs`                  | 2/2     | -        | 100%   | 完了                               |
-| [cmsmd5.c](cmsmd5.md)       | `src/math/md5.rs`                   | 3/4     | -        | 75%    | `cmsMD5computeID`未実装            |
-| [cmsmtrx.c](cmsmtrx.md)     | `src/math/mtrx.rs`                  | 12/12   | -        | 100%   | 完了                               |
-| [cmspcs.c](cmspcs.md)       | `src/math/pcs.rs`                   | 19/22   | 1/1      | 91%    | V2エンコード等未実装               |
-| [cmsgamma.c](cmsgamma.md)   | `src/curves/gamma.rs`               | 23/23   | -        | 100%   | 完了                               |
-| [cmsintrp.c](cmsintrp.md)   | `src/curves/intrp.rs`               | 2/2     | 4/4      | 100%   | 完了                               |
-| [cmswtpnt.c](cmswtpnt.md)   | `src/curves/wtpnt.rs`               | 5/5     | 2/2      | 100%   | 完了                               |
-| [cmscam02.c](cmscam02.md)   | `src/curves/cam02.rs`               | 4/4     | -        | 100%   | 完了                               |
-| [cmslut.c](cmslut.md)       | `src/pipeline/lut.rs`               | 40/43   | 8/8      | 94%    | Context系未実装                    |
-| [cmspack.c](cmspack.md)     | `src/pipeline/pack.rs`              | 2/3     | 2/4      | 部分的 | フォーマッタ基盤は実装済           |
-| [cmsnamed.c](cmsnamed.md)   | `src/pipeline/named.rs`             | 26/29   | -        | 90%    | Wide文字列/NamedColor Stage未実装  |
-| [cmsio0.c](cmsio0.md)       | `src/profile/io.rs`                 | 47/54   | 4/4      | 89%    | Stream系/一部公開APIなし           |
-| [cmsio1.c](cmsio1.md)       | `src/profile/io.rs`                 | 6/9     | 2/5      | 57%    | ProfileInfo/Sequence未実装         |
-| [cmstypes.c](cmstypes.md)   | `src/profile/tag_types.rs`          | -       | 0/9      | 部分的 | 31タグ型実装/plugin系は設計差異    |
-| [cmscnvrt.c](cmscnvrt.md)   | `src/transform/cnvrt.rs`            | 1/3     | 2/3      | 60%    | intent列挙/plugin未実装            |
-| [cmsopt.c](cmsopt.md)       | `src/transform/opt.rs`              | 1/1     | 1/2      | 93%    | plugin登録のみ未実装               |
-| [cmssamp.c](cmssamp.md)     | `src/transform/samp.rs`             | 2/2     | -        | 100%   | 完了（dest BPは簡略版）            |
-| [cmsgmt.c](cmsgmt.md)       | `src/transform/gmt.rs`              | 3/3     | 1/3      | 67%    | Chain2Lab/KToneCurve未実装         |
-| [cmsxform.c](cmsxform.md)   | `src/transform/xform.rs`            | 17/29   | 1/8      | 49%    | stride/worker系/global state未実装 |
-| [cmsalpha.c](cmsalpha.md)   | `src/transform/alpha.rs`            | -       | 1/1      | 100%   | 完了                               |
-| [cmsvirt.c](cmsvirt.md)     | `src/profile/virt.rs`               | 22/22   | -        | 100%   | 完了                               |
-| [cmsplugin.c](cmsplugin.md) | `src/profile/io.rs`, `src/types.rs` | 28/37   | 2/4      | 73%    | plugin/context管理未実装           |
-| [cmscgats.c](cmscgats.md)   | `src/ext/cgats.rs`                  | 22/38   | -        | 58%    | ファイルI/O/Multi/Cube未実装       |
-| [cmsps2.c](cmsps2.md)       | `src/ext/ps2.rs`                    | 2/3     | -        | 67%    | CSA/CRD実装済                      |
-| [cmssm.c](cmssm.md)         | `src/transform/sm.rs`               | 5/5     | -        | 100%   | 完了                               |
+| C ファイル                  | Rust ファイル                       | 公開API | 内部関数 | 実装率 | 状態                                  |
+| --------------------------- | ----------------------------------- | ------- | -------- | ------ | ------------------------------------- |
+| [cmserr.c](cmserr.md)       | `src/context.rs`                    | 3/5     | 1/8      | 部分的 | メモリ/Mutex関数はN/A                 |
+| [cmshalf.c](cmshalf.md)     | `src/math/half.rs`                  | 2/2     | -        | 100%   | 完了                                  |
+| [cmsmd5.c](cmsmd5.md)       | `src/math/md5.rs`                   | 4/4     | -        | 100%   | 完了                                  |
+| [cmsmtrx.c](cmsmtrx.md)     | `src/math/mtrx.rs`                  | 12/12   | -        | 100%   | 完了                                  |
+| [cmspcs.c](cmspcs.md)       | `src/math/pcs.rs`                   | 21/22   | 1/1      | 96%    | `cmsChannelsOf`のみ未実装（代替あり） |
+| [cmsgamma.c](cmsgamma.md)   | `src/curves/gamma.rs`               | 23/23   | -        | 100%   | 完了                                  |
+| [cmsintrp.c](cmsintrp.md)   | `src/curves/intrp.rs`               | 2/2     | 4/4      | 100%   | 完了                                  |
+| [cmswtpnt.c](cmswtpnt.md)   | `src/curves/wtpnt.rs`               | 5/5     | 2/2      | 100%   | 完了                                  |
+| [cmscam02.c](cmscam02.md)   | `src/curves/cam02.rs`               | 4/4     | -        | 100%   | 完了                                  |
+| [cmslut.c](cmslut.md)       | `src/pipeline/lut.rs`               | 40/43   | 8/8      | 94%    | Context系未実装                       |
+| [cmspack.c](cmspack.md)     | `src/pipeline/pack.rs`              | 2/3     | 2/4      | 部分的 | フォーマッタ基盤は実装済              |
+| [cmsnamed.c](cmsnamed.md)   | `src/pipeline/named.rs`             | 26/29   | -        | 90%    | Wide文字列/NamedColor Stage未実装     |
+| [cmsio0.c](cmsio0.md)       | `src/profile/io.rs`                 | 47/54   | 4/4      | 89%    | Stream系/一部公開APIなし              |
+| [cmsio1.c](cmsio1.md)       | `src/profile/io.rs`                 | 8/9     | 2/5      | 71%    | Sequence未実装                        |
+| [cmstypes.c](cmstypes.md)   | `src/profile/tag_types.rs`          | -       | 0/9      | 部分的 | 31タグ型実装/plugin系は設計差異       |
+| [cmscnvrt.c](cmscnvrt.md)   | `src/transform/cnvrt.rs`            | 1/3     | 2/3      | 60%    | intent列挙/plugin未実装               |
+| [cmsopt.c](cmsopt.md)       | `src/transform/opt.rs`              | 1/1     | 1/2      | 93%    | plugin登録のみ未実装                  |
+| [cmssamp.c](cmssamp.md)     | `src/transform/samp.rs`             | 2/2     | -        | 100%   | 完了（dest BPは簡略版）               |
+| [cmsgmt.c](cmsgmt.md)       | `src/transform/gmt.rs`              | 3/3     | 1/3      | 67%    | Chain2Lab/KToneCurve未実装            |
+| [cmsxform.c](cmsxform.md)   | `src/transform/xform.rs`            | 17/29   | 1/8      | 49%    | stride/worker系/global state未実装    |
+| [cmsalpha.c](cmsalpha.md)   | `src/transform/alpha.rs`            | -       | 1/1      | 100%   | 完了                                  |
+| [cmsvirt.c](cmsvirt.md)     | `src/profile/virt.rs`               | 22/22   | -        | 100%   | 完了                                  |
+| [cmsplugin.c](cmsplugin.md) | `src/profile/io.rs`, `src/types.rs` | 28/37   | 2/4      | 73%    | plugin/context管理未実装              |
+| [cmscgats.c](cmscgats.md)   | `src/ext/cgats.rs`                  | 22/38   | -        | 58%    | ファイルI/O/Multi/Cube未実装          |
+| [cmsps2.c](cmsps2.md)       | `src/ext/ps2.rs`                    | 2/3     | -        | 67%    | CSA/CRD実装済                         |
+| [cmssm.c](cmssm.md)         | `src/transform/sm.rs`               | 5/5     | -        | 100%   | 完了                                  |
 
 ## 凡例
 

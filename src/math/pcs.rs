@@ -2,6 +2,7 @@
 //!
 //! XYZ ↔ Lab, encoding/decoding, DeltaE. Matches C版 `cmspcs.c`.
 
+use crate::curves::intrp::quick_saturate_word;
 use crate::types::{CieLCh, CieLab, CieXyY, CieXyz, D50_X, D50_Y, D50_Z};
 
 // CIE L*a*b* constants
@@ -345,6 +346,36 @@ pub fn pcs_encoded_lab_to_float(encoded: &[u16; 3]) -> CieLab {
     }
 }
 
+/// Encode Lab to ICC 16-bit V2 encoding.
+/// V2 differs from V4: L uses 652.8 (0xFF00/100) instead of 655.35 (0xFFFF/100),
+/// and a/b use 256.0 instead of 257.0.
+/// C版: `cmsFloat2LabEncodedV2`
+pub fn float_to_pcs_encoded_lab_v2(lab: &CieLab) -> [u16; 3] {
+    // V2 L* range: 0 .. (0xFFFF * 100.0 / 0xFF00)
+    const L_MAX_V2: f64 = 0xFFFF as f64 * 100.0 / 0xFF00 as f64;
+    const AB_MAX_V2: f64 = 65535.0 / 256.0 - 128.0;
+
+    let l = lab.l.clamp(0.0, L_MAX_V2);
+    let a = lab.a.clamp(-128.0, AB_MAX_V2);
+    let b = lab.b.clamp(-128.0, AB_MAX_V2);
+
+    [
+        quick_saturate_word(l * 652.8),
+        quick_saturate_word((a + 128.0) * 256.0),
+        quick_saturate_word((b + 128.0) * 256.0),
+    ]
+}
+
+/// Decode ICC 16-bit V2 encoding back to Lab.
+/// C版: `cmsLabEncoded2FloatV2`
+pub fn pcs_encoded_lab_to_float_v2(encoded: &[u16; 3]) -> CieLab {
+    CieLab {
+        l: encoded[0] as f64 / 652.8,
+        a: encoded[1] as f64 / 256.0 - 128.0,
+        b: encoded[2] as f64 / 256.0 - 128.0,
+    }
+}
+
 // ============================================================================
 // Color space endpoints
 // ============================================================================
@@ -581,6 +612,79 @@ mod tests {
         assert!((back.l - lab.l).abs() < 0.01);
         assert!((back.a - lab.a).abs() < 0.01);
         assert!((back.b - lab.b).abs() < 0.01);
+    }
+
+    // ================================================================
+    // Phase 13: V2 Lab encoding
+    // ================================================================
+
+    #[test]
+    fn pcs_lab_v2_encoding_round_trip() {
+        let lab = CieLab {
+            l: 50.0,
+            a: 30.0,
+            b: -20.0,
+        };
+        let encoded = float_to_pcs_encoded_lab_v2(&lab);
+        let back = pcs_encoded_lab_to_float_v2(&encoded);
+        assert!((back.l - lab.l).abs() < 0.01);
+        assert!((back.a - lab.a).abs() < 0.01);
+        assert!((back.b - lab.b).abs() < 0.01);
+    }
+
+    #[test]
+    fn pcs_lab_v2_encoding_white() {
+        // L*=100 should encode to a value near (but not exactly) 0xFF00
+        let lab = CieLab {
+            l: 100.0,
+            a: 0.0,
+            b: 0.0,
+        };
+        let encoded = float_to_pcs_encoded_lab_v2(&lab);
+        // V2: L * 652.8 = 65280 = 0xFF00
+        assert_eq!(encoded[0], 0xFF00);
+        // a=0, b=0 → (0+128)*256 = 32768 = 0x8000
+        assert_eq!(encoded[1], 0x8000);
+        assert_eq!(encoded[2], 0x8000);
+    }
+
+    #[test]
+    fn pcs_lab_v2_encoding_black() {
+        let lab = CieLab {
+            l: 0.0,
+            a: 0.0,
+            b: 0.0,
+        };
+        let encoded = float_to_pcs_encoded_lab_v2(&lab);
+        assert_eq!(encoded[0], 0);
+        assert_eq!(encoded[1], 0x8000);
+        assert_eq!(encoded[2], 0x8000);
+    }
+
+    #[test]
+    fn pcs_lab_v2_differs_from_v4() {
+        // V2 and V4 should produce different L* encodings (652.8 vs 655.35)
+        let lab = CieLab {
+            l: 50.0,
+            a: 0.0,
+            b: 0.0,
+        };
+        let v2 = float_to_pcs_encoded_lab_v2(&lab);
+        let v4 = float_to_pcs_encoded_lab(&lab);
+        assert_ne!(v2[0], v4[0], "V2 and V4 L* encoding should differ");
+    }
+
+    #[test]
+    fn pcs_lab_v2_clamp_l_above_range() {
+        // V2 max L = 0xFFFF * 100.0 / 0xFF00 ≈ 100.39
+        // Values above this should clamp to 0xFFFF
+        let lab = CieLab {
+            l: 200.0,
+            a: 0.0,
+            b: 0.0,
+        };
+        let encoded = float_to_pcs_encoded_lab_v2(&lab);
+        assert_eq!(encoded[0], 0xFFFF);
     }
 
     // ================================================================
