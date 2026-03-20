@@ -747,6 +747,30 @@ impl Transform {
             });
         }
 
+        // Validate channel counts against the existing pipeline
+        if let Some(ref pipe) = self.pipeline {
+            if input_format.channels() != pipe.input_channels() {
+                return Err(CmsError {
+                    code: ErrorCode::ColorspaceCheck,
+                    message: format!(
+                        "input format channels ({}) != pipeline input channels ({})",
+                        input_format.channels(),
+                        pipe.input_channels()
+                    ),
+                });
+            }
+            if output_format.channels() != pipe.output_channels() {
+                return Err(CmsError {
+                    code: ErrorCode::ColorspaceCheck,
+                    message: format!(
+                        "output format channels ({}) != pipeline output channels ({})",
+                        output_format.channels(),
+                        pipe.output_channels()
+                    ),
+                });
+            }
+        }
+
         let from_input =
             find_formatter_in(input_format, CMS_PACK_FLAGS_16BITS).ok_or_else(|| CmsError {
                 code: ErrorCode::NotSuitable,
