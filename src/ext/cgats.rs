@@ -263,11 +263,12 @@ impl It8 {
         self.data_row_col(row, t.sample_id_col)
     }
 
-    /// Set the format string used for floating-point data output.
-    /// Accepts Rust-style format strings like `"{:.2}"` or `"{:.4}"`.
+    /// Set the decimal precision for floating-point data output.
+    /// Only the `"{:.N}"` form is supported; `N` is extracted as the
+    /// number of decimal places. If the format string does not match
+    /// this pattern, a default precision of 6 is used.
     /// C版: `cmsIT8DefineDblFormat`
     pub fn define_dbl_format(&mut self, fmt: &str) {
-        // Parse precision from format string like "{:.N}"
         let precision = fmt
             .find("{:.")
             .and_then(|start| {
