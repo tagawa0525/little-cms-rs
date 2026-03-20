@@ -248,15 +248,94 @@ fn encode_lab16_buf(lab: &CieLab, buf: &mut [u8]) {
 /// profile at the end, converting from `input_format` to `output_format`.
 /// C版: `_cmsChain2Lab`
 pub fn chain_to_lab(
-    _profiles: &mut [Profile],
-    _bpc: &[bool],
-    _intents: &[u32],
-    _adaptation: &[f64],
-    _input_format: PixelFormat,
-    _output_format: PixelFormat,
-    _flags: u32,
+    profiles: &mut [Profile],
+    bpc: &[bool],
+    intents: &[u32],
+    adaptation: &[f64],
+    input_format: PixelFormat,
+    output_format: PixelFormat,
+    flags: u32,
 ) -> Result<Transform, CmsError> {
-    todo!("Phase 14c: not yet implemented")
+    let n = profiles.len();
+    if n > 254 {
+        return Err(CmsError {
+            code: ErrorCode::Range,
+            message: "Too many profiles for chain_to_lab (max 254)".into(),
+        });
+    }
+
+    // Build a profile chain: all input profiles + Lab at the end
+    let mut chain: Vec<Profile> = Vec::with_capacity(n + 1);
+    for p in profiles.iter_mut() {
+        chain.push(clone_profile(p)?);
+    }
+    let mut lab = Profile::new_lab4(None);
+    chain.push(clone_profile(&mut lab)?);
+
+    let mut bpc_list: Vec<bool> = bpc.to_vec();
+    bpc_list.push(false);
+    let mut intent_list: Vec<u32> = intents.to_vec();
+    intent_list.push(1); // Relative Colorimetric for Lab
+    let mut adapt_list: Vec<f64> = adaptation.to_vec();
+    adapt_list.push(1.0);
+
+    Transform::new_extended(
+        &mut chain,
+        &bpc_list,
+        &intent_list,
+        &adapt_list,
+        None,
+        0,
+        input_format,
+        output_format,
+        flags,
+    )
+}
+
+/// Compute K→L* relationship by sampling K=0..100% with C=M=Y=0.
+/// C版: `ComputeKToLstar`
+fn compute_k_to_lstar(
+    profiles: &mut [Profile],
+    bpc: &[bool],
+    intents: &[u32],
+    adaptation: &[f64],
+    n_points: u32,
+    flags: u32,
+) -> Result<ToneCurve, CmsError> {
+    let xform = chain_to_lab(
+        profiles,
+        bpc,
+        intents,
+        adaptation,
+        TYPE_CMYK_FLT,
+        TYPE_LAB_DBL,
+        flags,
+    )?;
+
+    let in_stride = crate::pipeline::pack::pixel_size(TYPE_CMYK_FLT);
+    let out_stride = crate::pipeline::pack::pixel_size(TYPE_LAB_DBL);
+    let mut in_buf = vec![0u8; in_stride];
+    let mut out_buf = vec![0u8; out_stride];
+    let mut sampled = vec![0.0f32; n_points as usize];
+
+    for i in 0..n_points {
+        let k = (i as f32 * 100.0) / (n_points - 1) as f32;
+        // CMYK float: C=0, M=0, Y=0, K=k%
+        let cmyk = [0.0f32, 0.0, 0.0, k];
+        for (j, &v) in cmyk.iter().enumerate() {
+            in_buf[j * 4..j * 4 + 4].copy_from_slice(&v.to_ne_bytes());
+        }
+
+        xform.do_transform(&in_buf, &mut out_buf, 1);
+
+        let l = f64::from_ne_bytes(out_buf[0..8].try_into().unwrap());
+        sampled[i as usize] = (1.0 - l / 100.0) as f32; // Negate for easier operation
+    }
+
+    ToneCurve::build_tabulated_float(&sampled).ok_or_else(|| CmsError {
+        code: ErrorCode::Internal,
+        message: "Failed to build K-to-L* tone curve".into(),
+    })
 }
 
 /// Build the K tone curve for a CMYK → CMYK transform.
@@ -264,14 +343,64 @@ pub fn chain_to_lab(
 /// then joins both curves.
 /// C版: `_cmsBuildKToneCurve`
 pub fn build_k_tone_curve(
-    _profiles: &mut [Profile],
-    _intents: &[u32],
-    _bpc: &[bool],
-    _adaptation: &[f64],
-    _n_points: u32,
-    _flags: u32,
+    profiles: &mut [Profile],
+    intents: &[u32],
+    bpc: &[bool],
+    adaptation: &[f64],
+    n_points: u32,
+    flags: u32,
 ) -> Result<ToneCurve, CmsError> {
-    todo!("Phase 14c: not yet implemented")
+    let n = profiles.len();
+
+    // Must be CMYK → CMYK
+    if profiles[0].header.color_space != ColorSpaceSignature::CmykData
+        || profiles[n - 1].header.color_space != ColorSpaceSignature::CmykData
+    {
+        return Err(CmsError {
+            code: ErrorCode::ColorspaceCheck,
+            message: "K tone curve requires CMYK→CMYK".into(),
+        });
+    }
+
+    // Last profile must be Output class
+    if profiles[n - 1].header.device_class != ProfileClassSignature::Output {
+        return Err(CmsError {
+            code: ErrorCode::NotSuitable,
+            message: "Last profile must be Output class for K tone curve".into(),
+        });
+    }
+
+    // Compute K→L* for input chain (profiles[0..n-1])
+    let input_curve = compute_k_to_lstar(
+        &mut profiles[..n - 1],
+        &bpc[..n - 1],
+        &intents[..n - 1],
+        &adaptation[..n - 1],
+        n_points,
+        flags,
+    )?;
+
+    // Compute K→L* for output profile alone
+    let output_curve = compute_k_to_lstar(
+        &mut profiles[n - 1..],
+        &bpc[n - 1..],
+        &intents[n - 1..],
+        &adaptation[n - 1..],
+        n_points,
+        flags,
+    )?;
+
+    // Join both curves
+    let k_tone = ToneCurve::join(&input_curve, &output_curve, n_points);
+
+    if !k_tone.is_monotonic() {
+        return Err(CmsError {
+            code: ErrorCode::Internal,
+            message: "K tone curve is not monotonic".into(),
+        });
+    }
+
+    Ok(k_tone)
 }
 
 // ============================================================================
@@ -763,7 +892,6 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn chain_to_lab_srgb_produces_lab() {
         let srgb = roundtrip(&mut Profile::new_srgb());
         let xform = chain_to_lab(
@@ -771,23 +899,24 @@ mod tests {
             &[false],
             &[0],
             &[1.0],
-            TYPE_CMYK_FLT,
-            TYPE_LAB_DBL,
+            TYPE_RGB_16,
+            TYPE_LAB_16,
             FLAGS_NOOPTIMIZE | FLAGS_NOCACHE,
         )
         .unwrap();
 
-        // Transform a CMYK value (all zeros = white) should give Lab ≈ (100, 0, 0)
-        let input = [0.0f32, 0.0, 0.0, 0.0];
-        let mut in_buf = [0u8; 16];
-        for (i, &v) in input.iter().enumerate() {
-            in_buf[i * 4..i * 4 + 4].copy_from_slice(&v.to_ne_bytes());
+        // Transform white RGB (0xFFFF, 0xFFFF, 0xFFFF) → Lab
+        let white = 0xFFFFu16;
+        let mut in_buf = [0u8; 6];
+        for i in 0..3 {
+            in_buf[i * 2..i * 2 + 2].copy_from_slice(&white.to_ne_bytes());
         }
-        let mut out_buf = [0u8; 24];
+        let mut out_buf = [0u8; 6];
         xform.do_transform(&in_buf, &mut out_buf, 1);
-        let l = f64::from_ne_bytes(out_buf[0..8].try_into().unwrap());
-        // Lab L* for paper white should be close to 100
-        assert!(l > 50.0, "L* should be > 50, got {}", l);
+        let l_encoded = u16::from_ne_bytes([out_buf[0], out_buf[1]]);
+        // L* encoded: 0xFFFF = 100
+        let l = l_encoded as f64 * 100.0 / 65535.0;
+        assert!(l > 90.0, "L* should be > 90, got {}", l);
     }
 
     // ================================================================
@@ -795,7 +924,6 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn build_k_tone_curve_returns_monotonic() {
         // Build 2-profile CMYK → CMYK chain using ink-limiting device links
         let cmyk_dl1 = roundtrip(
