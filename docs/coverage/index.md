@@ -19,7 +19,7 @@ C版の各ソースファイルに対応するRust実装の関数レベルカバ
 | [cmspack.c](cmspack.md)     | `src/pipeline/pack.rs`              | 2/3     | 2/4      | 部分的 | フォーマッタ基盤は実装済              |
 | [cmsnamed.c](cmsnamed.md)   | `src/pipeline/named.rs`             | 26/29   | -        | 90%    | Wide文字列/NamedColor Stage未実装     |
 | [cmsio0.c](cmsio0.md)       | `src/profile/io.rs`                 | 47/54   | 4/4      | 89%    | Stream系/一部公開APIなし              |
-| [cmsio1.c](cmsio1.md)       | `src/profile/io.rs`                 | 8/9     | 2/5      | 71%    | Sequence未実装                        |
+| [cmsio1.c](cmsio1.md)       | `src/profile/io.rs`                 | 8/9     | 5/5      | 93%    | wchar_t API のみ対象外                |
 | [cmstypes.c](cmstypes.md)   | `src/profile/tag_types.rs`          | -       | 0/9      | 部分的 | 31タグ型実装/plugin系は設計差異       |
 | [cmscnvrt.c](cmscnvrt.md)   | `src/transform/cnvrt.rs`            | 1/3     | 2/3      | 60%    | intent列挙/plugin未実装               |
 | [cmsopt.c](cmsopt.md)       | `src/transform/opt.rs`              | 1/1     | 1/2      | 93%    | plugin登録のみ未実装                  |
@@ -29,7 +29,7 @@ C版の各ソースファイルに対応するRust実装の関数レベルカバ
 | [cmsalpha.c](cmsalpha.md)   | `src/transform/alpha.rs`            | -       | 1/1      | 100%   | 完了                                  |
 | [cmsvirt.c](cmsvirt.md)     | `src/profile/virt.rs`               | 22/22   | -        | 100%   | 完了                                  |
 | [cmsplugin.c](cmsplugin.md) | `src/profile/io.rs`, `src/types.rs` | 28/37   | 2/4      | 73%    | plugin/context管理未実装              |
-| [cmscgats.c](cmscgats.md)   | `src/ext/cgats.rs`                  | 22/38   | -        | 58%    | ファイルI/O/Multi/Cube未実装          |
+| [cmscgats.c](cmscgats.md)   | `src/ext/cgats.rs`                  | 24/38   | -        | 63%    | Multi/Cube未実装                      |
 | [cmsps2.c](cmsps2.md)       | `src/ext/ps2.rs`                    | 2/3     | -        | 67%    | CSA/CRD実装済                         |
 | [cmssm.c](cmssm.md)         | `src/transform/sm.rs`               | 5/5     | -        | 100%   | 完了                                  |
 

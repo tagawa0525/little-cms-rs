@@ -68,6 +68,25 @@ impl It8 {
         })
     }
 
+    /// Load from file.
+    /// C版: `cmsIT8LoadFromFile`
+    pub fn load_from_file(path: &str) -> Result<Self, CmsError> {
+        let text = std::fs::read_to_string(path).map_err(|e| CmsError {
+            code: ErrorCode::File,
+            message: format!("cannot read '{}': {}", path, e),
+        })?;
+        Self::load_from_str(&text)
+    }
+
+    /// Save to file.
+    /// C版: `cmsIT8SaveToFile`
+    pub fn save_to_file(&self, path: &str) -> Result<(), CmsError> {
+        std::fs::write(path, self.save_to_string()).map_err(|e| CmsError {
+            code: ErrorCode::File,
+            message: format!("cannot write '{}': {}", path, e),
+        })
+    }
+
     /// Serialize to CGATS text format.
     pub fn save_to_string(&self) -> String {
         let mut out = String::new();
@@ -664,5 +683,37 @@ END_DATA
         let it8 = It8::load_from_str(text).unwrap();
         assert_eq!(it8.property("ORIGINATOR"), Some("test"));
         assert_eq!(it8.data_row_col_f64(0, 0), Some(42.0));
+    }
+
+    // ================================================================
+    // Phase 13c: File I/O
+    // ================================================================
+
+    #[test]
+    fn file_io_round_trip() {
+        let it8 = It8::load_from_str(SAMPLE_IT8).unwrap();
+        let dir = std::env::temp_dir();
+        let name = format!("test_it8_round_trip_{}.it8", std::process::id());
+        let path = dir.join(name);
+        let path_str = path.to_str().unwrap();
+
+        it8.save_to_file(path_str).unwrap();
+        let loaded = It8::load_from_file(path_str).unwrap();
+
+        assert_eq!(loaded.property("ORIGINATOR"), Some("test instrument"));
+        assert_eq!(loaded.n_rows(), 3);
+        assert_eq!(loaded.data_row_col_f64(0, 1), Some(95.0));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn load_from_nonexistent_file() {
+        let dir = std::env::temp_dir();
+        let name = format!("nonexistent_it8_{}.it8", std::process::id());
+        let path = dir.join(name);
+        assert!(!path.exists());
+        let result = It8::load_from_file(path.to_str().unwrap());
+        assert!(result.is_err());
     }
 }

@@ -197,8 +197,13 @@ pub fn write_tag_type(
             TagTypeSignature::Cicp
         }
         TagData::ProfileSequenceDesc(seq) => {
-            write_profile_sequence_desc_type(io, seq, icc_version)?;
-            TagTypeSignature::ProfileSequenceDesc
+            if tag_sig == TagSignature::ProfileSequenceId {
+                write_profile_sequence_id_type(io, seq)?;
+                TagTypeSignature::ProfileSequenceId
+            } else {
+                write_profile_sequence_desc_type(io, seq, icc_version)?;
+                TagTypeSignature::ProfileSequenceDesc
+            }
         }
         TagData::Vcgt(curves) => {
             write_vcgt_type(io, curves)?;
