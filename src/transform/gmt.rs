@@ -144,12 +144,18 @@ pub fn create_gamut_check_pipeline(
     let lab_stride = crate::pipeline::pack::pixel_size(TYPE_LAB_16);
     let dev_stride = crate::pipeline::pack::pixel_size(device_fmt);
 
+    // Pre-allocate reusable buffers outside the closure to avoid per-node allocation
+    let mut in_buf = vec![0u8; in_stride];
+    let mut lab_buf = vec![0u8; lab_stride];
+    let mut proof_buf = vec![0u8; dev_stride];
+    let mut lab_out_buf = vec![0u8; lab_stride];
+
     // Sample the CLUT with the gamut sampler
     sample_clut_16bit(
         &mut clut,
         |input: &[u16], output: &mut [u16], _cargo: &()| {
             // Pack input as 16-bit bytes for hInput transform
-            let mut in_buf = vec![0u8; in_stride];
+            in_buf.fill(0);
             for (i, &v) in input.iter().enumerate().take(n_input_channels as usize) {
                 let bytes = v.to_ne_bytes();
                 in_buf[i * 2] = bytes[0];
@@ -157,7 +163,6 @@ pub fn create_gamut_check_pipeline(
             }
 
             // hInput: input → Lab16
-            let mut lab_buf = vec![0u8; lab_stride];
             h_input.do_transform(&in_buf, &mut lab_buf, 1);
 
             // Decode Lab16 → CIELab
@@ -167,21 +172,17 @@ pub fn create_gamut_check_pipeline(
             encode_lab16_buf(&lab_in1, &mut lab_buf);
 
             // hForward: Lab → device colorants
-            let mut proof_buf = vec![0u8; dev_stride];
             h_forward.do_transform(&lab_buf, &mut proof_buf, 1);
 
             // hReverse: device → Lab
-            let mut lab_out_buf = vec![0u8; lab_stride];
             h_reverse.do_transform(&proof_buf, &mut lab_out_buf, 1);
             let lab_out1 = decode_lab16_buf(&lab_out_buf);
 
-            // Second round-trip
+            // Second round-trip (reuse existing buffers)
             encode_lab16_buf(&lab_out1, &mut lab_buf);
-            let mut proof2_buf = vec![0u8; dev_stride];
-            h_forward.do_transform(&lab_buf, &mut proof2_buf, 1);
-            let mut lab_out2_buf = vec![0u8; lab_stride];
-            h_reverse.do_transform(&proof2_buf, &mut lab_out2_buf, 1);
-            let lab_out2 = decode_lab16_buf(&lab_out2_buf);
+            h_forward.do_transform(&lab_buf, &mut proof_buf, 1);
+            h_reverse.do_transform(&proof_buf, &mut lab_out_buf, 1);
+            let lab_out2 = decode_lab16_buf(&lab_out_buf);
 
             let lab_in2 = lab_out1;
 
