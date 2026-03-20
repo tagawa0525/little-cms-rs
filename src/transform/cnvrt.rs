@@ -402,7 +402,12 @@ pub fn link_profiles(
 /// Return the list of supported rendering intents.
 /// C版: `cmsGetSupportedIntents`
 pub fn get_supported_intents() -> &'static [(u32, &'static str)] {
-    todo!("Phase 14a-A: not yet implemented")
+    &[
+        (0, "Perceptual"),
+        (1, "Relative Colorimetric"),
+        (2, "Saturation"),
+        (3, "Absolute Colorimetric"),
+    ]
 }
 
 #[cfg(test)]
@@ -654,14 +659,12 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn supported_intents_returns_four_entries() {
         let intents = super::get_supported_intents();
         assert_eq!(intents.len(), 4);
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn supported_intents_contains_standard_intents() {
         let intents = super::get_supported_intents();
         let ids: Vec<u32> = intents.iter().map(|(id, _)| *id).collect();
@@ -672,7 +675,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn supported_intents_have_names() {
         let intents = super::get_supported_intents();
         for &(_, name) in intents {
