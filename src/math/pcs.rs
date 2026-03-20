@@ -155,7 +155,20 @@ pub fn delta_e_bfd(lab1: &CieLab, lab2: &CieLab) -> f64 {
 
     let delta_c = lch2.c - lch1.c;
     let ave_c = (lch1.c + lch2.c) / 2.0;
-    let ave_h = (lch1.h + lch2.h) / 2.0;
+
+    // Circular mean for hue angles (handle 0°/360° wrap-around)
+    let (mut h1, mut h2) = (lch1.h, lch2.h);
+    if (h1 - h2).abs() > 180.0 {
+        if h1 < h2 {
+            h1 += 360.0;
+        } else {
+            h2 += 360.0;
+        }
+    }
+    let mut ave_h = (h1 + h2) / 2.0;
+    if ave_h >= 360.0 {
+        ave_h -= 360.0;
+    }
 
     let de = delta_e(lab1, lab2);
     let dhsq = de * de - (lab2.l - lab1.l).powi(2) - delta_c * delta_c;
