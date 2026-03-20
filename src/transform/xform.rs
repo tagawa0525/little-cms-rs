@@ -369,6 +369,14 @@ impl Transform {
         proofing_intent: u32,
         flags: u32,
     ) -> Result<Self, CmsError> {
+        // Reject mixed float/integer formats (same check as new_multiprofile)
+        if input_format.is_float() != output_format.is_float() {
+            return Err(CmsError {
+                code: ErrorCode::NotSuitable,
+                message: "mixed float/integer formats are not supported".into(),
+            });
+        }
+
         // Without SOFTPROOFING or GAMUTCHECK, fall back to simple transform
         if (flags & (FLAGS_SOFTPROOFING | FLAGS_GAMUTCHECK)) == 0 {
             return Self::new(
