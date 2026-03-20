@@ -2,6 +2,8 @@
 // Transform engine (C版: cmsxform.c)
 // ============================================================================
 
+use std::cell::Cell;
+
 use crate::context::{CmsError, ErrorCode};
 use crate::pipeline::lut::Pipeline;
 use crate::pipeline::pack::{
@@ -111,7 +113,7 @@ pub const DEFAULT_ALARM_CODES: [u16; MAX_CHANNELS] = [
 ];
 
 pub struct Transform {
-    pipeline: Pipeline,
+    pipeline: Option<Pipeline>,
     input_format: PixelFormat,
     output_format: PixelFormat,
     from_input: FormatterIn,
@@ -122,6 +124,8 @@ pub struct Transform {
     rendering_intent: u32,
     gamut_check: Option<Pipeline>,
     alarm_codes: [u16; MAX_CHANNELS],
+    cache_in: Cell<[u16; MAX_CHANNELS]>,
+    cache_out: Cell<[u16; MAX_CHANNELS]>,
 }
 
 impl Transform {
@@ -133,8 +137,9 @@ impl Transform {
         self.output_format
     }
 
-    pub fn pipeline(&self) -> &Pipeline {
-        &self.pipeline
+    /// Returns the pipeline, if any. Null transforms have no pipeline.
+    pub fn pipeline(&self) -> Option<&Pipeline> {
+        self.pipeline.as_ref()
     }
 
     /// Convert this transform into a device link profile.
@@ -143,7 +148,14 @@ impl Transform {
         use crate::pipeline::lut::{Stage, StageLoc};
         use crate::profile::tag_types::TagData;
 
-        let mut lut = self.pipeline.clone();
+        let mut lut = self
+            .pipeline
+            .as_ref()
+            .ok_or_else(|| CmsError {
+                code: ErrorCode::NotSuitable,
+                message: "null transform cannot be converted to device link".into(),
+            })?
+            .clone();
 
         // Lab V2/V4 encoding fix
         if self.entry_color_space == ColorSpaceSignature::LabData
@@ -266,6 +278,11 @@ impl Transform {
             });
         }
 
+        // Null transform: skip pipeline, just unpack→pack
+        if (flags & FLAGS_NULLTRANSFORM) != 0 {
+            return Self::build_null_transform(input_format, output_format, flags);
+        }
+
         // Capture color spaces from first/last profiles
         // Entry is always the first profile's device color space.
         // Exit depends on the last profile's class:
@@ -340,8 +357,8 @@ impl Transform {
             message: format!("no output formatter for format {:#010X}", output_format.0),
         })?;
 
-        Ok(Transform {
-            pipeline,
+        let mut xform = Transform {
+            pipeline: Some(pipeline),
             input_format,
             output_format,
             from_input,
@@ -352,7 +369,16 @@ impl Transform {
             rendering_intent: intent,
             gamut_check: None,
             alarm_codes: DEFAULT_ALARM_CODES,
-        })
+            cache_in: Cell::new([0u16; MAX_CHANNELS]),
+            cache_out: Cell::new([0u16; MAX_CHANNELS]),
+        };
+
+        // Initialize cache if enabled (16-bit non-float only)
+        if !input_format.is_float() && (flags & FLAGS_NOCACHE) == 0 {
+            xform.init_cache();
+        }
+
+        Ok(xform)
     }
 
     /// Create a proofing transform with gamut check support.
@@ -494,8 +520,8 @@ impl Transform {
             message: format!("no output formatter for format {:#010X}", output_format.0),
         })?;
 
-        Ok(Transform {
-            pipeline,
+        let mut xform = Transform {
+            pipeline: Some(pipeline),
             input_format,
             output_format,
             from_input,
@@ -506,7 +532,320 @@ impl Transform {
             rendering_intent: intent,
             gamut_check,
             alarm_codes: DEFAULT_ALARM_CODES,
+            cache_in: Cell::new([0u16; MAX_CHANNELS]),
+            cache_out: Cell::new([0u16; MAX_CHANNELS]),
+        };
+
+        if !input_format.is_float() && (flags & FLAGS_NOCACHE) == 0 {
+            xform.init_cache();
+        }
+
+        Ok(xform)
+    }
+
+    /// Create a transform from multiple profiles with per-profile intent, BPC,
+    /// and adaptation state. Optionally includes gamut check with a separate
+    /// gamut profile.
+    ///
+    /// C版: `cmsCreateExtendedTransform`
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_extended(
+        profiles: &mut [Profile],
+        bpc: &[bool],
+        intents: &[u32],
+        adaptation: &[f64],
+        gamut_profile: Option<&mut Profile>,
+        gamut_pcs_position: usize,
+        input_format: PixelFormat,
+        output_format: PixelFormat,
+        mut flags: u32,
+    ) -> Result<Self, CmsError> {
+        let n = profiles.len();
+        if n == 0 || n > 255 {
+            return Err(CmsError {
+                code: ErrorCode::Range,
+                message: format!("Wrong number of profiles. 1..255 expected, {n} found."),
+            });
+        }
+
+        // Reject mixed float/integer
+        if input_format.is_float() != output_format.is_float() {
+            return Err(CmsError {
+                code: ErrorCode::NotSuitable,
+                message: "mixed float/integer formats are not supported".into(),
+            });
+        }
+
+        // Float transforms always disable cache
+        if input_format.is_float() || output_format.is_float() {
+            flags |= FLAGS_NOCACHE;
+        }
+
+        // Null transform: skip pipeline, just unpack→pack.
+        // This path does not require per-profile rendering intents.
+        if (flags & FLAGS_NULLTRANSFORM) != 0 {
+            return Self::build_null_transform(input_format, output_format, flags);
+        }
+
+        // Validate per-profile slice lengths
+        if intents.len() != n || bpc.len() != n || adaptation.len() != n {
+            return Err(CmsError {
+                code: ErrorCode::Range,
+                message: format!(
+                    "Per-profile arrays must have {n} elements: intents={}, bpc={}, adaptation={}",
+                    intents.len(),
+                    bpc.len(),
+                    adaptation.len()
+                ),
+            });
+        }
+
+        let last_intent = intents[n - 1];
+
+        // Validate gamut check parameters
+        if (flags & FLAGS_GAMUTCHECK) != 0 {
+            if gamut_profile.is_none() {
+                flags &= !FLAGS_GAMUTCHECK;
+            } else if gamut_pcs_position == 0 || gamut_pcs_position >= n {
+                return Err(CmsError {
+                    code: ErrorCode::Range,
+                    message: format!("Wrong gamut PCS position '{gamut_pcs_position}'"),
+                });
+            }
+        }
+
+        // Determine entry/exit color spaces
+        let entry_color_space = profiles[0].header.color_space;
+        let last = &profiles[n - 1];
+        let last_class = last.header.device_class;
+        let exit_color_space = if last_class == ProfileClassSignature::Link
+            || last_class == ProfileClassSignature::Abstract
+            || last_class == ProfileClassSignature::Input
+        {
+            last.header.pcs
+        } else {
+            last.header.color_space
+        };
+
+        // Detect linear RGB 16-bit input → disable optimization (γ < 1.6)
+        if entry_color_space == ColorSpaceSignature::RgbData
+            && input_format.bytes() == 2
+            && (flags & FLAGS_NOOPTIMIZE) == 0
+        {
+            let gamma = super::gmt::detect_rgb_profile_gamma(&mut profiles[0], 0.1);
+            if gamma > 0.0 && gamma < 1.6 {
+                flags |= FLAGS_NOOPTIMIZE;
+            }
+        }
+
+        // Build pipeline with per-profile arrays
+        let mut bpc_owned: Vec<bool> = bpc.to_vec();
+        let mut pipeline = cnvrt::link_profiles(profiles, intents, &mut bpc_owned, adaptation)?;
+
+        // Optimize
+        let mut opt_flags = flags;
+        super::opt::optimize_pipeline(
+            &mut pipeline,
+            last_intent,
+            &mut opt_flags,
+            input_format.0,
+            output_format.0,
+        );
+
+        // Validate channels
+        if input_format.channels() != pipeline.input_channels() {
+            return Err(CmsError {
+                code: ErrorCode::ColorspaceCheck,
+                message: format!(
+                    "input format channels ({}) != pipeline input channels ({})",
+                    input_format.channels(),
+                    pipeline.input_channels()
+                ),
+            });
+        }
+        if output_format.channels() != pipeline.output_channels() {
+            return Err(CmsError {
+                code: ErrorCode::ColorspaceCheck,
+                message: format!(
+                    "output format channels ({}) != pipeline output channels ({})",
+                    output_format.channels(),
+                    pipeline.output_channels()
+                ),
+            });
+        }
+
+        // Select formatters
+        let pack_flags = if input_format.is_float() {
+            CMS_PACK_FLAGS_FLOAT
+        } else {
+            CMS_PACK_FLAGS_16BITS
+        };
+        let from_input = find_formatter_in(input_format, pack_flags).ok_or_else(|| CmsError {
+            code: ErrorCode::NotSuitable,
+            message: format!("no input formatter for format {:#010X}", input_format.0),
+        })?;
+        let to_output = find_formatter_out(output_format, pack_flags).ok_or_else(|| CmsError {
+            code: ErrorCode::NotSuitable,
+            message: format!("no output formatter for format {:#010X}", output_format.0),
+        })?;
+
+        // Build gamut check pipeline if requested
+        let gamut_check = if let Some(gamut) = gamut_profile {
+            if (flags & FLAGS_GAMUTCHECK) != 0 {
+                Some(super::gmt::create_gamut_check_pipeline(
+                    profiles,
+                    bpc,
+                    intents,
+                    adaptation,
+                    gamut_pcs_position,
+                    gamut,
+                )?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let mut xform = Transform {
+            pipeline: Some(pipeline),
+            input_format,
+            output_format,
+            from_input,
+            to_output,
+            flags,
+            entry_color_space,
+            exit_color_space,
+            rendering_intent: last_intent,
+            gamut_check,
+            alarm_codes: DEFAULT_ALARM_CODES,
+            cache_in: Cell::new([0u16; MAX_CHANNELS]),
+            cache_out: Cell::new([0u16; MAX_CHANNELS]),
+        };
+
+        if !input_format.is_float() && (flags & FLAGS_NOCACHE) == 0 {
+            xform.init_cache();
+        }
+
+        Ok(xform)
+    }
+
+    /// Change the pixel format of an existing transform without rebuilding
+    /// the pipeline. Only works on 16-bit (non-float) transforms.
+    ///
+    /// C版: `cmsChangeBuffersFormat`
+    pub fn change_buffers_format(
+        &mut self,
+        input_format: PixelFormat,
+        output_format: PixelFormat,
+    ) -> Result<(), CmsError> {
+        // Float formats not supported
+        if input_format.is_float() || output_format.is_float() {
+            return Err(CmsError {
+                code: ErrorCode::NotSuitable,
+                message: "change_buffers_format only works with 16-bit precision".into(),
+            });
+        }
+
+        // Validate channel counts against the existing pipeline
+        if let Some(ref pipe) = self.pipeline {
+            if input_format.channels() != pipe.input_channels() {
+                return Err(CmsError {
+                    code: ErrorCode::ColorspaceCheck,
+                    message: format!(
+                        "input format channels ({}) != pipeline input channels ({})",
+                        input_format.channels(),
+                        pipe.input_channels()
+                    ),
+                });
+            }
+            if output_format.channels() != pipe.output_channels() {
+                return Err(CmsError {
+                    code: ErrorCode::ColorspaceCheck,
+                    message: format!(
+                        "output format channels ({}) != pipeline output channels ({})",
+                        output_format.channels(),
+                        pipe.output_channels()
+                    ),
+                });
+            }
+        }
+
+        let from_input =
+            find_formatter_in(input_format, CMS_PACK_FLAGS_16BITS).ok_or_else(|| CmsError {
+                code: ErrorCode::NotSuitable,
+                message: format!("no input formatter for format {:#010X}", input_format.0),
+            })?;
+        let to_output =
+            find_formatter_out(output_format, CMS_PACK_FLAGS_16BITS).ok_or_else(|| CmsError {
+                code: ErrorCode::NotSuitable,
+                message: format!("no output formatter for format {:#010X}", output_format.0),
+            })?;
+
+        self.input_format = input_format;
+        self.output_format = output_format;
+        self.from_input = from_input;
+        self.to_output = to_output;
+        Ok(())
+    }
+
+    /// Build a null transform (unpack→pack only, no pipeline).
+    fn build_null_transform(
+        input_format: PixelFormat,
+        output_format: PixelFormat,
+        flags: u32,
+    ) -> Result<Self, CmsError> {
+        let pack_flags = if input_format.is_float() {
+            CMS_PACK_FLAGS_FLOAT
+        } else {
+            CMS_PACK_FLAGS_16BITS
+        };
+        let from_input = find_formatter_in(input_format, pack_flags).ok_or_else(|| CmsError {
+            code: ErrorCode::NotSuitable,
+            message: format!("no input formatter for format {:#010X}", input_format.0),
+        })?;
+        let to_output = find_formatter_out(output_format, pack_flags).ok_or_else(|| CmsError {
+            code: ErrorCode::NotSuitable,
+            message: format!("no output formatter for format {:#010X}", output_format.0),
+        })?;
+
+        Ok(Transform {
+            pipeline: None,
+            input_format,
+            output_format,
+            from_input,
+            to_output,
+            flags,
+            entry_color_space: ColorSpaceSignature::from_pixel_type(input_format.colorspace())
+                .unwrap_or(ColorSpaceSignature::RgbData),
+            exit_color_space: ColorSpaceSignature::from_pixel_type(output_format.colorspace())
+                .unwrap_or(ColorSpaceSignature::RgbData),
+            rendering_intent: 0,
+            gamut_check: None,
+            alarm_codes: DEFAULT_ALARM_CODES,
+            cache_in: Cell::new([0u16; MAX_CHANNELS]),
+            cache_out: Cell::new([0u16; MAX_CHANNELS]),
         })
+    }
+
+    /// Initialize the 1-pixel cache by evaluating input=0.
+    fn init_cache(&mut self) {
+        let zero_in = [0u16; MAX_CHANNELS];
+        let mut zero_out = [0u16; MAX_CHANNELS];
+        if let Some(ref gamut) = self.gamut_check {
+            let mut w_gamut = [0u16; MAX_CHANNELS];
+            gamut.eval_16(&zero_in, &mut w_gamut);
+            if w_gamut[0] >= 1 {
+                let n_out = self.output_format.channels() as usize;
+                zero_out[..n_out].copy_from_slice(&self.alarm_codes[..n_out]);
+            } else if let Some(ref pipe) = self.pipeline {
+                pipe.eval_16(&zero_in, &mut zero_out);
+            }
+        } else if let Some(ref pipe) = self.pipeline {
+            pipe.eval_16(&zero_in, &mut zero_out);
+        }
+        self.cache_in.set(zero_in);
+        self.cache_out.set(zero_out);
     }
 
     /// Transform a buffer of pixels.
@@ -543,7 +882,6 @@ impl Transform {
     ) {
         let in_stride = pixel_size(self.input_format);
         let out_stride = pixel_size(self.output_format);
-        // Clamp to buffer capacity
         let max_in = if in_stride > 0 {
             input.len() / in_stride
         } else {
@@ -558,23 +896,42 @@ impl Transform {
         let mut w_in = [0u16; MAX_CHANNELS];
         let mut w_out = [0u16; MAX_CHANNELS];
 
+        let is_null = self.pipeline.is_none();
+        let use_cache = !is_null && (self.flags & FLAGS_NOCACHE) == 0;
+
         for i in 0..count {
             let in_offset = i * in_stride;
             let out_offset = i * out_stride;
             unroll(self.input_format, &mut w_in, &input[in_offset..], 0);
 
-            if let Some(ref gamut) = self.gamut_check {
+            if is_null {
+                // Null transform: copy only active channels, clear rest
+                w_out = [0u16; MAX_CHANNELS];
+                let n_copy = (self.input_format.channels() as usize)
+                    .min(self.output_format.channels() as usize);
+                w_out[..n_copy].copy_from_slice(&w_in[..n_copy]);
+            } else if use_cache && w_in == self.cache_in.get() {
+                // Cache hit
+                w_out = self.cache_out.get();
+            } else if let Some(ref gamut) = self.gamut_check {
                 let mut w_gamut = [0u16; MAX_CHANNELS];
                 gamut.eval_16(&w_in, &mut w_gamut);
                 if w_gamut[0] >= 1 {
-                    // Out of gamut: use alarm codes
-                    let n_out = self.pipeline.output_channels() as usize;
+                    let n_out = self.output_format.channels() as usize;
                     w_out[..n_out].copy_from_slice(&self.alarm_codes[..n_out]);
                 } else {
-                    self.pipeline.eval_16(&w_in, &mut w_out);
+                    self.pipeline.as_ref().unwrap().eval_16(&w_in, &mut w_out);
+                }
+                if use_cache {
+                    self.cache_in.set(w_in);
+                    self.cache_out.set(w_out);
                 }
             } else {
-                self.pipeline.eval_16(&w_in, &mut w_out);
+                self.pipeline.as_ref().unwrap().eval_16(&w_in, &mut w_out);
+                if use_cache {
+                    self.cache_in.set(w_in);
+                    self.cache_out.set(w_out);
+                }
             }
 
             pack(self.output_format, &w_out, &mut output[out_offset..], 0);
@@ -605,12 +962,20 @@ impl Transform {
         let mut w_in = [0.0f32; MAX_CHANNELS];
         let mut w_out = [0.0f32; MAX_CHANNELS];
 
+        let is_null = self.pipeline.is_none();
+
         for i in 0..count {
             let in_offset = i * in_stride;
             let out_offset = i * out_stride;
             unroll(self.input_format, &mut w_in, &input[in_offset..], 0);
 
-            if let Some(ref gamut) = self.gamut_check {
+            if is_null {
+                // Null transform: copy only active channels, clear rest
+                w_out = [0.0f32; MAX_CHANNELS];
+                let n_copy = (self.input_format.channels() as usize)
+                    .min(self.output_format.channels() as usize);
+                w_out[..n_copy].copy_from_slice(&w_in[..n_copy]);
+            } else if let Some(ref gamut) = self.gamut_check {
                 let mut out_of_gamut = [0.0f32; MAX_CHANNELS];
                 gamut.eval_float(&w_in, &mut out_of_gamut);
                 if out_of_gamut[0] > 0.0 {
@@ -618,10 +983,16 @@ impl Transform {
                         *w = alarm as f32 / 65535.0;
                     }
                 } else {
-                    self.pipeline.eval_float(&w_in, &mut w_out);
+                    self.pipeline
+                        .as_ref()
+                        .unwrap()
+                        .eval_float(&w_in, &mut w_out);
                 }
             } else {
-                self.pipeline.eval_float(&w_in, &mut w_out);
+                self.pipeline
+                    .as_ref()
+                    .unwrap()
+                    .eval_float(&w_in, &mut w_out);
             }
 
             pack(self.output_format, &w_out, &mut output[out_offset..], 0);
@@ -1005,5 +1376,240 @@ mod tests {
                 output[i]
             );
         }
+    }
+
+    // ================================================================
+    // Phase 11: Null transform
+    // ================================================================
+
+    #[test]
+
+    fn test_null_transform_16bit() {
+        // FLAGS_NULLTRANSFORM: unpack→pack without pipeline evaluation
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let xform =
+            Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_16, 0, FLAGS_NULLTRANSFORM).unwrap();
+
+        let input: [u8; 3] = [128, 64, 255];
+        let mut output = [0u8; 6]; // RGB_16 = 3 × 2 bytes
+        xform.do_transform(&input, &mut output, 1);
+
+        // Null transform: unpack 8-bit → internal 16-bit → pack 16-bit
+        // 128 → FROM_8_TO_16 = (128*65535+128)/255 = 0x8080
+        let r = u16::from_ne_bytes([output[0], output[1]]);
+        let g = u16::from_ne_bytes([output[2], output[3]]);
+        let b = u16::from_ne_bytes([output[4], output[5]]);
+        assert!(r > 0x7000, "R too low: {r:#06X}");
+        assert!(g > 0x3000, "G too low: {g:#06X}");
+        assert!(b > 0xF000, "B too low: {b:#06X}");
+    }
+
+    #[test]
+
+    fn test_null_transform_float() {
+        // Float null transform: unpack→pack without pipeline
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let xform =
+            Transform::new(src, TYPE_RGB_FLT, dst, TYPE_RGB_FLT, 0, FLAGS_NULLTRANSFORM).unwrap();
+
+        let input: [u8; 12] = {
+            let mut buf = [0u8; 12];
+            buf[0..4].copy_from_slice(&0.5f32.to_ne_bytes());
+            buf[4..8].copy_from_slice(&0.25f32.to_ne_bytes());
+            buf[8..12].copy_from_slice(&1.0f32.to_ne_bytes());
+            buf
+        };
+        let mut output = [0u8; 12];
+        xform.do_transform(&input, &mut output, 1);
+
+        let r = f32::from_ne_bytes(output[0..4].try_into().unwrap());
+        let g = f32::from_ne_bytes(output[4..8].try_into().unwrap());
+        let b = f32::from_ne_bytes(output[8..12].try_into().unwrap());
+        assert!((r - 0.5).abs() < 0.01, "R: {r}");
+        assert!((g - 0.25).abs() < 0.01, "G: {g}");
+        assert!((b - 1.0).abs() < 0.01, "B: {b}");
+    }
+
+    // ================================================================
+    // Phase 11: 1-pixel cache
+    // ================================================================
+
+    #[test]
+
+    fn test_cache_hit_returns_same_output() {
+        // Transform with cache (no FLAGS_NOCACHE): same input twice → same output
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut build_rgb_profile());
+        let xform = Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_8, 1, 0).unwrap();
+
+        let input: [u8; 3] = [200, 100, 50];
+        let mut output1 = [0u8; 3];
+        let mut output2 = [0u8; 3];
+        xform.do_transform(&input, &mut output1, 1);
+        xform.do_transform(&input, &mut output2, 1);
+
+        assert_eq!(
+            output1, output2,
+            "cache hit should produce identical output"
+        );
+    }
+
+    #[test]
+
+    fn test_cache_miss_updates_output() {
+        // Transform with cache: different inputs → different outputs (cache miss)
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut build_rgb_profile());
+        let xform = Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_8, 1, 0).unwrap();
+
+        let input1: [u8; 3] = [200, 100, 50];
+        let input2: [u8; 3] = [50, 100, 200];
+        let mut output1 = [0u8; 3];
+        let mut output2 = [0u8; 3];
+        xform.do_transform(&input1, &mut output1, 1);
+        xform.do_transform(&input2, &mut output2, 1);
+
+        // Different inputs must produce different outputs
+        assert_ne!(
+            output1, output2,
+            "different inputs should produce different outputs"
+        );
+    }
+
+    // ================================================================
+    // Phase 11: new_extended
+    // ================================================================
+
+    #[test]
+
+    fn test_new_extended_basic() {
+        // Per-profile intent/BPC with 2 profiles
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+
+        let xform = Transform::new_extended(
+            &mut [src, dst],
+            &[false, false],
+            &[1, 1], // relative colorimetric for both
+            &[1.0, 1.0],
+            None, // no gamut profile
+            0,    // no gamut PCS position
+            TYPE_RGB_8,
+            TYPE_RGB_8,
+            0,
+        )
+        .unwrap();
+
+        let input: [u8; 3] = [128, 128, 128];
+        let mut output = [0u8; 3];
+        xform.do_transform(&input, &mut output, 1);
+
+        // Same profile → approximately identity
+        for i in 0..3 {
+            assert!(
+                (output[i] as i16 - input[i] as i16).unsigned_abs() <= 5,
+                "channel {i}: input={}, output={}",
+                input[i],
+                output[i]
+            );
+        }
+    }
+
+    #[test]
+
+    fn test_new_extended_gamut_check() {
+        // Extended transform with gamut check
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+
+        // Create narrow gamut proof profile
+        let gamma_curve = ToneCurve::build_gamma(2.2).unwrap();
+        let trc = [gamma_curve.clone(), gamma_curve.clone(), gamma_curve];
+        let d65 = CieXyY {
+            x: 0.3127,
+            y: 0.3290,
+            big_y: 1.0,
+        };
+        let narrow_primaries = CieXyYTriple {
+            red: CieXyY {
+                x: 0.40,
+                y: 0.35,
+                big_y: 1.0,
+            },
+            green: CieXyY {
+                x: 0.30,
+                y: 0.40,
+                big_y: 1.0,
+            },
+            blue: CieXyY {
+                x: 0.25,
+                y: 0.25,
+                big_y: 1.0,
+            },
+        };
+        let mut narrow = Profile::new_rgb(&d65, &narrow_primaries, &trc);
+        let mut gamut = roundtrip(&mut narrow);
+
+        let xform = Transform::new_extended(
+            &mut [src, dst],
+            &[false, false],
+            &[0, 0], // perceptual
+            &[1.0, 1.0],
+            Some(&mut gamut),
+            1,
+            TYPE_RGB_8,
+            TYPE_RGB_8,
+            FLAGS_SOFTPROOFING | FLAGS_GAMUTCHECK,
+        )
+        .unwrap();
+
+        // Saturated red → out of narrow gamut → alarm codes
+        let input: [u8; 3] = [255, 0, 0];
+        let mut output = [0u8; 3];
+        xform.do_transform(&input, &mut output, 1);
+
+        let alarm_byte = (DEFAULT_ALARM_CODES[0] >> 8) as u8;
+        assert_eq!(
+            output[0], alarm_byte,
+            "should be alarm code, got {}",
+            output[0]
+        );
+    }
+
+    // ================================================================
+    // Phase 11: change_buffers_format
+    // ================================================================
+
+    #[test]
+
+    fn test_change_buffers_format_basic() {
+        // Create transform with RGB_8, then change to RGB_16
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let mut xform = Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_8, 1, 0).unwrap();
+
+        // Change to 16-bit output
+        assert!(xform.change_buffers_format(TYPE_RGB_8, TYPE_RGB_16).is_ok());
+
+        let input: [u8; 3] = [128, 128, 128];
+        let mut output = [0u8; 6]; // now RGB_16
+        xform.do_transform(&input, &mut output, 1);
+
+        let r = u16::from_ne_bytes([output[0], output[1]]);
+        assert!(r > 0x2000, "R too low after format change: {r:#06X}");
+    }
+
+    #[test]
+
+    fn test_change_buffers_format_rejects_float() {
+        // Float formats are not supported by change_buffers_format
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let mut xform = Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_8, 1, 0).unwrap();
+
+        let result = xform.change_buffers_format(TYPE_RGB_FLT, TYPE_RGB_FLT);
+        assert!(result.is_err(), "float format should be rejected");
     }
 }
