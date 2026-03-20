@@ -576,12 +576,26 @@ impl Transform {
             flags |= FLAGS_NOCACHE;
         }
 
-        let last_intent = intents[n - 1];
-
-        // Null transform: skip pipeline, just unpack→pack
+        // Null transform: skip pipeline, just unpack→pack.
+        // This path does not require per-profile rendering intents.
         if (flags & FLAGS_NULLTRANSFORM) != 0 {
             return Self::build_null_transform(input_format, output_format, flags);
         }
+
+        // Validate per-profile slice lengths
+        if intents.len() != n || bpc.len() != n || adaptation.len() != n {
+            return Err(CmsError {
+                code: ErrorCode::Range,
+                message: format!(
+                    "Per-profile arrays must have {n} elements: intents={}, bpc={}, adaptation={}",
+                    intents.len(),
+                    bpc.len(),
+                    adaptation.len()
+                ),
+            });
+        }
+
+        let last_intent = intents[n - 1];
 
         // Validate gamut check parameters
         if (flags & FLAGS_GAMUTCHECK) != 0 {
