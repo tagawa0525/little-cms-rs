@@ -235,6 +235,36 @@ impl It8 {
         self.set_data_row_col(row, col, value);
     }
 
+    /// Set a property as a floating-point value.
+    /// C版: `cmsIT8SetPropertyDbl`
+    pub fn set_property_f64(&mut self, _key: &str, _value: f64) {
+        todo!("Phase 14a-D: not yet implemented")
+    }
+
+    /// Set a data cell by row/col as a floating-point value.
+    /// C版: `cmsIT8SetDataRowColDbl`
+    pub fn set_data_row_col_f64(&mut self, _row: usize, _col: usize, _value: f64) {
+        todo!("Phase 14a-D: not yet implemented")
+    }
+
+    /// Set a data cell by patch name and sample as a floating-point value.
+    /// C版: `cmsIT8SetDataDbl`
+    pub fn set_data_f64(&mut self, _patch: &str, _sample: &str, _value: f64) {
+        todo!("Phase 14a-D: not yet implemented")
+    }
+
+    /// Get the patch name (SAMPLE_ID) for a given row.
+    /// C版: `cmsIT8GetPatchName`
+    pub fn get_patch_name(&self, _row: usize) -> Option<&str> {
+        todo!("Phase 14a-D: not yet implemented")
+    }
+
+    /// Set the format string used for floating-point data output.
+    /// C版: `cmsIT8DefineDblFormat`
+    pub fn define_dbl_format(&mut self, _fmt: &str) {
+        todo!("Phase 14a-D: not yet implemented")
+    }
+
     fn find_patch(&self, patch: &str) -> Option<usize> {
         let t = &self.tables[self.current];
         let sid = t.sample_id_col;
@@ -715,5 +745,63 @@ END_DATA
         assert!(!path.exists());
         let result = It8::load_from_file(path.to_str().unwrap());
         assert!(result.is_err());
+    }
+
+    // ================================================================
+    // Phase 14a-D: Numeric setter/getter APIs
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn set_property_f64_round_trip() {
+        let mut it8 = It8::new();
+        it8.set_property_f64("MY_VALUE", 1.234);
+        let val = it8.property_f64("MY_VALUE").unwrap();
+        assert!((val - 1.234).abs() < 1e-10);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn set_data_row_col_f64_round_trip() {
+        let mut it8 = It8::new();
+        it8.set_data_format(0, "SAMPLE_ID");
+        it8.set_data_format(1, "VALUE");
+        it8.set_data_row_col(0, 0, "P1");
+        it8.set_data_row_col_f64(0, 1, 42.5);
+        assert_eq!(it8.data_row_col_f64(0, 1), Some(42.5));
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn set_data_f64_round_trip() {
+        let mut it8 = It8::new();
+        it8.set_data_format(0, "SAMPLE_ID");
+        it8.set_data_format(1, "MEASURE");
+        it8.set_data_row_col(0, 0, "P1");
+        it8.set_data_f64("P1", "MEASURE", 99.9);
+        assert_eq!(it8.data_f64("P1", "MEASURE"), Some(99.9));
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn get_patch_name_returns_sample_id() {
+        let it8 = It8::load_from_str(SAMPLE_IT8).unwrap();
+        assert_eq!(it8.get_patch_name(0), Some("A1"));
+        assert_eq!(it8.get_patch_name(1), Some("A2"));
+        assert_eq!(it8.get_patch_name(2), Some("A3"));
+        assert_eq!(it8.get_patch_name(3), None);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn define_dbl_format_affects_output() {
+        let mut it8 = It8::new();
+        it8.set_data_format(0, "SAMPLE_ID");
+        it8.set_data_format(1, "VALUE");
+        it8.define_dbl_format("{:.2}");
+        it8.set_data_row_col(0, 0, "P1");
+        it8.set_data_row_col_f64(0, 1, 1.23456);
+        // With format "{:.2}", the value should be written as "1.23"
+        assert_eq!(it8.data_row_col(0, 1), Some("1.23"));
     }
 }

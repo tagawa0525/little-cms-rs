@@ -13,6 +13,14 @@ use crate::profile::tag_types::TagData;
 use crate::types::*;
 use std::fmt::Write;
 
+/// PostScript resource type selector.
+/// C版: `cmsPSResourceType`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostScriptResourceType {
+    Csa,
+    Crd,
+}
+
 // ============================================================================
 // Public API
 // ============================================================================
@@ -37,6 +45,17 @@ pub fn get_postscript_csa(
     }
 
     generate_csa_lut(profile, intent)
+}
+
+/// Dispatch to CSA or CRD generation based on resource type.
+/// C版: `cmsGetPostScriptColorResource`
+pub fn get_postscript_color_resource(
+    _resource_type: PostScriptResourceType,
+    _profile: &mut Profile,
+    _intent: u32,
+    _flags: u32,
+) -> Result<Vec<u8>, CmsError> {
+    todo!("Phase 14a-B: not yet implemented")
 }
 
 /// Generate a PostScript Color Rendering Dictionary (CRD) from a profile.
@@ -433,5 +452,35 @@ mod tests {
         let mut p = roundtrip(&mut Profile::new_srgb());
         let crd = get_postscript_crd(&mut p, 0, 0).unwrap();
         assert!(crd.len() > 50, "CRD should have meaningful content");
+    }
+
+    // ========================================================================
+    // get_postscript_color_resource (Phase 14a-B)
+    // ========================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn color_resource_csa_dispatches() {
+        let mut p = roundtrip(&mut Profile::new_srgb());
+        let result =
+            get_postscript_color_resource(PostScriptResourceType::Csa, &mut p, 0, 0).unwrap();
+        let text = String::from_utf8(result).unwrap();
+        assert!(
+            text.contains("/CIEBased"),
+            "CSA resource should contain CIEBased"
+        );
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn color_resource_crd_dispatches() {
+        let mut p = roundtrip(&mut Profile::new_srgb());
+        let result =
+            get_postscript_color_resource(PostScriptResourceType::Crd, &mut p, 0, 0).unwrap();
+        let text = String::from_utf8(result).unwrap();
+        assert!(
+            text.contains("/ColorRenderingType"),
+            "CRD resource should contain ColorRenderingType"
+        );
     }
 }
