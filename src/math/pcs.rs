@@ -114,6 +114,26 @@ pub fn delta_e(lab1: &CieLab, lab2: &CieLab) -> f64 {
     (dl * dl + da * da + db * db).sqrt()
 }
 
+/// CIE94 DeltaE. C版: `cmsCIE94DeltaE`
+pub fn delta_e_cie94(_lab1: &CieLab, _lab2: &CieLab) -> f64 {
+    todo!()
+}
+
+/// BFD(1:1) DeltaE. C版: `cmsBFDdeltaE`
+pub fn delta_e_bfd(_lab1: &CieLab, _lab2: &CieLab) -> f64 {
+    todo!()
+}
+
+/// CMC(l:c) DeltaE. C版: `cmsCMCdeltaE`
+pub fn delta_e_cmc(_lab1: &CieLab, _lab2: &CieLab, _l: f64, _c: f64) -> f64 {
+    todo!()
+}
+
+/// CIEDE2000 DeltaE. C版: `cmsCIE2000DeltaE`
+pub fn delta_e_ciede2000(_lab1: &CieLab, _lab2: &CieLab, _kl: f64, _kc: f64, _kh: f64) -> f64 {
+    todo!()
+}
+
 /// Encode XYZ to ICC 16-bit PCS encoding (u1Fixed15Number for XYZ).
 pub fn float_to_pcs_encoded_xyz(xyz: &CieXyz) -> [u16; 3] {
     let encode = |v: f64| -> u16 {
@@ -386,5 +406,150 @@ mod tests {
         assert!((back.l - lab.l).abs() < 0.01);
         assert!((back.a - lab.a).abs() < 0.01);
         assert!((back.b - lab.b).abs() < 0.01);
+    }
+
+    // ================================================================
+    // Phase 12: DeltaE extensions
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn test_delta_e_cie94() {
+        let lab1 = CieLab {
+            l: 50.0,
+            a: 2.6772,
+            b: -79.7751,
+        };
+        let lab2 = CieLab {
+            l: 50.0,
+            a: 0.0,
+            b: -82.7485,
+        };
+        let de = delta_e_cie94(&lab1, &lab2);
+        // CIE94 should give a value close to CIE76 but weighted
+        assert!(de > 0.0, "CIE94 should be positive");
+        assert!(de < 10.0, "CIE94 should be reasonable: {de}");
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn test_delta_e_cie94_identical() {
+        let lab = CieLab {
+            l: 50.0,
+            a: 25.0,
+            b: -10.0,
+        };
+        let de = delta_e_cie94(&lab, &lab);
+        assert!(de.abs() < 1e-10, "identical colors: dE={de}");
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn test_delta_e_bfd() {
+        let lab1 = CieLab {
+            l: 50.0,
+            a: 2.6772,
+            b: -79.7751,
+        };
+        let lab2 = CieLab {
+            l: 50.0,
+            a: 0.0,
+            b: -82.7485,
+        };
+        let de = delta_e_bfd(&lab1, &lab2);
+        assert!(de > 0.0, "BFD should be positive");
+        assert!(de < 10.0, "BFD should be reasonable: {de}");
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn test_delta_e_cmc() {
+        let lab1 = CieLab {
+            l: 50.0,
+            a: 25.0,
+            b: -10.0,
+        };
+        let lab2 = CieLab {
+            l: 55.0,
+            a: 30.0,
+            b: -15.0,
+        };
+        let de = delta_e_cmc(&lab1, &lab2, 1.0, 1.0);
+        assert!(de > 0.0, "CMC should be positive");
+        // With l=c=1 and moderate differences, CMC typically gives single-digit values
+        assert!(de < 20.0, "CMC should be reasonable: {de}");
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn test_delta_e_cmc_both_black() {
+        let lab1 = CieLab {
+            l: 0.0,
+            a: 0.0,
+            b: 0.0,
+        };
+        let lab2 = CieLab {
+            l: 0.0,
+            a: 0.0,
+            b: 0.0,
+        };
+        let de = delta_e_cmc(&lab1, &lab2, 1.0, 1.0);
+        assert_eq!(de, 0.0, "both black → dE=0");
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn test_delta_e_ciede2000() {
+        // Reference pair from Sharma et al. (2005) Table 1, pair #1
+        let lab1 = CieLab {
+            l: 50.0,
+            a: 2.6772,
+            b: -79.7751,
+        };
+        let lab2 = CieLab {
+            l: 50.0,
+            a: 0.0,
+            b: -82.7485,
+        };
+        let de = delta_e_ciede2000(&lab1, &lab2, 1.0, 1.0, 1.0);
+        // Expected ≈ 2.0425
+        assert!(
+            (de - 2.0425).abs() < 0.005,
+            "CIEDE2000 pair #1: expected ~2.0425, got {de}"
+        );
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn test_delta_e_ciede2000_identical() {
+        let lab = CieLab {
+            l: 50.0,
+            a: 25.0,
+            b: -10.0,
+        };
+        let de = delta_e_ciede2000(&lab, &lab, 1.0, 1.0, 1.0);
+        assert!(de.abs() < 1e-10, "identical colors: dE={de}");
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn test_delta_e_ciede2000_pair2() {
+        // Sharma et al. pair #7
+        let lab1 = CieLab {
+            l: 50.0,
+            a: 2.4900,
+            b: -0.0010,
+        };
+        let lab2 = CieLab {
+            l: 50.0,
+            a: -2.4900,
+            b: 0.0009,
+        };
+        let de = delta_e_ciede2000(&lab1, &lab2, 1.0, 1.0, 1.0);
+        // Expected ≈ 4.8045
+        assert!(
+            (de - 4.8045).abs() < 0.005,
+            "CIEDE2000 pair #7: expected ~4.8045, got {de}"
+        );
     }
 }
