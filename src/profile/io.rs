@@ -8,7 +8,7 @@ use crate::curves::gamma::ToneCurve;
 use crate::curves::wtpnt;
 use crate::math::mtrx::Mat3;
 use crate::pipeline::lut::{Pipeline, Stage, StageLoc};
-use crate::pipeline::named::{Mlu, ProfileSequenceDesc, ProfileSequenceDescEntry};
+use crate::pipeline::named::{Mlu, ProfileSequenceDesc};
 use crate::profile::tag_types::TagData;
 use crate::types::{
     CieXyz, ColorSpaceSignature, D50_X, D50_Y, D50_Z, DateTimeNumber, EncodedXyzNumber,
@@ -666,21 +666,83 @@ impl Profile {
     /// Read profile sequence from Desc and Id tags, merging if both exist.
     /// C版: `_cmsReadProfileSequence`
     pub fn read_profile_sequence(&mut self) -> Option<ProfileSequenceDesc> {
-        let _ = self;
-        todo!()
+        let desc = match self.read_tag(TagSignature::ProfileSequenceDesc) {
+            Ok(TagData::ProfileSequenceDesc(s)) => Some(s),
+            _ => None,
+        };
+        let id = match self.read_tag(TagSignature::ProfileSequenceId) {
+            Ok(TagData::ProfileSequenceDesc(s)) => Some(s),
+            _ => None,
+        };
+
+        match (desc, id) {
+            (None, None) => None,
+            (Some(d), None) => Some(d),
+            (None, Some(i)) => Some(i),
+            (Some(d), Some(i)) => {
+                if d.len() != i.len() {
+                    return Some(d);
+                }
+                let mut merged = d;
+                for idx in 0..merged.len() {
+                    if let (Some(dst), Some(src)) = (merged.get_mut(idx), i.get(idx)) {
+                        dst.profile_id = src.profile_id;
+                        dst.description = src.description.clone();
+                    }
+                }
+                Some(merged)
+            }
+        }
     }
 
     /// Write profile sequence to Desc tag (and Id tag if v4+).
     /// C版: `_cmsWriteProfileSequence`
-    pub fn write_profile_sequence(&mut self, _seq: &ProfileSequenceDesc) -> Result<(), CmsError> {
-        todo!()
+    pub fn write_profile_sequence(&mut self, seq: &ProfileSequenceDesc) -> Result<(), CmsError> {
+        self.write_tag(
+            TagSignature::ProfileSequenceDesc,
+            TagData::ProfileSequenceDesc(seq.clone()),
+        )?;
+        if self.header.version >= 0x04000000 {
+            self.write_tag(
+                TagSignature::ProfileSequenceId,
+                TagData::ProfileSequenceDesc(seq.clone()),
+            )?;
+        }
+        Ok(())
     }
 
     /// Build a profile sequence from an array of profiles.
     /// C版: `_cmsCompileProfileSequence`
     pub fn compile_profile_sequence(profiles: &mut [Profile]) -> Option<ProfileSequenceDesc> {
-        let _ = profiles;
-        todo!()
+        use crate::types::TechnologySignature;
+
+        let n = profiles.len();
+        let mut seq = ProfileSequenceDesc::new(n);
+
+        for (i, profile) in profiles.iter_mut().enumerate() {
+            let entry = seq.get_mut(i)?;
+            entry.device_mfg = profile.header.manufacturer;
+            entry.device_model = profile.header.model;
+            entry.attributes = profile.header.attributes;
+            entry.profile_id = profile.header.profile_id;
+
+            entry.technology = match profile.read_tag(TagSignature::Technology) {
+                Ok(TagData::Signature(sig)) => TechnologySignature::try_from(sig).ok(),
+                _ => None,
+            };
+
+            if let Some(mlu) = profile.read_info_mlu(ProfileInfoType::Manufacturer) {
+                entry.manufacturer = mlu;
+            }
+            if let Some(mlu) = profile.read_info_mlu(ProfileInfoType::Model) {
+                entry.model = mlu;
+            }
+            if let Some(mlu) = profile.read_info_mlu(ProfileInfoType::Description) {
+                entry.description = mlu;
+            }
+        }
+
+        Some(seq)
     }
 
     // ========================================================================
@@ -2759,10 +2821,9 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn compile_profile_sequence_from_srgb() {
-        let mut p1 = Profile::new_srgb();
-        let mut p2 = Profile::new_srgb();
+        let p1 = Profile::new_srgb();
+        let p2 = Profile::new_srgb();
         let seq = Profile::compile_profile_sequence(&mut [p1, p2])
             .expect("should compile sequence from 2 sRGB profiles");
         assert_eq!(seq.len(), 2);
@@ -2775,10 +2836,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn write_and_read_profile_sequence() {
-        let mut p1 = Profile::new_srgb();
-        let mut p2 = Profile::new_srgb();
+        let p1 = Profile::new_srgb();
+        let p2 = Profile::new_srgb();
         let seq = Profile::compile_profile_sequence(&mut [p1, p2]).unwrap();
 
         let mut profile = Profile::new_placeholder();
