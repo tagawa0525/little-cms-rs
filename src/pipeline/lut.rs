@@ -599,11 +599,19 @@ impl Stage {
 
     /// Create a named color stage.
     ///
-    /// Looks up a named color by index and outputs either PCS or device colorant values.
+    /// Input is a single channel (color index as 0..1 mapped to 0..65535).
+    /// Output is either 3 PCS channels or `colorant_count` device channels.
     ///
     /// C版: `_cmsStageAllocNamedColor`
-    pub fn new_named_color(_list: super::named::NamedColorList, _use_pcs: bool) -> Self {
-        todo!("named color stage not yet implemented")
+    pub fn new_named_color(list: super::named::NamedColorList, use_pcs: bool) -> Self {
+        let output_channels = if use_pcs { 3 } else { list.colorant_count() };
+        Stage {
+            stage_type: StageSignature::NamedColorElem,
+            implements: StageSignature::NamedColorElem,
+            input_channels: 1,
+            output_channels,
+            data: StageData::NamedColor(list),
+        }
     }
 
     // --- Special stage constructors ---
@@ -783,6 +791,9 @@ impl Stage {
                     output[i] = if input[i] < 0.0 { 0.0 } else { input[i] };
                 }
             }
+            StageSignature::NamedColorElem => {
+                self.eval_named_color(input, output);
+            }
             _ => {
                 debug_assert!(
                     false,
@@ -888,6 +899,27 @@ impl Stage {
         output[0] = (lab.l / 100.0) as f32;
         output[1] = ((lab.a + 128.0) / 255.0) as f32;
         output[2] = ((lab.b + 128.0) / 255.0) as f32;
+    }
+
+    fn eval_named_color(&self, input: &[f32], output: &mut [f32]) {
+        if let StageData::NamedColor(ref list) = self.data {
+            let index = (input[0] * 65535.0 + 0.5) as usize;
+            let index = index.min(list.count().saturating_sub(1));
+            if let Some(color) = list.info(index) {
+                if self.output_channels == 3 {
+                    // PCS mode: output PCS values (normalized to 0..1 range)
+                    for (out, &pcs) in output[..3].iter_mut().zip(color.pcs.iter()) {
+                        *out = pcs as f32 / 65535.0;
+                    }
+                } else {
+                    // Device colorant mode
+                    let n = self.output_channels as usize;
+                    for (out, &col) in output[..n].iter_mut().zip(color.colorant.iter()) {
+                        *out = col as f32 / 65535.0;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -2368,7 +2400,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn named_color_stage_pcs_output() {
         use crate::pipeline::named::NamedColorList;
 
@@ -2391,7 +2423,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn named_color_stage_device_output() {
         use crate::pipeline::named::NamedColorList;
 
@@ -2410,7 +2442,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn named_color_stage_clamps_index() {
         use crate::pipeline::named::NamedColorList;
 
