@@ -1,6 +1,6 @@
 # Phase 11: Transform API Completion
 
-**Status**: PLANNED
+**Status**: IMPLEMENTED
 **C版ファイル**: `cmsxform.c`（残API）
 **Rust見積**: ~200行（impl）+ ~100行（tests）
 **ブランチ**: `feat/phase11-xform-api`
