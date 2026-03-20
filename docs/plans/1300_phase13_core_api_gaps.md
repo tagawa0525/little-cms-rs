@@ -1,6 +1,6 @@
 # Phase 13: Core API Gaps
 
-Status: PLANNED
+Status: IN_PROGRESS
 
 ## Context
 
