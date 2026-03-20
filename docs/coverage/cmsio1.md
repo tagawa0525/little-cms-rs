@@ -20,16 +20,16 @@
 
 ## 内部関数
 
-| C 関数                       | Rust 対応                           | 状態   |
-| ---------------------------- | ----------------------------------- | ------ |
-| `_cmsReadMediaWhitePoint`    | `Profile::read_media_white_point()` | 実装済 |
-| `_cmsReadCHAD`               | `Profile::read_chad()`              | 実装済 |
-| `_cmsReadProfileSequence`    | —                                   | 未実装 |
-| `_cmsWriteProfileSequence`   | —                                   | 未実装 |
-| `_cmsCompileProfileSequence` | —                                   | 未実装 |
+| C 関数                       | Rust 対応                               | 状態   |
+| ---------------------------- | --------------------------------------- | ------ |
+| `_cmsReadMediaWhitePoint`    | `Profile::read_media_white_point()`     | 実装済 |
+| `_cmsReadCHAD`               | `Profile::read_chad()`                  | 実装済 |
+| `_cmsReadProfileSequence`    | `Profile::read_profile_sequence()`      | 実装済 |
+| `_cmsWriteProfileSequence`   | `Profile::write_profile_sequence()`     | 実装済 |
+| `_cmsCompileProfileSequence` | `Profile::compile_profile_sequence()`   | 実装済 |
 
 ## 備考
 
 - LUTパイプライン構築の中核機能（Input/Output/DeviceLink LUT読み込み）は完全実装。
 - `cmsGetProfileInfo`（wchar_t版）はRustでは不要。`get_profile_info_ascii()` / `get_profile_info_utf8()` で代替。
-- ProfileSequence関連: `_cmsReadProfileSequence` / `_cmsWriteProfileSequence` / `_cmsCompileProfileSequence` は未実装。
+- ProfileSequence関連: 3関数すべて実装済（Desc/Idタグのマージ読み取り、v4 Idタグ書き込み、ヘッダからのコンパイル）。

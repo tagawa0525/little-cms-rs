@@ -68,10 +68,10 @@
 
 | C 関数               | Rust 対応               | 状態                 |
 | -------------------- | ----------------------- | -------------------- |
-| `cmsIT8SaveToFile`   | —                       | 未実装               |
+| `cmsIT8SaveToFile`   | `It8::save_to_file()`   | 実装済               |
 | `cmsIT8SaveToMem`    | `It8::save_to_string()` | 実装済（String出力） |
 | `cmsIT8LoadFromMem`  | `It8::load_from_str()`  | 実装済               |
-| `cmsIT8LoadFromFile` | —                       | 未実装               |
+| `cmsIT8LoadFromFile` | `It8::load_from_file()` | 実装済               |
 
 ### Cubeファイル
 
