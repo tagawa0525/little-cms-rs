@@ -8,7 +8,7 @@ use crate::context::{CmsError, ErrorCode};
 use crate::pipeline::lut::Pipeline;
 use crate::pipeline::pack::{
     CMS_PACK_FLAGS_16BITS, CMS_PACK_FLAGS_FLOAT, FormatterIn, FormatterOut, find_formatter_in,
-    find_formatter_out, pixel_size,
+    find_formatter_out, pixel_step,
 };
 use crate::profile::io::Profile;
 use crate::transform::cnvrt;
@@ -848,30 +848,116 @@ impl Transform {
         self.cache_out.set(zero_out);
     }
 
-    /// Transform a buffer of pixels.
-    pub fn do_transform(&self, input: &[u8], output: &mut [u8], pixel_count: usize) {
-        // Copy extra (alpha) channels if requested
-        if self.flags & FLAGS_COPY_ALPHA != 0 {
-            super::alpha::handle_extra_channels(
-                self.input_format,
-                self.output_format,
-                input,
-                output,
-                pixel_count,
-            );
-        }
+    /// Transform with line stride support.
+    ///
+    /// Processes `line_count` lines of `pixels_per_line` pixels each,
+    /// advancing by `bytes_per_line_in/out` between lines.
+    /// `bytes_per_plane_in/out` are passed to formatters for planar format support.
+    ///
+    /// C版: `cmsDoTransformLineStride`
+    #[allow(clippy::too_many_arguments)]
+    pub fn do_transform_line_stride(
+        &self,
+        input: &[u8],
+        output: &mut [u8],
+        pixels_per_line: usize,
+        line_count: usize,
+        bytes_per_line_in: usize,
+        bytes_per_line_out: usize,
+        bytes_per_plane_in: usize,
+        bytes_per_plane_out: usize,
+    ) {
+        // Interpret zero stride as the minimal contiguous bytes for one line
+        let eff_line_in = if bytes_per_line_in == 0 {
+            pixels_per_line.saturating_mul(pixel_step(self.input_format))
+        } else {
+            bytes_per_line_in
+        };
+        let eff_line_out = if bytes_per_line_out == 0 {
+            pixels_per_line.saturating_mul(pixel_step(self.output_format))
+        } else {
+            bytes_per_line_out
+        };
 
-        match (&self.from_input, &self.to_output) {
-            (FormatterIn::U16(unroll), FormatterOut::U16(pack)) => {
-                self.do_transform_16(*unroll, *pack, input, output, pixel_count);
+        let is_planar_in = self.input_format.planar() != 0;
+        let is_planar_out = self.output_format.planar() != 0;
+
+        for line in 0..line_count {
+            let Some(in_start) = line.checked_mul(eff_line_in) else {
+                return;
+            };
+            let Some(out_start) = line.checked_mul(eff_line_out) else {
+                return;
+            };
+
+            let line_in = match input.get(in_start..) {
+                Some(s) => s,
+                None => return,
+            };
+            let line_out = match output.get_mut(out_start..) {
+                Some(s) => s,
+                None => return,
+            };
+
+            // Alpha copy only for chunky (interleaved) formats
+            if self.flags & FLAGS_COPY_ALPHA != 0 && !is_planar_in && !is_planar_out {
+                super::alpha::handle_extra_channels(
+                    self.input_format,
+                    self.output_format,
+                    line_in,
+                    line_out,
+                    pixels_per_line,
+                );
             }
-            (FormatterIn::Float(unroll), FormatterOut::Float(pack)) => {
-                self.do_transform_float(*unroll, *pack, input, output, pixel_count);
+
+            match (&self.from_input, &self.to_output) {
+                (FormatterIn::U16(unroll), FormatterOut::U16(pack)) => {
+                    self.do_transform_16(
+                        *unroll,
+                        *pack,
+                        line_in,
+                        line_out,
+                        pixels_per_line,
+                        bytes_per_plane_in,
+                        bytes_per_plane_out,
+                    );
+                }
+                (FormatterIn::Float(unroll), FormatterOut::Float(pack)) => {
+                    self.do_transform_float(
+                        *unroll,
+                        *pack,
+                        line_in,
+                        line_out,
+                        pixels_per_line,
+                        bytes_per_plane_in,
+                        bytes_per_plane_out,
+                    );
+                }
+                _ => unreachable!("mixed float/u16 formatters rejected at creation"),
             }
-            _ => unreachable!("mixed float/u16 formatters rejected at creation"),
         }
     }
 
+    /// Transform with stride for planar formats (legacy API).
+    /// C版: `cmsDoTransformStride`
+    pub fn do_transform_stride(
+        &self,
+        input: &[u8],
+        output: &mut [u8],
+        pixel_count: usize,
+        stride: usize,
+    ) {
+        self.do_transform_line_stride(input, output, pixel_count, 1, 0, 0, stride, stride);
+    }
+
+    /// Transform a buffer of pixels.
+    pub fn do_transform(&self, input: &[u8], output: &mut [u8], pixel_count: usize) {
+        let in_plane = pixel_count * pixel_step(self.input_format);
+        let out_plane = pixel_count * pixel_step(self.output_format);
+        self.do_transform_line_stride(input, output, pixel_count, 1, 0, 0, in_plane, out_plane);
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn do_transform_16(
         &self,
         unroll: crate::pipeline::pack::Formatter16In,
@@ -879,9 +965,11 @@ impl Transform {
         input: &[u8],
         output: &mut [u8],
         pixel_count: usize,
+        bytes_per_plane_in: usize,
+        bytes_per_plane_out: usize,
     ) {
-        let in_stride = pixel_size(self.input_format);
-        let out_stride = pixel_size(self.output_format);
+        let in_stride = pixel_step(self.input_format);
+        let out_stride = pixel_step(self.output_format);
         let max_in = if in_stride > 0 {
             input.len() / in_stride
         } else {
@@ -902,16 +990,19 @@ impl Transform {
         for i in 0..count {
             let in_offset = i * in_stride;
             let out_offset = i * out_stride;
-            unroll(self.input_format, &mut w_in, &input[in_offset..], 0);
+            unroll(
+                self.input_format,
+                &mut w_in,
+                &input[in_offset..],
+                bytes_per_plane_in,
+            );
 
             if is_null {
-                // Null transform: copy only active channels, clear rest
                 w_out = [0u16; MAX_CHANNELS];
                 let n_copy = (self.input_format.channels() as usize)
                     .min(self.output_format.channels() as usize);
                 w_out[..n_copy].copy_from_slice(&w_in[..n_copy]);
             } else if use_cache && w_in == self.cache_in.get() {
-                // Cache hit
                 w_out = self.cache_out.get();
             } else if let Some(ref gamut) = self.gamut_check {
                 let mut w_gamut = [0u16; MAX_CHANNELS];
@@ -934,10 +1025,16 @@ impl Transform {
                 }
             }
 
-            pack(self.output_format, &w_out, &mut output[out_offset..], 0);
+            pack(
+                self.output_format,
+                &w_out,
+                &mut output[out_offset..],
+                bytes_per_plane_out,
+            );
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn do_transform_float(
         &self,
         unroll: crate::pipeline::pack::FormatterFloatIn,
@@ -945,9 +1042,11 @@ impl Transform {
         input: &[u8],
         output: &mut [u8],
         pixel_count: usize,
+        bytes_per_plane_in: usize,
+        bytes_per_plane_out: usize,
     ) {
-        let in_stride = pixel_size(self.input_format);
-        let out_stride = pixel_size(self.output_format);
+        let in_stride = pixel_step(self.input_format);
+        let out_stride = pixel_step(self.output_format);
         let max_in = if in_stride > 0 {
             input.len() / in_stride
         } else {
@@ -967,10 +1066,14 @@ impl Transform {
         for i in 0..count {
             let in_offset = i * in_stride;
             let out_offset = i * out_stride;
-            unroll(self.input_format, &mut w_in, &input[in_offset..], 0);
+            unroll(
+                self.input_format,
+                &mut w_in,
+                &input[in_offset..],
+                bytes_per_plane_in,
+            );
 
             if is_null {
-                // Null transform: copy only active channels, clear rest
                 w_out = [0.0f32; MAX_CHANNELS];
                 let n_copy = (self.input_format.channels() as usize)
                     .min(self.output_format.channels() as usize);
@@ -995,7 +1098,12 @@ impl Transform {
                     .eval_float(&w_in, &mut w_out);
             }
 
-            pack(self.output_format, &w_out, &mut output[out_offset..], 0);
+            pack(
+                self.output_format,
+                &w_out,
+                &mut output[out_offset..],
+                bytes_per_plane_out,
+            );
         }
     }
 }
@@ -1611,5 +1719,100 @@ mod tests {
 
         let result = xform.change_buffers_format(TYPE_RGB_FLT, TYPE_RGB_FLT);
         assert!(result.is_err(), "float format should be rejected");
+    }
+
+    // ================================================================
+    // Phase 13b: Stride-aware transform
+    // ================================================================
+
+    #[test]
+    fn stride_transform_matches_contiguous() {
+        // Transform 2 lines of 3 pixels each with padding
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let xform = Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_8, 0, 0).unwrap();
+
+        // 3 pixels × 3 bytes = 9 bytes per line, padded to 12 bytes
+        let pixels_per_line = 3;
+        let line_count = 2;
+        let bytes_per_line_in = 12;
+        let bytes_per_line_out = 12;
+
+        // Build padded input: 2 lines × 12 bytes
+        let mut padded_input = vec![0u8; line_count * bytes_per_line_in];
+        // Line 0: R=255,G=0,B=0 | R=0,G=255,B=0 | R=0,G=0,B=255 | pad
+        padded_input[0..9].copy_from_slice(&[255, 0, 0, 0, 255, 0, 0, 0, 255]);
+        // Line 1: R=128,G=128,B=128 | R=64,G=64,B=64 | R=200,G=100,B=50 | pad
+        padded_input[12..21].copy_from_slice(&[128, 128, 128, 64, 64, 64, 200, 100, 50]);
+
+        let mut padded_output = vec![0u8; line_count * bytes_per_line_out];
+
+        xform.do_transform_line_stride(
+            &padded_input,
+            &mut padded_output,
+            pixels_per_line,
+            line_count,
+            bytes_per_line_in,
+            bytes_per_line_out,
+            0,
+            0,
+        );
+
+        // Also transform contiguously for comparison
+        let contiguous_input: Vec<u8> = vec![
+            255, 0, 0, 0, 255, 0, 0, 0, 255, 128, 128, 128, 64, 64, 64, 200, 100, 50,
+        ];
+        let mut contiguous_output = vec![0u8; 18];
+        xform.do_transform(&contiguous_input, &mut contiguous_output, 6);
+
+        // Extract pixel data from padded output (skip padding)
+        let mut extracted = Vec::new();
+        for line in 0..line_count {
+            let offset = line * bytes_per_line_out;
+            extracted.extend_from_slice(&padded_output[offset..offset + 9]);
+        }
+
+        assert_eq!(extracted, contiguous_output);
+    }
+
+    #[test]
+    fn stride_transform_single_line_matches_do_transform() {
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let xform = Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_8, 0, 0).unwrap();
+
+        let input = [255u8, 0, 0, 0, 255, 0, 0, 0, 255];
+        let mut out_stride = [0u8; 9];
+        let mut out_normal = [0u8; 9];
+
+        xform.do_transform_line_stride(&input, &mut out_stride, 3, 1, 9, 9, 0, 0);
+        xform.do_transform(&input, &mut out_normal, 3);
+
+        assert_eq!(out_stride, out_normal);
+    }
+
+    #[test]
+    fn do_transform_stride_planar() {
+        // Planar RGB 8-bit: [R0,R1,R2, G0,G1,G2, B0,B1,B2]
+        // stride (plane spacing) = 3 bytes (3 pixels × 1 byte/sample)
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let xform = Transform::new(src, TYPE_RGB_8_PLANAR, dst, TYPE_RGB_8_PLANAR, 0, 0).unwrap();
+
+        // 3 pixels: red, green, blue in planar layout
+        let input = [
+            255u8, 0, 0, // R plane
+            0, 255, 0, // G plane
+            0, 0, 255, // B plane
+        ];
+        let mut output = [0u8; 9];
+
+        // stride = 3 (3 pixels × 1 byte per sample)
+        xform.do_transform_stride(&input, &mut output, 3, 3);
+
+        let mut expected = [0u8; 9];
+        xform.do_transform(&input, &mut expected, 3);
+
+        assert_eq!(output, expected);
     }
 }

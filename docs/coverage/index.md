@@ -25,7 +25,7 @@ C版の各ソースファイルに対応するRust実装の関数レベルカバ
 | [cmsopt.c](cmsopt.md)       | `src/transform/opt.rs`              | 1/1     | 1/2      | 93%    | plugin登録のみ未実装                  |
 | [cmssamp.c](cmssamp.md)     | `src/transform/samp.rs`             | 2/2     | -        | 100%   | 完了（dest BPは簡略版）               |
 | [cmsgmt.c](cmsgmt.md)       | `src/transform/gmt.rs`              | 3/3     | 1/3      | 67%    | Chain2Lab/KToneCurve未実装            |
-| [cmsxform.c](cmsxform.md)   | `src/transform/xform.rs`            | 17/29   | 1/8      | 49%    | stride/worker系/global state未実装    |
+| [cmsxform.c](cmsxform.md)   | `src/transform/xform.rs`            | 19/29   | 1/8      | 54%    | worker系/global state未実装           |
 | [cmsalpha.c](cmsalpha.md)   | `src/transform/alpha.rs`            | -       | 1/1      | 100%   | 完了                                  |
 | [cmsvirt.c](cmsvirt.md)     | `src/profile/virt.rs`               | 22/22   | -        | 100%   | 完了                                  |
 | [cmsplugin.c](cmsplugin.md) | `src/profile/io.rs`, `src/types.rs` | 28/37   | 2/4      | 73%    | plugin/context管理未実装              |

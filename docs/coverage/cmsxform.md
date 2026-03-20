@@ -17,11 +17,11 @@
 
 ### Transform実行
 
-| C 関数                     | Rust 対応                   | 状態   |
-| -------------------------- | --------------------------- | ------ |
-| `cmsDoTransform`           | `Transform::do_transform()` | 実装済 |
-| `cmsDoTransformStride`     | —                           | 未実装 |
-| `cmsDoTransformLineStride` | —                           | 未実装 |
+| C 関数                     | Rust 対応                               | 状態   |
+| -------------------------- | --------------------------------------- | ------ |
+| `cmsDoTransform`           | `Transform::do_transform()`             | 実装済 |
+| `cmsDoTransformStride`     | `Transform::do_transform_stride()`      | 実装済 |
+| `cmsDoTransformLineStride` | `Transform::do_transform_line_stride()` | 実装済 |
 
 ### Transform管理
 
@@ -70,6 +70,6 @@
 ## 備考
 
 - Transform作成の中核（`new`, `new_multiprofile`, `new_proofing`, `new_extended`）と実行（`do_transform`）は実装済。
-- `cmsDoTransformStride` / `cmsDoTransformLineStride`: ストライド指定の変換。画像のライン単位処理で使用。
+- `cmsDoTransformStride` / `cmsDoTransformLineStride`: ストライド指定の変換。`do_transform` は内部で `do_transform_line_stride` に委譲。
 - Transform Worker API: C版のプラグインによるカスタム変換ワーカー。並列化やHW加速用。
 - グローバル状態関数はContext構造体のフィールドで代替。THRなし版（グローバル）は省略。

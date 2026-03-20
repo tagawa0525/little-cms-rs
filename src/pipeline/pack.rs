@@ -79,6 +79,20 @@ pub fn pixel_size(format: PixelFormat) -> usize {
     (n_chan + extra) * bytes_per_sample
 }
 
+/// Bytes to advance per pixel in the buffer.
+///
+/// For chunky (interleaved) formats this equals `pixel_size()`.
+/// For planar formats, each pixel occupies only one sample in the first plane,
+/// so the step is just `bytes_per_sample`.
+pub fn pixel_step(format: PixelFormat) -> usize {
+    if format.planar() != 0 {
+        let bytes = format.bytes() as usize;
+        if bytes == 0 { 8 } else { bytes }
+    } else {
+        pixel_size(format)
+    }
+}
+
 // ============================================================================
 // 16-bit chunky formatters
 // ============================================================================
