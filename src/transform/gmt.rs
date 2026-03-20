@@ -69,9 +69,15 @@ pub fn create_gamut_check_pipeline(
         ERR_THRESHOLD
     };
 
+    // Input-side color space (CLUT input dimensionality comes from the first profile,
+    // since wIn at evaluation time is in the transform's input color space)
+    let input_color_space = profiles[0].header.color_space;
+    let n_input_channels = input_color_space.channels();
+    let n_gridpoints = pcs::reasonable_gridpoints(n_input_channels, FLAGS_HIGHRESPRECALC);
+
+    // Gamut/proofing device color space (for forward/reverse transforms)
     let color_space = gamut_profile.header.color_space;
     let n_channels = color_space.channels();
-    let n_gridpoints = pcs::reasonable_gridpoints(n_channels, FLAGS_HIGHRESPRECALC);
 
     // Build hInput: profiles[0..gamut_pcs_position] + Lab → converts input to Lab16
     let mut input_chain: Vec<Profile> = Vec::with_capacity(gamut_pcs_position + 1);
@@ -92,9 +98,7 @@ pub fn create_gamut_check_pipeline(
     input_intents.push(1); // INTENT_RELATIVE_COLORIMETRIC
     input_adaptation.push(1.0);
 
-    let input_cs = profiles[0].header.color_space;
-    let n_input_channels = input_cs.channels();
-    let input_fmt = PixelFormat::build(input_cs.to_pixel_type(), n_input_channels, 2);
+    let input_fmt = PixelFormat::build(input_color_space.to_pixel_type(), n_input_channels, 2);
 
     let h_input = Transform::new_multiprofile(
         &mut input_chain,
@@ -131,15 +135,16 @@ pub fn create_gamut_check_pipeline(
         FLAGS_NOCACHE | FLAGS_NOOPTIMIZE,
     )?;
 
-    // Build the gamut check pipeline: nChannels input → 1 output
-    let mut gamut = Pipeline::new(n_channels, 1).ok_or_else(|| CmsError {
+    // Build the gamut check pipeline: n_input_channels input → 1 output
+    // Uses input profile's channels since wIn at evaluation time is in input color space
+    let mut gamut = Pipeline::new(n_input_channels, 1).ok_or_else(|| CmsError {
         code: ErrorCode::Internal,
         message: "Failed to allocate gamut check pipeline".into(),
     })?;
 
     let grid_points = [n_gridpoints; crate::curves::intrp::MAX_INPUT_DIMENSIONS];
     let mut clut =
-        Stage::new_clut_16bit(&grid_points, n_channels, 1, None).ok_or_else(|| CmsError {
+        Stage::new_clut_16bit(&grid_points, n_input_channels, 1, None).ok_or_else(|| CmsError {
             code: ErrorCode::Internal,
             message: "Failed to allocate gamut check CLUT".into(),
         })?;
@@ -511,7 +516,6 @@ mod tests {
     // ================================================================
 
     #[test]
-
     fn desaturate_in_gamut() {
         let mut lab = CieLab {
             l: 50.0,
@@ -525,7 +529,6 @@ mod tests {
     }
 
     #[test]
-
     fn desaturate_negative_l() {
         let mut lab = CieLab {
             l: -5.0,
