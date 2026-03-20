@@ -50,12 +50,16 @@ pub fn get_postscript_csa(
 /// Dispatch to CSA or CRD generation based on resource type.
 /// C版: `cmsGetPostScriptColorResource`
 pub fn get_postscript_color_resource(
-    _resource_type: PostScriptResourceType,
-    _profile: &mut Profile,
-    _intent: u32,
-    _flags: u32,
+    resource_type: PostScriptResourceType,
+    profile: &mut Profile,
+    intent: u32,
+    flags: u32,
 ) -> Result<Vec<u8>, CmsError> {
-    todo!("Phase 14a-B: not yet implemented")
+    let text = match resource_type {
+        PostScriptResourceType::Csa => get_postscript_csa(profile, intent, flags)?,
+        PostScriptResourceType::Crd => get_postscript_crd(profile, intent, flags)?,
+    };
+    Ok(text.into_bytes())
 }
 
 /// Generate a PostScript Color Rendering Dictionary (CRD) from a profile.
@@ -459,7 +463,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn color_resource_csa_dispatches() {
         let mut p = roundtrip(&mut Profile::new_srgb());
         let result =
@@ -472,7 +475,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn color_resource_crd_dispatches() {
         let mut p = roundtrip(&mut Profile::new_srgb());
         let result =
