@@ -848,6 +848,40 @@ impl Transform {
         self.cache_out.set(zero_out);
     }
 
+    /// Transform with line stride support.
+    ///
+    /// Processes `line_count` lines of `pixels_per_line` pixels each,
+    /// advancing by `bytes_per_line_in/out` between lines.
+    /// `bytes_per_plane_in/out` are passed to formatters for planar format support.
+    ///
+    /// C版: `cmsDoTransformLineStride`
+    #[allow(clippy::too_many_arguments)]
+    pub fn do_transform_line_stride(
+        &self,
+        _input: &[u8],
+        _output: &mut [u8],
+        _pixels_per_line: usize,
+        _line_count: usize,
+        _bytes_per_line_in: usize,
+        _bytes_per_line_out: usize,
+        _bytes_per_plane_in: usize,
+        _bytes_per_plane_out: usize,
+    ) {
+        todo!()
+    }
+
+    /// Transform with stride for planar formats (legacy API).
+    /// C版: `cmsDoTransformStride`
+    pub fn do_transform_stride(
+        &self,
+        _input: &[u8],
+        _output: &mut [u8],
+        _pixel_count: usize,
+        _stride: usize,
+    ) {
+        todo!()
+    }
+
     /// Transform a buffer of pixels.
     pub fn do_transform(&self, input: &[u8], output: &mut [u8], pixel_count: usize) {
         // Copy extra (alpha) channels if requested
@@ -1611,5 +1645,96 @@ mod tests {
 
         let result = xform.change_buffers_format(TYPE_RGB_FLT, TYPE_RGB_FLT);
         assert!(result.is_err(), "float format should be rejected");
+    }
+
+    // ================================================================
+    // Phase 13b: Stride-aware transform
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn stride_transform_matches_contiguous() {
+        // Transform 2 lines of 3 pixels each with padding
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let xform = Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_8, 0, 0).unwrap();
+
+        // 3 pixels × 3 bytes = 9 bytes per line, padded to 12 bytes
+        let pixels_per_line = 3;
+        let line_count = 2;
+        let bytes_per_line_in = 12;
+        let bytes_per_line_out = 12;
+
+        // Build padded input: 2 lines × 12 bytes
+        let mut padded_input = vec![0u8; line_count * bytes_per_line_in];
+        // Line 0: R=255,G=0,B=0 | R=0,G=255,B=0 | R=0,G=0,B=255 | pad
+        padded_input[0..9].copy_from_slice(&[255, 0, 0, 0, 255, 0, 0, 0, 255]);
+        // Line 1: R=128,G=128,B=128 | R=64,G=64,B=64 | R=200,G=100,B=50 | pad
+        padded_input[12..21].copy_from_slice(&[128, 128, 128, 64, 64, 64, 200, 100, 50]);
+
+        let mut padded_output = vec![0u8; line_count * bytes_per_line_out];
+
+        xform.do_transform_line_stride(
+            &padded_input,
+            &mut padded_output,
+            pixels_per_line,
+            line_count,
+            bytes_per_line_in,
+            bytes_per_line_out,
+            0,
+            0,
+        );
+
+        // Also transform contiguously for comparison
+        let contiguous_input: Vec<u8> = vec![
+            255, 0, 0, 0, 255, 0, 0, 0, 255, 128, 128, 128, 64, 64, 64, 200, 100, 50,
+        ];
+        let mut contiguous_output = vec![0u8; 18];
+        xform.do_transform(&contiguous_input, &mut contiguous_output, 6);
+
+        // Extract pixel data from padded output (skip padding)
+        let mut extracted = Vec::new();
+        for line in 0..line_count {
+            let offset = line * bytes_per_line_out;
+            extracted.extend_from_slice(&padded_output[offset..offset + 9]);
+        }
+
+        assert_eq!(extracted, contiguous_output);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn stride_transform_single_line_matches_do_transform() {
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let xform = Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_8, 0, 0).unwrap();
+
+        let input = [255u8, 0, 0, 0, 255, 0, 0, 0, 255];
+        let mut out_stride = [0u8; 9];
+        let mut out_normal = [0u8; 9];
+
+        xform.do_transform_line_stride(&input, &mut out_stride, 3, 1, 9, 9, 0, 0);
+        xform.do_transform(&input, &mut out_normal, 3);
+
+        assert_eq!(out_stride, out_normal);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn do_transform_stride_planar() {
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let xform = Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_8, 0, 0).unwrap();
+
+        let input = [255u8, 0, 0, 0, 255, 0];
+        let mut output = [0u8; 6];
+
+        // stride = total_size means BytesPerPlane = stride
+        xform.do_transform_stride(&input, &mut output, 2, 6);
+
+        let mut expected = [0u8; 6];
+        xform.do_transform(&input, &mut expected, 2);
+
+        assert_eq!(output, expected);
     }
 }
