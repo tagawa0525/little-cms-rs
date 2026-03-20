@@ -600,9 +600,11 @@ mod tests {
             b: -82.7485,
         };
         let de = delta_e_cie94(&lab1, &lab2);
-        // CIE94 should give a value close to CIE76 but weighted
-        assert!(de > 0.0, "CIE94 should be positive");
-        assert!(de < 10.0, "CIE94 should be reasonable: {de}");
+        // Reference: manually computed ≈ 1.4083
+        assert!(
+            (de - 1.4083).abs() < 0.01,
+            "CIE94 expected ~1.4083, got {de}"
+        );
     }
 
     #[test]
@@ -629,8 +631,9 @@ mod tests {
             b: -82.7485,
         };
         let de = delta_e_bfd(&lab1, &lab2);
-        assert!(de > 0.0, "BFD should be positive");
-        assert!(de < 10.0, "BFD should be reasonable: {de}");
+        // BFD should produce a positive, reasonable value for this pair
+        assert!(de > 0.5, "BFD too low: {de}");
+        assert!(de < 5.0, "BFD too high: {de}");
     }
 
     #[test]
@@ -646,9 +649,11 @@ mod tests {
             b: -15.0,
         };
         let de = delta_e_cmc(&lab1, &lab2, 1.0, 1.0);
-        assert!(de > 0.0, "CMC should be positive");
-        // With l=c=1 and moderate differences, CMC typically gives single-digit values
-        assert!(de < 20.0, "CMC should be reasonable: {de}");
+        // Reference: manually computed ≈ 6.0311
+        assert!(
+            (de - 6.0311).abs() < 0.05,
+            "CMC(1:1) expected ~6.0311, got {de}"
+        );
     }
 
     #[test]
