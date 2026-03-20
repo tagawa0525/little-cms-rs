@@ -693,7 +693,8 @@ END_DATA
     fn file_io_round_trip() {
         let it8 = It8::load_from_str(SAMPLE_IT8).unwrap();
         let dir = std::env::temp_dir();
-        let path = dir.join("test_it8_round_trip.it8");
+        let name = format!("test_it8_round_trip_{}.it8", std::process::id());
+        let path = dir.join(name);
         let path_str = path.to_str().unwrap();
 
         it8.save_to_file(path_str).unwrap();
@@ -708,7 +709,11 @@ END_DATA
 
     #[test]
     fn load_from_nonexistent_file() {
-        let result = It8::load_from_file("/nonexistent/path/test.it8");
+        let dir = std::env::temp_dir();
+        let name = format!("nonexistent_it8_{}.it8", std::process::id());
+        let path = dir.join(name);
+        assert!(!path.exists());
+        let result = It8::load_from_file(path.to_str().unwrap());
         assert!(result.is_err());
     }
 }

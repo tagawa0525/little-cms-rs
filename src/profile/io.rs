@@ -686,8 +686,12 @@ impl Profile {
                 let mut merged = d;
                 for idx in 0..merged.len() {
                     if let (Some(dst), Some(src)) = (merged.get_mut(idx), i.get(idx)) {
-                        dst.profile_id = src.profile_id;
-                        dst.description = src.description.clone();
+                        if src.profile_id != ProfileId::default() {
+                            dst.profile_id = src.profile_id;
+                        }
+                        if src.description.translations_count() > 0 {
+                            dst.description = src.description.clone();
+                        }
                     }
                 }
                 Some(merged)
@@ -713,14 +717,14 @@ impl Profile {
 
     /// Build a profile sequence from an array of profiles.
     /// C版: `_cmsCompileProfileSequence`
-    pub fn compile_profile_sequence(profiles: &mut [Profile]) -> Option<ProfileSequenceDesc> {
+    pub fn compile_profile_sequence(profiles: &mut [Profile]) -> ProfileSequenceDesc {
         use crate::types::TechnologySignature;
 
         let n = profiles.len();
         let mut seq = ProfileSequenceDesc::new(n);
 
         for (i, profile) in profiles.iter_mut().enumerate() {
-            let entry = seq.get_mut(i)?;
+            let entry = &mut seq.get_mut(i).unwrap();
             entry.device_mfg = profile.header.manufacturer;
             entry.device_model = profile.header.model;
             entry.attributes = profile.header.attributes;
@@ -742,7 +746,7 @@ impl Profile {
             }
         }
 
-        Some(seq)
+        seq
     }
 
     // ========================================================================
@@ -2824,8 +2828,7 @@ mod tests {
     fn compile_profile_sequence_from_srgb() {
         let p1 = Profile::new_srgb();
         let p2 = Profile::new_srgb();
-        let seq = Profile::compile_profile_sequence(&mut [p1, p2])
-            .expect("should compile sequence from 2 sRGB profiles");
+        let seq = Profile::compile_profile_sequence(&mut [p1, p2]);
         assert_eq!(seq.len(), 2);
         // Each entry should have a non-empty description
         let e0 = seq.get(0).unwrap();
@@ -2839,7 +2842,7 @@ mod tests {
     fn write_and_read_profile_sequence() {
         let p1 = Profile::new_srgb();
         let p2 = Profile::new_srgb();
-        let seq = Profile::compile_profile_sequence(&mut [p1, p2]).unwrap();
+        let seq = Profile::compile_profile_sequence(&mut [p1, p2]);
 
         let mut profile = Profile::new_placeholder();
         profile.header.version = 0x04200000;
