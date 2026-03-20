@@ -509,6 +509,44 @@ impl Transform {
         })
     }
 
+    /// Create a transform from multiple profiles with per-profile intent, BPC,
+    /// and adaptation state. Optionally includes gamut check with a separate
+    /// gamut profile.
+    ///
+    /// C版: `cmsCreateExtendedTransform`
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_extended(
+        _profiles: &mut [Profile],
+        _bpc: &[bool],
+        _intents: &[u32],
+        _adaptation: &[f64],
+        _gamut_profile: Option<&mut Profile>,
+        _gamut_pcs_position: usize,
+        _input_format: PixelFormat,
+        _output_format: PixelFormat,
+        _flags: u32,
+    ) -> Result<Self, CmsError> {
+        Err(CmsError {
+            code: ErrorCode::NotSuitable,
+            message: "new_extended not yet implemented".into(),
+        })
+    }
+
+    /// Change the pixel format of an existing transform without rebuilding
+    /// the pipeline. Only works on 16-bit (non-float) transforms.
+    ///
+    /// C版: `cmsChangeBuffersFormat`
+    pub fn change_buffers_format(
+        &mut self,
+        _input_format: PixelFormat,
+        _output_format: PixelFormat,
+    ) -> Result<(), CmsError> {
+        Err(CmsError {
+            code: ErrorCode::NotSuitable,
+            message: "change_buffers_format not yet implemented".into(),
+        })
+    }
+
     /// Transform a buffer of pixels.
     pub fn do_transform(&self, input: &[u8], output: &mut [u8], pixel_count: usize) {
         // Copy extra (alpha) channels if requested
@@ -1005,5 +1043,240 @@ mod tests {
                 output[i]
             );
         }
+    }
+
+    // ================================================================
+    // Phase 11: Null transform
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn test_null_transform_16bit() {
+        // FLAGS_NULLTRANSFORM: unpack→pack without pipeline evaluation
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let xform =
+            Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_16, 0, FLAGS_NULLTRANSFORM).unwrap();
+
+        let input: [u8; 3] = [128, 64, 255];
+        let mut output = [0u8; 6]; // RGB_16 = 3 × 2 bytes
+        xform.do_transform(&input, &mut output, 1);
+
+        // Null transform: unpack 8-bit → internal 16-bit → pack 16-bit
+        // 128 → FROM_8_TO_16 = (128*65535+128)/255 = 0x8080
+        let r = u16::from_ne_bytes([output[0], output[1]]);
+        let g = u16::from_ne_bytes([output[2], output[3]]);
+        let b = u16::from_ne_bytes([output[4], output[5]]);
+        assert!(r > 0x7000, "R too low: {r:#06X}");
+        assert!(g > 0x3000, "G too low: {g:#06X}");
+        assert!(b > 0xF000, "B too low: {b:#06X}");
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn test_null_transform_float() {
+        // Float null transform: unpack→pack without pipeline
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let xform =
+            Transform::new(src, TYPE_RGB_FLT, dst, TYPE_RGB_FLT, 0, FLAGS_NULLTRANSFORM).unwrap();
+
+        let input: [u8; 12] = {
+            let mut buf = [0u8; 12];
+            buf[0..4].copy_from_slice(&0.5f32.to_ne_bytes());
+            buf[4..8].copy_from_slice(&0.25f32.to_ne_bytes());
+            buf[8..12].copy_from_slice(&1.0f32.to_ne_bytes());
+            buf
+        };
+        let mut output = [0u8; 12];
+        xform.do_transform(&input, &mut output, 1);
+
+        let r = f32::from_ne_bytes(output[0..4].try_into().unwrap());
+        let g = f32::from_ne_bytes(output[4..8].try_into().unwrap());
+        let b = f32::from_ne_bytes(output[8..12].try_into().unwrap());
+        assert!((r - 0.5).abs() < 0.01, "R: {r}");
+        assert!((g - 0.25).abs() < 0.01, "G: {g}");
+        assert!((b - 1.0).abs() < 0.01, "B: {b}");
+    }
+
+    // ================================================================
+    // Phase 11: 1-pixel cache
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn test_cache_hit_returns_same_output() {
+        // Transform with cache (no FLAGS_NOCACHE): same input twice → same output
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut build_rgb_profile());
+        let xform = Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_8, 1, 0).unwrap();
+
+        let input: [u8; 3] = [200, 100, 50];
+        let mut output1 = [0u8; 3];
+        let mut output2 = [0u8; 3];
+        xform.do_transform(&input, &mut output1, 1);
+        xform.do_transform(&input, &mut output2, 1);
+
+        assert_eq!(
+            output1, output2,
+            "cache hit should produce identical output"
+        );
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn test_cache_miss_updates_output() {
+        // Transform with cache: different inputs → different outputs (cache miss)
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut build_rgb_profile());
+        let xform = Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_8, 1, 0).unwrap();
+
+        let input1: [u8; 3] = [200, 100, 50];
+        let input2: [u8; 3] = [50, 100, 200];
+        let mut output1 = [0u8; 3];
+        let mut output2 = [0u8; 3];
+        xform.do_transform(&input1, &mut output1, 1);
+        xform.do_transform(&input2, &mut output2, 1);
+
+        // Different inputs must produce different outputs
+        assert_ne!(
+            output1, output2,
+            "different inputs should produce different outputs"
+        );
+    }
+
+    // ================================================================
+    // Phase 11: new_extended
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn test_new_extended_basic() {
+        // Per-profile intent/BPC with 2 profiles
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+
+        let xform = Transform::new_extended(
+            &mut [src, dst],
+            &[false, false],
+            &[1, 1], // relative colorimetric for both
+            &[1.0, 1.0],
+            None, // no gamut profile
+            0,    // no gamut PCS position
+            TYPE_RGB_8,
+            TYPE_RGB_8,
+            0,
+        )
+        .unwrap();
+
+        let input: [u8; 3] = [128, 128, 128];
+        let mut output = [0u8; 3];
+        xform.do_transform(&input, &mut output, 1);
+
+        // Same profile → approximately identity
+        for i in 0..3 {
+            assert!(
+                (output[i] as i16 - input[i] as i16).unsigned_abs() <= 5,
+                "channel {i}: input={}, output={}",
+                input[i],
+                output[i]
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn test_new_extended_gamut_check() {
+        // Extended transform with gamut check
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+
+        // Create narrow gamut proof profile
+        let gamma_curve = ToneCurve::build_gamma(2.2).unwrap();
+        let trc = [gamma_curve.clone(), gamma_curve.clone(), gamma_curve];
+        let d65 = CieXyY {
+            x: 0.3127,
+            y: 0.3290,
+            big_y: 1.0,
+        };
+        let narrow_primaries = CieXyYTriple {
+            red: CieXyY {
+                x: 0.40,
+                y: 0.35,
+                big_y: 1.0,
+            },
+            green: CieXyY {
+                x: 0.30,
+                y: 0.40,
+                big_y: 1.0,
+            },
+            blue: CieXyY {
+                x: 0.25,
+                y: 0.25,
+                big_y: 1.0,
+            },
+        };
+        let mut narrow = Profile::new_rgb(&d65, &narrow_primaries, &trc);
+        let mut gamut = roundtrip(&mut narrow);
+
+        let xform = Transform::new_extended(
+            &mut [src, dst],
+            &[false, false],
+            &[0, 0], // perceptual
+            &[1.0, 1.0],
+            Some(&mut gamut),
+            1,
+            TYPE_RGB_8,
+            TYPE_RGB_8,
+            FLAGS_SOFTPROOFING | FLAGS_GAMUTCHECK,
+        )
+        .unwrap();
+
+        // Saturated red → out of narrow gamut → alarm codes
+        let input: [u8; 3] = [255, 0, 0];
+        let mut output = [0u8; 3];
+        xform.do_transform(&input, &mut output, 1);
+
+        let alarm_byte = (DEFAULT_ALARM_CODES[0] >> 8) as u8;
+        assert_eq!(
+            output[0], alarm_byte,
+            "should be alarm code, got {}",
+            output[0]
+        );
+    }
+
+    // ================================================================
+    // Phase 11: change_buffers_format
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn test_change_buffers_format_basic() {
+        // Create transform with RGB_8, then change to RGB_16
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let mut xform = Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_8, 1, 0).unwrap();
+
+        // Change to 16-bit output
+        assert!(xform.change_buffers_format(TYPE_RGB_8, TYPE_RGB_16).is_ok());
+
+        let input: [u8; 3] = [128, 128, 128];
+        let mut output = [0u8; 6]; // now RGB_16
+        xform.do_transform(&input, &mut output, 1);
+
+        let r = u16::from_ne_bytes([output[0], output[1]]);
+        assert!(r > 0x2000, "R too low after format change: {r:#06X}");
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn test_change_buffers_format_rejects_float() {
+        // Float formats are not supported by change_buffers_format
+        let src = roundtrip(&mut Profile::new_srgb());
+        let dst = roundtrip(&mut Profile::new_srgb());
+        let mut xform = Transform::new(src, TYPE_RGB_8, dst, TYPE_RGB_8, 1, 0).unwrap();
+
+        let result = xform.change_buffers_format(TYPE_RGB_FLT, TYPE_RGB_FLT);
+        assert!(result.is_err(), "float format should be rejected");
     }
 }
