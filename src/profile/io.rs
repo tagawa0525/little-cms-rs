@@ -636,7 +636,31 @@ impl Profile {
     /// Compute and store MD5 profile ID.
     /// C版: `cmsMD5computeID`
     pub fn compute_md5_id(&mut self) -> Result<(), CmsError> {
-        todo!()
+        use crate::math::md5::Md5;
+
+        // Save header fields that must be zeroed for ID computation
+        let saved_flags = self.header.flags;
+        let saved_intent = self.header.rendering_intent;
+        let saved_id = self.header.profile_id;
+
+        // Zero them per ICC spec
+        self.header.flags = 0;
+        self.header.rendering_intent = 0;
+        self.header.profile_id = ProfileId::default();
+
+        // Serialize profile to memory
+        let result = self.save_to_mem();
+
+        // Restore original values regardless of success
+        self.header.flags = saved_flags;
+        self.header.rendering_intent = saved_intent;
+        self.header.profile_id = saved_id;
+
+        let blob = result?;
+
+        // Compute MD5 and store as profile ID
+        self.header.profile_id = ProfileId(Md5::digest(&blob));
+        Ok(())
     }
 
     // ========================================================================
@@ -2675,7 +2699,6 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn compute_md5_id_sets_nonzero_id() {
         let mut p = Profile::new_srgb();
         assert_eq!(p.header.profile_id, ProfileId::default());
@@ -2688,7 +2711,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn compute_md5_id_is_idempotent() {
         let mut p = Profile::new_srgb();
         p.compute_md5_id().unwrap();
@@ -2699,7 +2721,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn compute_md5_id_differs_for_different_profiles() {
         let mut p1 = Profile::new_srgb();
         p1.compute_md5_id().unwrap();
