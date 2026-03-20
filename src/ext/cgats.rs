@@ -24,6 +24,8 @@ struct Table {
     n_rows: usize,
     /// Column index that holds patch/sample IDs (default: 0 = "SAMPLE_ID").
     sample_id_col: usize,
+    /// Precision for floating-point output (set by `define_dbl_format`).
+    dbl_precision: Option<usize>,
 }
 
 impl Table {
@@ -35,6 +37,7 @@ impl Table {
             data: Vec::new(),
             n_rows: 0,
             sample_id_col: 0,
+            dbl_precision: None,
         }
     }
 
@@ -237,32 +240,50 @@ impl It8 {
 
     /// Set a property as a floating-point value.
     /// C版: `cmsIT8SetPropertyDbl`
-    pub fn set_property_f64(&mut self, _key: &str, _value: f64) {
-        todo!("Phase 14a-D: not yet implemented")
+    pub fn set_property_f64(&mut self, key: &str, value: f64) {
+        self.set_property(key, &self.format_f64(value));
     }
 
     /// Set a data cell by row/col as a floating-point value.
     /// C版: `cmsIT8SetDataRowColDbl`
-    pub fn set_data_row_col_f64(&mut self, _row: usize, _col: usize, _value: f64) {
-        todo!("Phase 14a-D: not yet implemented")
+    pub fn set_data_row_col_f64(&mut self, row: usize, col: usize, value: f64) {
+        self.set_data_row_col(row, col, &self.format_f64(value));
     }
 
     /// Set a data cell by patch name and sample as a floating-point value.
     /// C版: `cmsIT8SetDataDbl`
-    pub fn set_data_f64(&mut self, _patch: &str, _sample: &str, _value: f64) {
-        todo!("Phase 14a-D: not yet implemented")
+    pub fn set_data_f64(&mut self, patch: &str, sample: &str, value: f64) {
+        self.set_data(patch, sample, &self.format_f64(value));
     }
 
     /// Get the patch name (SAMPLE_ID) for a given row.
     /// C版: `cmsIT8GetPatchName`
-    pub fn get_patch_name(&self, _row: usize) -> Option<&str> {
-        todo!("Phase 14a-D: not yet implemented")
+    pub fn get_patch_name(&self, row: usize) -> Option<&str> {
+        let t = &self.tables[self.current];
+        self.data_row_col(row, t.sample_id_col)
     }
 
     /// Set the format string used for floating-point data output.
+    /// Accepts Rust-style format strings like `"{:.2}"` or `"{:.4}"`.
     /// C版: `cmsIT8DefineDblFormat`
-    pub fn define_dbl_format(&mut self, _fmt: &str) {
-        todo!("Phase 14a-D: not yet implemented")
+    pub fn define_dbl_format(&mut self, fmt: &str) {
+        // Parse precision from format string like "{:.N}"
+        let precision = fmt
+            .find("{:.")
+            .and_then(|start| {
+                let rest = &fmt[start + 3..];
+                rest.find('}')
+                    .and_then(|end| rest[..end].parse::<usize>().ok())
+            })
+            .unwrap_or(6);
+        self.tables[self.current].dbl_precision = Some(precision);
+    }
+
+    fn format_f64(&self, value: f64) -> String {
+        match self.tables[self.current].dbl_precision {
+            Some(prec) => format!("{value:.prec$}"),
+            None => value.to_string(),
+        }
     }
 
     fn find_patch(&self, patch: &str) -> Option<usize> {
@@ -752,7 +773,6 @@ END_DATA
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn set_property_f64_round_trip() {
         let mut it8 = It8::new();
         it8.set_property_f64("MY_VALUE", 1.234);
@@ -761,7 +781,6 @@ END_DATA
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn set_data_row_col_f64_round_trip() {
         let mut it8 = It8::new();
         it8.set_data_format(0, "SAMPLE_ID");
@@ -772,7 +791,6 @@ END_DATA
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn set_data_f64_round_trip() {
         let mut it8 = It8::new();
         it8.set_data_format(0, "SAMPLE_ID");
@@ -783,7 +801,6 @@ END_DATA
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn get_patch_name_returns_sample_id() {
         let it8 = It8::load_from_str(SAMPLE_IT8).unwrap();
         assert_eq!(it8.get_patch_name(0), Some("A1"));
@@ -793,7 +810,6 @@ END_DATA
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn define_dbl_format_affects_output() {
         let mut it8 = It8::new();
         it8.set_data_format(0, "SAMPLE_ID");
