@@ -633,6 +633,12 @@ impl Profile {
         }
     }
 
+    /// Compute and store MD5 profile ID.
+    /// C版: `cmsMD5computeID`
+    pub fn compute_md5_id(&mut self) -> Result<(), CmsError> {
+        todo!()
+    }
+
     // ========================================================================
     // Tag directory operations
     // ========================================================================
@@ -2662,5 +2668,48 @@ mod tests {
         let mut p = Profile::new_placeholder();
         let result = p.get_profile_info_ascii(ProfileInfoType::Manufacturer, "en", "US");
         assert!(result.is_none());
+    }
+
+    // ================================================================
+    // Phase 13: MD5 Profile ID
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn compute_md5_id_sets_nonzero_id() {
+        let mut p = Profile::new_srgb();
+        assert_eq!(p.header.profile_id, ProfileId::default());
+        p.compute_md5_id().unwrap();
+        assert_ne!(
+            p.header.profile_id,
+            ProfileId::default(),
+            "profile_id should be non-zero after MD5 computation"
+        );
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn compute_md5_id_is_idempotent() {
+        let mut p = Profile::new_srgb();
+        p.compute_md5_id().unwrap();
+        let id1 = p.header.profile_id;
+        p.compute_md5_id().unwrap();
+        let id2 = p.header.profile_id;
+        assert_eq!(id1, id2, "same profile should produce same MD5");
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn compute_md5_id_differs_for_different_profiles() {
+        let mut p1 = Profile::new_srgb();
+        p1.compute_md5_id().unwrap();
+
+        let mut p2 = Profile::new_lab4(None);
+        p2.compute_md5_id().unwrap();
+
+        assert_ne!(
+            p1.header.profile_id, p2.header.profile_id,
+            "different profiles should have different MD5 IDs"
+        );
     }
 }
