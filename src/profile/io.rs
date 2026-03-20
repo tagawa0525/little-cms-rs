@@ -8,6 +8,7 @@ use crate::curves::gamma::ToneCurve;
 use crate::curves::wtpnt;
 use crate::math::mtrx::Mat3;
 use crate::pipeline::lut::{Pipeline, Stage, StageLoc};
+use crate::pipeline::named::Mlu;
 use crate::profile::tag_types::TagData;
 use crate::types::{
     CieXyz, ColorSpaceSignature, D50_X, D50_Y, D50_Z, DateTimeNumber, EncodedXyzNumber,
@@ -594,8 +595,8 @@ impl Profile {
         language: &str,
         country: &str,
     ) -> Option<String> {
-        let _ = (info, language, country);
-        todo!()
+        let mlu = self.read_info_mlu(info)?;
+        mlu.get_ascii(language, country)
     }
 
     /// Get profile information as UTF-8 string.
@@ -606,8 +607,30 @@ impl Profile {
         language: &str,
         country: &str,
     ) -> Option<String> {
-        let _ = (info, language, country);
-        todo!()
+        let mlu = self.read_info_mlu(info)?;
+        mlu.get_utf8(language, country)
+    }
+
+    /// Read the MLU tag for the given info type.
+    /// C版: `GetInfo` (cmsio1.c)
+    fn read_info_mlu(&mut self, info: ProfileInfoType) -> Option<Mlu> {
+        let sig = match info {
+            ProfileInfoType::Description => {
+                if self.has_tag(TagSignature::ProfileDescriptionML) {
+                    TagSignature::ProfileDescriptionML
+                } else {
+                    TagSignature::ProfileDescription
+                }
+            }
+            ProfileInfoType::Manufacturer => TagSignature::DeviceMfgDesc,
+            ProfileInfoType::Model => TagSignature::DeviceModelDesc,
+            ProfileInfoType::Copyright => TagSignature::Copyright,
+        };
+
+        match self.read_tag(sig) {
+            Ok(TagData::Mlu(mlu)) => Some(mlu),
+            _ => None,
+        }
     }
 
     // ========================================================================
@@ -2608,7 +2631,6 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn get_profile_info_ascii_description() {
         let mut p = Profile::new_srgb();
         let desc = p
@@ -2618,7 +2640,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn get_profile_info_ascii_copyright() {
         let mut p = Profile::new_srgb();
         let copy = p
@@ -2628,7 +2649,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn get_profile_info_utf8_description() {
         let mut p = Profile::new_srgb();
         let desc = p
@@ -2638,7 +2658,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn get_profile_info_missing_tag_returns_none() {
         let mut p = Profile::new_placeholder();
         let result = p.get_profile_info_ascii(ProfileInfoType::Manufacturer, "en", "US");
