@@ -278,6 +278,11 @@ impl Transform {
             });
         }
 
+        // Null transform: skip pipeline, just unpack→pack
+        if (flags & FLAGS_NULLTRANSFORM) != 0 {
+            return Self::build_null_transform(input_format, output_format, flags);
+        }
+
         // Capture color spaces from first/last profiles
         // Entry is always the first profile's device color space.
         // Exit depends on the last profile's class:
