@@ -81,22 +81,12 @@ pub fn create_gamut_check_pipeline(
 
     // Build hInput: profiles[0..gamut_pcs_position] + Lab → converts input to Lab16
     let mut input_chain: Vec<Profile> = Vec::with_capacity(gamut_pcs_position + 1);
-    let mut input_bpc: Vec<bool> = Vec::with_capacity(gamut_pcs_position + 1);
-    let mut input_intents: Vec<u32> = Vec::with_capacity(gamut_pcs_position + 1);
-    let mut input_adaptation: Vec<f64> = Vec::with_capacity(gamut_pcs_position + 1);
-
     for i in 0..gamut_pcs_position {
         input_chain.push(clone_profile(&mut profiles[i])?);
-        input_bpc.push(bpc[i]);
-        input_intents.push(intents[i]);
-        input_adaptation.push(adaptation[i]);
     }
     // Append Lab profile at the end
     let mut lab = Profile::new_lab4(None);
     input_chain.push(clone_profile(&mut lab)?);
-    input_bpc.push(false);
-    input_intents.push(1); // INTENT_RELATIVE_COLORIMETRIC
-    input_adaptation.push(1.0);
 
     let input_fmt = PixelFormat::build(input_color_space.to_pixel_type(), n_input_channels, 2);
 
@@ -543,7 +533,6 @@ mod tests {
     }
 
     #[test]
-
     fn desaturate_clips_l_above_100() {
         let mut lab = CieLab {
             l: 120.0,
@@ -556,7 +545,6 @@ mod tests {
     }
 
     #[test]
-
     fn desaturate_clips_out_of_gamut_a() {
         let mut lab = CieLab {
             l: 50.0,
@@ -570,7 +558,6 @@ mod tests {
     }
 
     #[test]
-
     fn desaturate_zero_a_clips_b() {
         let mut lab = CieLab {
             l: 50.0,
@@ -587,7 +574,6 @@ mod tests {
     // ================================================================
 
     #[test]
-
     fn detect_tac_non_output_returns_zero() {
         // sRGB is Display class, not Output
         let mut p = roundtrip(&mut Profile::new_srgb());
@@ -600,7 +586,6 @@ mod tests {
     // ================================================================
 
     #[test]
-
     fn detect_gamma_srgb() {
         let mut p = roundtrip(&mut Profile::new_srgb());
         let gamma = detect_rgb_profile_gamma(&mut p, 0.1);
@@ -609,7 +594,6 @@ mod tests {
     }
 
     #[test]
-
     fn detect_gamma_linear() {
         let gamma_curve = crate::curves::gamma::ToneCurve::build_gamma(1.0).unwrap();
         let trc = [gamma_curve.clone(), gamma_curve.clone(), gamma_curve];
@@ -642,7 +626,6 @@ mod tests {
     }
 
     #[test]
-
     fn detect_gamma_non_rgb_returns_minus1() {
         // Lab profile is not RGB
         let mut p = roundtrip(&mut Profile::new_lab4(None));
