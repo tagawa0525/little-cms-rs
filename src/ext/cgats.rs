@@ -24,6 +24,8 @@ struct Table {
     n_rows: usize,
     /// Column index that holds patch/sample IDs (default: 0 = "SAMPLE_ID").
     sample_id_col: usize,
+    /// Precision for floating-point output (set by `define_dbl_format`).
+    dbl_precision: Option<usize>,
 }
 
 impl Table {
@@ -35,6 +37,7 @@ impl Table {
             data: Vec::new(),
             n_rows: 0,
             sample_id_col: 0,
+            dbl_precision: None,
         }
     }
 
@@ -233,6 +236,55 @@ impl It8 {
             }
         };
         self.set_data_row_col(row, col, value);
+    }
+
+    /// Set a property as a floating-point value.
+    /// C版: `cmsIT8SetPropertyDbl`
+    pub fn set_property_f64(&mut self, key: &str, value: f64) {
+        self.set_property(key, &self.format_f64(value));
+    }
+
+    /// Set a data cell by row/col as a floating-point value.
+    /// C版: `cmsIT8SetDataRowColDbl`
+    pub fn set_data_row_col_f64(&mut self, row: usize, col: usize, value: f64) {
+        self.set_data_row_col(row, col, &self.format_f64(value));
+    }
+
+    /// Set a data cell by patch name and sample as a floating-point value.
+    /// C版: `cmsIT8SetDataDbl`
+    pub fn set_data_f64(&mut self, patch: &str, sample: &str, value: f64) {
+        self.set_data(patch, sample, &self.format_f64(value));
+    }
+
+    /// Get the patch name (SAMPLE_ID) for a given row.
+    /// C版: `cmsIT8GetPatchName`
+    pub fn get_patch_name(&self, row: usize) -> Option<&str> {
+        let t = &self.tables[self.current];
+        self.data_row_col(row, t.sample_id_col)
+    }
+
+    /// Set the decimal precision for floating-point data output.
+    /// Only the `"{:.N}"` form is supported; `N` is extracted as the
+    /// number of decimal places. If the format string does not match
+    /// this pattern, a default precision of 6 is used.
+    /// C版: `cmsIT8DefineDblFormat`
+    pub fn define_dbl_format(&mut self, fmt: &str) {
+        let precision = fmt
+            .find("{:.")
+            .and_then(|start| {
+                let rest = &fmt[start + 3..];
+                rest.find('}')
+                    .and_then(|end| rest[..end].parse::<usize>().ok())
+            })
+            .unwrap_or(6);
+        self.tables[self.current].dbl_precision = Some(precision);
+    }
+
+    fn format_f64(&self, value: f64) -> String {
+        match self.tables[self.current].dbl_precision {
+            Some(prec) => format!("{value:.prec$}"),
+            None => value.to_string(),
+        }
     }
 
     fn find_patch(&self, patch: &str) -> Option<usize> {
@@ -715,5 +767,58 @@ END_DATA
         assert!(!path.exists());
         let result = It8::load_from_file(path.to_str().unwrap());
         assert!(result.is_err());
+    }
+
+    // ================================================================
+    // Phase 14a-D: Numeric setter/getter APIs
+    // ================================================================
+
+    #[test]
+    fn set_property_f64_round_trip() {
+        let mut it8 = It8::new();
+        it8.set_property_f64("MY_VALUE", 1.234);
+        let val = it8.property_f64("MY_VALUE").unwrap();
+        assert!((val - 1.234).abs() < 1e-10);
+    }
+
+    #[test]
+    fn set_data_row_col_f64_round_trip() {
+        let mut it8 = It8::new();
+        it8.set_data_format(0, "SAMPLE_ID");
+        it8.set_data_format(1, "VALUE");
+        it8.set_data_row_col(0, 0, "P1");
+        it8.set_data_row_col_f64(0, 1, 42.5);
+        assert_eq!(it8.data_row_col_f64(0, 1), Some(42.5));
+    }
+
+    #[test]
+    fn set_data_f64_round_trip() {
+        let mut it8 = It8::new();
+        it8.set_data_format(0, "SAMPLE_ID");
+        it8.set_data_format(1, "MEASURE");
+        it8.set_data_row_col(0, 0, "P1");
+        it8.set_data_f64("P1", "MEASURE", 99.9);
+        assert_eq!(it8.data_f64("P1", "MEASURE"), Some(99.9));
+    }
+
+    #[test]
+    fn get_patch_name_returns_sample_id() {
+        let it8 = It8::load_from_str(SAMPLE_IT8).unwrap();
+        assert_eq!(it8.get_patch_name(0), Some("A1"));
+        assert_eq!(it8.get_patch_name(1), Some("A2"));
+        assert_eq!(it8.get_patch_name(2), Some("A3"));
+        assert_eq!(it8.get_patch_name(3), None);
+    }
+
+    #[test]
+    fn define_dbl_format_affects_output() {
+        let mut it8 = It8::new();
+        it8.set_data_format(0, "SAMPLE_ID");
+        it8.set_data_format(1, "VALUE");
+        it8.define_dbl_format("{:.2}");
+        it8.set_data_row_col(0, 0, "P1");
+        it8.set_data_row_col_f64(0, 1, 1.23456);
+        // With format "{:.2}", the value should be written as "1.23"
+        assert_eq!(it8.data_row_col(0, 1), Some("1.23"));
     }
 }

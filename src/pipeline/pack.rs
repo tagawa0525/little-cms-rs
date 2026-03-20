@@ -672,6 +672,25 @@ pub fn find_formatter_out(format: PixelFormat, flags: u32) -> Option<FormatterOu
     }
 }
 
+/// Return the pixel format suitable for the PCS of a profile.
+/// When `is_float` is true, returns a 64-bit double format (`TYPE_*_DBL`),
+/// matching the C API behavior. For 16-bit integer, pass `is_float = false`.
+/// C版: `cmsFormatterForPCSOfProfile`
+pub fn formatter_for_pcs_of_profile(
+    profile: &crate::profile::io::Profile,
+    is_float: bool,
+) -> PixelFormat {
+    use crate::types::{ColorSpaceSignature, TYPE_LAB_16, TYPE_LAB_DBL, TYPE_XYZ_16, TYPE_XYZ_DBL};
+
+    match (profile.header.pcs, is_float) {
+        (ColorSpaceSignature::LabData, true) => TYPE_LAB_DBL,
+        (ColorSpaceSignature::LabData, false) => TYPE_LAB_16,
+        (ColorSpaceSignature::XyzData, true) => TYPE_XYZ_DBL,
+        (_, false) => TYPE_XYZ_16,
+        (_, true) => TYPE_XYZ_DBL,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1206,5 +1225,49 @@ mod tests {
     fn test_find_formatter_in_returns_none_for_zero_channels() {
         let bad = PixelFormat::build(PT_RGB, 0, 1);
         assert!(find_formatter_in(bad, CMS_PACK_FLAGS_16BITS).is_none());
+    }
+
+    // ========================================================================
+    // formatter_for_pcs_of_profile (Phase 14a-C)
+    // ========================================================================
+
+    #[test]
+    fn pcs_formatter_lab_profile_16bit() {
+        use crate::profile::io::Profile;
+        let mut p = Profile::new_placeholder();
+        p.header.pcs = crate::types::ColorSpaceSignature::LabData;
+        let fmt = formatter_for_pcs_of_profile(&p, false);
+        assert_eq!(fmt.colorspace(), PT_LAB);
+        assert!(!fmt.is_float());
+    }
+
+    #[test]
+    fn pcs_formatter_xyz_profile_16bit() {
+        use crate::profile::io::Profile;
+        let mut p = Profile::new_placeholder();
+        p.header.pcs = crate::types::ColorSpaceSignature::XyzData;
+        let fmt = formatter_for_pcs_of_profile(&p, false);
+        assert_eq!(fmt.colorspace(), PT_XYZ);
+        assert!(!fmt.is_float());
+    }
+
+    #[test]
+    fn pcs_formatter_lab_profile_float() {
+        use crate::profile::io::Profile;
+        let mut p = Profile::new_placeholder();
+        p.header.pcs = crate::types::ColorSpaceSignature::LabData;
+        let fmt = formatter_for_pcs_of_profile(&p, true);
+        assert_eq!(fmt.colorspace(), PT_LAB);
+        assert!(fmt.is_float());
+    }
+
+    #[test]
+    fn pcs_formatter_xyz_profile_float() {
+        use crate::profile::io::Profile;
+        let mut p = Profile::new_placeholder();
+        p.header.pcs = crate::types::ColorSpaceSignature::XyzData;
+        let fmt = formatter_for_pcs_of_profile(&p, true);
+        assert_eq!(fmt.colorspace(), PT_XYZ);
+        assert!(fmt.is_float());
     }
 }

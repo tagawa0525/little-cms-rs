@@ -399,6 +399,17 @@ pub fn link_profiles(
     default_icc_intents(profiles, intents, bpc, adaptation_states)
 }
 
+/// Return the list of supported rendering intents.
+/// C版: `cmsGetSupportedIntents`
+pub fn get_supported_intents() -> &'static [(u32, &'static str)] {
+    &[
+        (0, "Perceptual"),
+        (1, "Relative Colorimetric"),
+        (2, "Saturation"),
+        (3, "Absolute Colorimetric"),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -641,5 +652,33 @@ mod tests {
         assert_eq!(ColorSpaceSignature::GrayData.channels(), 1);
         assert_eq!(ColorSpaceSignature::XyzData.channels(), 3);
         assert_eq!(ColorSpaceSignature::LabData.channels(), 3);
+    }
+
+    // ========================================================================
+    // get_supported_intents (Phase 14a-A)
+    // ========================================================================
+
+    #[test]
+    fn supported_intents_returns_four_entries() {
+        let intents = super::get_supported_intents();
+        assert_eq!(intents.len(), 4);
+    }
+
+    #[test]
+    fn supported_intents_contains_standard_intents() {
+        let intents = super::get_supported_intents();
+        let ids: Vec<u32> = intents.iter().map(|(id, _)| *id).collect();
+        assert!(ids.contains(&0), "should contain Perceptual");
+        assert!(ids.contains(&1), "should contain Relative Colorimetric");
+        assert!(ids.contains(&2), "should contain Saturation");
+        assert!(ids.contains(&3), "should contain Absolute Colorimetric");
+    }
+
+    #[test]
+    fn supported_intents_have_names() {
+        let intents = super::get_supported_intents();
+        for &(_, name) in intents {
+            assert!(!name.is_empty(), "intent name should not be empty");
+        }
     }
 }
