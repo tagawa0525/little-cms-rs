@@ -1,6 +1,6 @@
 # Phase 14: Remaining API Gaps
 
-Status: IN_PROGRESS
+Status: IMPLEMENTED
 
 ## Context
 
