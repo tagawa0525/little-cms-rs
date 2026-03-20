@@ -395,8 +395,45 @@ pub fn link_profiles(
         }
     }
 
-    // Dispatch to intent handler (only DefaultICCintents for now)
-    default_icc_intents(profiles, intents, bpc, adaptation_states)
+    // Dispatch to intent handler based on first intent
+    match intents[0] {
+        10..=12 => black_preserving_k_only_intents(profiles, intents, bpc, adaptation_states),
+        13..=15 => black_preserving_k_plane_intents(profiles, intents, bpc, adaptation_states),
+        _ => default_icc_intents(profiles, intents, bpc, adaptation_states),
+    }
+}
+
+/// Translate black-preserving intents to ICC ones.
+/// C版: `TranslateNonICCIntents`
+fn translate_non_icc_intents(intent: u32) -> u32 {
+    match intent {
+        10 | 13 => 0, // K-only/K-plane Perceptual
+        11 | 14 => 1, // K-only/K-plane Relative Colorimetric
+        12 | 15 => 2, // K-only/K-plane Saturation
+        _ => intent,
+    }
+}
+
+/// Build a pipeline for black-preserving K-only intents.
+/// C版: `BlackPreservingKOnlyIntents`
+pub fn black_preserving_k_only_intents(
+    _profiles: &mut [Profile],
+    _intents: &[u32],
+    _bpc: &[bool],
+    _adaptation_states: &[f64],
+) -> Result<Pipeline, CmsError> {
+    todo!("Phase 14c-F: not yet implemented")
+}
+
+/// Build a pipeline for black-preserving K-plane intents.
+/// C版: `BlackPreservingKPlaneIntents`
+pub fn black_preserving_k_plane_intents(
+    _profiles: &mut [Profile],
+    _intents: &[u32],
+    _bpc: &[bool],
+    _adaptation_states: &[f64],
+) -> Result<Pipeline, CmsError> {
+    todo!("Phase 14c-G: not yet implemented")
 }
 
 /// Return the list of supported rendering intents.
@@ -407,6 +444,12 @@ pub fn get_supported_intents() -> &'static [(u32, &'static str)] {
         (1, "Relative Colorimetric"),
         (2, "Saturation"),
         (3, "Absolute Colorimetric"),
+        (10, "Preserve K Only Perceptual"),
+        (11, "Preserve K Only Relative Colorimetric"),
+        (12, "Preserve K Only Saturation"),
+        (13, "Preserve K Plane Perceptual"),
+        (14, "Preserve K Plane Relative Colorimetric"),
+        (15, "Preserve K Plane Saturation"),
     ]
 }
 
@@ -659,9 +702,9 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn supported_intents_returns_four_entries() {
+    fn supported_intents_returns_ten_entries() {
         let intents = super::get_supported_intents();
-        assert_eq!(intents.len(), 4);
+        assert_eq!(intents.len(), 10);
     }
 
     #[test]
@@ -675,10 +718,34 @@ mod tests {
     }
 
     #[test]
+    fn supported_intents_contains_black_preserving() {
+        let intents = super::get_supported_intents();
+        let ids: Vec<u32> = intents.iter().map(|(id, _)| *id).collect();
+        assert!(ids.contains(&10), "should contain K-only Perceptual");
+        assert!(ids.contains(&13), "should contain K-plane Perceptual");
+    }
+
+    #[test]
     fn supported_intents_have_names() {
         let intents = super::get_supported_intents();
         for &(_, name) in intents {
             assert!(!name.is_empty(), "intent name should not be empty");
         }
+    }
+
+    // ========================================================================
+    // translate_non_icc_intents (Phase 14c)
+    // ========================================================================
+
+    #[test]
+    fn translate_non_icc_intents_maps_correctly() {
+        assert_eq!(super::translate_non_icc_intents(10), 0);
+        assert_eq!(super::translate_non_icc_intents(11), 1);
+        assert_eq!(super::translate_non_icc_intents(12), 2);
+        assert_eq!(super::translate_non_icc_intents(13), 0);
+        assert_eq!(super::translate_non_icc_intents(14), 1);
+        assert_eq!(super::translate_non_icc_intents(15), 2);
+        assert_eq!(super::translate_non_icc_intents(0), 0);
+        assert_eq!(super::translate_non_icc_intents(3), 3);
     }
 }

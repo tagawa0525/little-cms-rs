@@ -241,6 +241,40 @@ fn encode_lab16_buf(lab: &CieLab, buf: &mut [u8]) {
 }
 
 // ============================================================================
+// Black-preserving intent helpers
+// ============================================================================
+
+/// Build a transform that chains the given profiles and appends a Lab identity
+/// profile at the end, converting from `input_format` to `output_format`.
+/// C版: `_cmsChain2Lab`
+pub fn chain_to_lab(
+    _profiles: &mut [Profile],
+    _bpc: &[bool],
+    _intents: &[u32],
+    _adaptation: &[f64],
+    _input_format: PixelFormat,
+    _output_format: PixelFormat,
+    _flags: u32,
+) -> Result<Transform, CmsError> {
+    todo!("Phase 14c: not yet implemented")
+}
+
+/// Build the K tone curve for a CMYK → CMYK transform.
+/// Computes K→L* for the input chain and K→L* for the output profile,
+/// then joins both curves.
+/// C版: `_cmsBuildKToneCurve`
+pub fn build_k_tone_curve(
+    _profiles: &mut [Profile],
+    _intents: &[u32],
+    _bpc: &[bool],
+    _adaptation: &[f64],
+    _n_points: u32,
+    _flags: u32,
+) -> Result<ToneCurve, CmsError> {
+    todo!("Phase 14c: not yet implemented")
+}
+
+// ============================================================================
 // Public API
 // ============================================================================
 
@@ -722,5 +756,69 @@ mod tests {
             "saturated red should be out of narrow gamut, got {}",
             output[0]
         );
+    }
+
+    // ================================================================
+    // chain_to_lab (Phase 14c)
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn chain_to_lab_srgb_produces_lab() {
+        let srgb = roundtrip(&mut Profile::new_srgb());
+        let xform = chain_to_lab(
+            &mut [srgb],
+            &[false],
+            &[0],
+            &[1.0],
+            TYPE_CMYK_FLT,
+            TYPE_LAB_DBL,
+            FLAGS_NOOPTIMIZE | FLAGS_NOCACHE,
+        )
+        .unwrap();
+
+        // Transform a CMYK value (all zeros = white) should give Lab ≈ (100, 0, 0)
+        let input = [0.0f32, 0.0, 0.0, 0.0];
+        let mut in_buf = [0u8; 16];
+        for (i, &v) in input.iter().enumerate() {
+            in_buf[i * 4..i * 4 + 4].copy_from_slice(&v.to_ne_bytes());
+        }
+        let mut out_buf = [0u8; 24];
+        xform.do_transform(&in_buf, &mut out_buf, 1);
+        let l = f64::from_ne_bytes(out_buf[0..8].try_into().unwrap());
+        // Lab L* for paper white should be close to 100
+        assert!(l > 50.0, "L* should be > 50, got {}", l);
+    }
+
+    // ================================================================
+    // build_k_tone_curve (Phase 14c)
+    // ================================================================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn build_k_tone_curve_returns_monotonic() {
+        // Build 2-profile CMYK → CMYK chain using ink-limiting device links
+        let cmyk_dl1 = roundtrip(
+            &mut Profile::new_ink_limiting_device_link(ColorSpaceSignature::CmykData, 350.0)
+                .unwrap(),
+        );
+        let cmyk_dl2 = roundtrip(
+            &mut Profile::new_ink_limiting_device_link(ColorSpaceSignature::CmykData, 300.0)
+                .unwrap(),
+        );
+
+        let curve = build_k_tone_curve(
+            &mut [cmyk_dl1, cmyk_dl2],
+            &[0, 0],
+            &[false, false],
+            &[1.0, 1.0],
+            4096,
+            FLAGS_NOOPTIMIZE,
+        );
+        // Ink-limiting device links may not support K tone curve (not Output class)
+        // so this may fail; just check it doesn't panic
+        if let Ok(c) = curve {
+            assert!(c.is_monotonic());
+        }
     }
 }
